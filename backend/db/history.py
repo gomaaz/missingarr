@@ -100,7 +100,7 @@ def query_with_items(
 ) -> list[dict]:
     rows = query(instance_id=instance_id, skill=skill, limit=limit, offset=offset)
     for row in rows:
-        row["items"] = get_items_for_run(row["id"])
+        row["search_items"] = get_items_for_run(row["id"])
     return rows
 
 

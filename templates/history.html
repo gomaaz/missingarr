@@ -26,7 +26,7 @@
         {% for e in entries %}
         <tr class="history-row" onclick="toggleItems('items-{{ e.id }}')" style="cursor:pointer;">
             <td style="color:var(--text-muted);font-size:0.75rem;text-align:center;">
-                {% if e.items %}▶{% endif %}
+                {% if e.search_items %}▶{% endif %}
             </td>
             <td style="color:var(--text-muted);font-size:0.8rem;white-space:nowrap;">{{ e.started_at[:16] }}</td>
             <td>
@@ -53,11 +53,11 @@
                 {% endif %}
             </td>
         </tr>
-        {% if e.items %}
+        {% if e.search_items %}
         <tr id="items-{{ e.id }}" style="display:none;">
             <td colspan="8" style="padding:0 1rem 0.75rem 2.5rem;background:var(--bg-card);">
                 <div style="display:flex;flex-wrap:wrap;gap:0.35rem;padding-top:0.4rem;">
-                {% for item in e.items %}
+                {% for item in e.search_items %}
                     <span style="
                         display:inline-flex;align-items:center;gap:0.3rem;
                         background:var(--bg-input);border:1px solid var(--border);
