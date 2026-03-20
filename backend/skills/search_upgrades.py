@@ -67,7 +67,8 @@ class SearchUpgradesSkill(BaseSkill):
                 for r in resp.get("records", []):
                     if "id" in r:
                         year = r.get("year", "")
-                        label = f"{r.get('title', f'Movie #{r[\"id\"]}')} ({year})" if year else r.get("title", f"Movie #{r['id']}")
+                        title = r.get("title") or f"Movie #{r['id']}"
+                        label = f"{title} ({year})" if year else title
                         items.append({"id": r["id"], "label": label})
             except Exception as exc:
                 agent.log("warn", self.name, f"Failed to fetch cutoff list: {exc}")
@@ -78,7 +79,8 @@ class SearchUpgradesSkill(BaseSkill):
                 for m in (movies if isinstance(movies, list) else []):
                     if m.get("hasFile"):
                         year = m.get("year", "")
-                        label = f"{m.get('title', f'Movie #{m[\"id\"]}')} ({year})" if year else m.get("title", f"Movie #{m['id']}")
+                        title = m.get("title") or f"Movie #{m['id']}"
+                        label = f"{title} ({year})" if year else title
                         items.append({"id": m["id"], "label": label})
             except Exception as exc:
                 agent.log("warn", self.name, f"Failed to fetch monitored movies: {exc}")
