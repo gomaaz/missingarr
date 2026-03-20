@@ -6,6 +6,8 @@ LABEL org.opencontainers.image.title="Missingarr" \
       org.opencontainers.image.source="https://github.com/gomaaz/missingarr" \
       org.opencontainers.image.licenses="MIT"
 
+ARG APP_VERSION=dev
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -19,7 +21,8 @@ VOLUME ["/data"]
 
 ENV DATABASE_URL=/data/missingarr.db \
     LOG_LEVEL=INFO \
-    TZ=Europe/Berlin
+    TZ=Europe/Berlin \
+    VERSION=${APP_VERSION}
 
 EXPOSE 8000
 

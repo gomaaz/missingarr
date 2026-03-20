@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     database_url: str = "./data/missingarr.db"
     log_level: str = "INFO"
     tz: str = "Europe/Berlin"
-    version: str = "0.1.0"
+    version: str = "dev"
     app_name: str = "Missingarr"
     max_log_entries: int = 10000
 
