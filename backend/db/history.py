@@ -75,6 +75,35 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def insert_item(run_id: int, title: str, arr_id: Optional[int], item_type: str):
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO search_history_items (run_id, title, arr_id, item_type) VALUES (?, ?, ?, ?)",
+            (run_id, title, arr_id, item_type),
+        )
+
+
+def get_items_for_run(run_id: int) -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM search_history_items WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def query_with_items(
+    instance_id: Optional[int] = None,
+    skill: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    rows = query(instance_id=instance_id, skill=skill, limit=limit, offset=offset)
+    for row in rows:
+        row["items"] = get_items_for_run(row["id"])
+    return rows
+
+
 def clear():
     with get_db() as conn:
         conn.execute("DELETE FROM search_history")

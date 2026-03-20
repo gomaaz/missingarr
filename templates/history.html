@@ -12,6 +12,7 @@
     <table class="table">
         <thead>
             <tr>
+                <th style="width:1.5rem;"></th>
                 <th>Time</th>
                 <th>Instance</th>
                 <th>Skill</th>
@@ -23,8 +24,10 @@
         </thead>
         <tbody>
         {% for e in entries %}
-        {% set duration = '' %}
-        <tr>
+        <tr class="history-row" onclick="toggleItems('items-{{ e.id }}')" style="cursor:pointer;">
+            <td style="color:var(--text-muted);font-size:0.75rem;text-align:center;">
+                {% if e.items %}▶{% endif %}
+            </td>
             <td style="color:var(--text-muted);font-size:0.8rem;white-space:nowrap;">{{ e.started_at[:16] }}</td>
             <td>
                 <span style="font-weight:600;font-size:0.85rem;">{{ e.instance_name }}</span>
@@ -36,14 +39,9 @@
             <td style="font-weight:600;color:{{ 'var(--green)' if e.triggered_count > 0 else 'var(--text-muted)' }};">
                 {{ e.triggered_count }}
             </td>
-            <td style="color:var(--text-muted);font-size:0.8rem;">
-                {% if e.finished_at %}
-                    {% set s = e.started_at %}
-                    {% set f = e.finished_at %}
-                    —
-                {% else %}
-                    running...
-                {% endif %}
+            <td style="color:var(--text-muted);font-size:0.8rem;" id="dur-{{ e.id }}"
+                data-start="{{ e.started_at }}" data-end="{{ e.finished_at or '' }}">
+                {% if e.finished_at %}—{% else %}running...{% endif %}
             </td>
             <td>
                 {% if e.status == 'success' %}
@@ -55,6 +53,30 @@
                 {% endif %}
             </td>
         </tr>
+        {% if e.items %}
+        <tr id="items-{{ e.id }}" style="display:none;">
+            <td colspan="8" style="padding:0 1rem 0.75rem 2.5rem;background:var(--bg-card);">
+                <div style="display:flex;flex-wrap:wrap;gap:0.35rem;padding-top:0.4rem;">
+                {% for item in e.items %}
+                    <span style="
+                        display:inline-flex;align-items:center;gap:0.3rem;
+                        background:var(--bg-input);border:1px solid var(--border);
+                        border-radius:4px;padding:0.2rem 0.5rem;
+                        font-size:0.78rem;color:var(--text-main);
+                    ">
+                        <span style="color:var(--text-muted);font-size:0.7rem;">
+                            {% if item.item_type == 'movie' %}🎬
+                            {% elif item.item_type == 'episode' %}📺
+                            {% elif item.item_type == 'season' %}📦
+                            {% else %}🎞️{% endif %}
+                        </span>
+                        {{ item.title }}
+                    </span>
+                {% endfor %}
+                </div>
+            </td>
+        </tr>
+        {% endif %}
         {% endfor %}
         </tbody>
     </table>
@@ -66,6 +88,25 @@
 </div>
 
 <script>
+function toggleItems(id) {
+    const row = document.getElementById(id);
+    if (!row) return;
+    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+// Calculate durations from timestamps
+document.querySelectorAll('[id^="dur-"]').forEach(cell => {
+    const start = cell.dataset.start;
+    const end = cell.dataset.end;
+    if (!start || !end) return;
+    try {
+        const s = new Date(start.replace(' ', 'T') + (start.includes('+') ? '' : 'Z'));
+        const f = new Date(end.replace(' ', 'T') + (end.includes('+') ? '' : 'Z'));
+        const secs = Math.round((f - s) / 1000);
+        cell.textContent = secs < 60 ? `${secs}s` : `${Math.floor(secs/60)}m ${secs%60}s`;
+    } catch {}
+});
+
 async function clearHistory() {
     if (!confirm('Clear all search history?')) return;
     const resp = await fetch('/api/history', { method: 'DELETE' });

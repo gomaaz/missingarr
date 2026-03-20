@@ -133,7 +133,7 @@ async def instance_edit(instance_id: int, request: Request):
 @app.get("/history", response_class=HTMLResponse)
 async def history_page(request: Request):
     from backend import db
-    entries = db.history.query(limit=50)
+    entries = db.history.query_with_items(limit=50)
     all_instances = db.instances.get_all()
     return templates.TemplateResponse(
         "history.html",

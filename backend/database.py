@@ -96,4 +96,14 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS search_history_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      INTEGER NOT NULL REFERENCES search_history(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                arr_id      INTEGER,
+                item_type   TEXT NOT NULL CHECK(item_type IN ('movie','episode','season','series'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_items_run ON search_history_items(run_id);
         """)

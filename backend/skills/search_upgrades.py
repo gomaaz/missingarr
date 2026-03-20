@@ -21,28 +21,31 @@ class SearchUpgradesSkill(BaseSkill):
             per_run = cfg.get("upgrades_per_run", 1)
             delay = cfg.get("seconds_between_actions", 2)
 
-            movie_ids = self._collect_candidates(agent, source, per_run)
-            wanted_count = len(movie_ids)
+            candidates = self._collect_candidates(agent, source, per_run)
+            wanted_count = len(candidates)
 
-            if not movie_ids:
+            if not candidates:
                 agent.log("info", self.name, "No upgrade candidates found")
                 db.history.finish_run(run_id, 0, 0, "success")
                 return
 
-            for movie_id in movie_ids:
+            for movie in candidates:
                 if not agent.check_rate_cap():
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
+                movie_id = movie["id"]
+                label = movie["label"]
                 try:
                     agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
                     triggered_count += 1
                     agent.record_action()
-                    agent.log("debug", self.name, f"Upgrade search triggered for movie {movie_id}")
+                    db.history.insert_item(run_id, label, movie_id, "movie")
+                    agent.log("debug", self.name, f"Upgrade search: {label}")
                 except Exception as exc:
-                    agent.log("warn", self.name, f"Failed to trigger upgrade for movie {movie_id}: {exc}")
+                    agent.log("warn", self.name, f"Failed to trigger upgrade for {label}: {exc}")
 
-                if delay > 0 and movie_id != movie_ids[-1]:
+                if delay > 0 and movie != candidates[-1]:
                     time.sleep(delay)
 
             agent.log("info", self.name, f"Done — candidates: {wanted_count}, triggered: {triggered_count}")
@@ -52,8 +55,8 @@ class SearchUpgradesSkill(BaseSkill):
             agent.log("error", self.name, f"Upgrade search failed: {exc}")
             db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
 
-    def _collect_candidates(self, agent, source: str, per_run: int) -> list[int]:
-        ids = []
+    def _collect_candidates(self, agent, source: str, per_run: int) -> list[dict]:
+        items = []
 
         if source in ("wanted_list_only", "both"):
             try:
@@ -61,33 +64,32 @@ class SearchUpgradesSkill(BaseSkill):
                     "/api/v3/wanted/cutoff",
                     params={"pageSize": per_run, "page": 1, "monitored": "true"},
                 )
-                records = resp.get("records", [])
-                ids += [r["id"] for r in records if "id" in r]
+                for r in resp.get("records", []):
+                    if "id" in r:
+                        year = r.get("year", "")
+                        label = f"{r.get('title', f'Movie #{r[\"id\"]}')} ({year})" if year else r.get("title", f"Movie #{r['id']}")
+                        items.append({"id": r["id"], "label": label})
             except Exception as exc:
                 agent.log("warn", self.name, f"Failed to fetch cutoff list: {exc}")
 
         if source in ("monitored_items_only", "both"):
             try:
-                movies = agent.http_get(
-                    "/api/v3/movie",
-                    params={"monitored": "true"},
-                )
-                # Only movies that have a file but might need upgrade
-                candidates = [
-                    m["id"] for m in (movies if isinstance(movies, list) else [])
-                    if m.get("hasFile") and not m.get("isAvailable") is False
-                ]
-                ids += candidates[:per_run]
+                movies = agent.http_get("/api/v3/movie", params={"monitored": "true"})
+                for m in (movies if isinstance(movies, list) else []):
+                    if m.get("hasFile"):
+                        year = m.get("year", "")
+                        label = f"{m.get('title', f'Movie #{m[\"id\"]}')} ({year})" if year else m.get("title", f"Movie #{m['id']}")
+                        items.append({"id": m["id"], "label": label})
             except Exception as exc:
                 agent.log("warn", self.name, f"Failed to fetch monitored movies: {exc}")
 
         # Deduplicate, respect per_run limit
         seen = set()
         result = []
-        for mid in ids:
-            if mid not in seen:
-                seen.add(mid)
-                result.append(mid)
+        for item in items:
+            if item["id"] not in seen:
+                seen.add(item["id"])
+                result.append(item)
                 if len(result) >= per_run:
                     break
 
