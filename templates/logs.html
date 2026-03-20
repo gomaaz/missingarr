@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Logs — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data x-init="$store.logs.init()">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.75rem;">
+        <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Logs</h1>
+        <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+            <!-- Live toggle -->
+            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
+                <span x-text="$store.logs.enabled ? 'Live ●' : 'Paused ○'"
+                      :style="$store.logs.enabled ? 'color:var(--green)' : 'color:var(--text-muted)'"></span>
+                <input type="checkbox" :checked="$store.logs.enabled"
+                       @change="$store.logs.toggleEnabled()" style="display:none;">
+                <button @click="$store.logs.toggleEnabled()" class="btn btn-secondary btn-sm"
+                        x-text="$store.logs.enabled ? 'Pause' : 'Resume'"></button>
+            </label>
+
+            <!-- Debug toggle -->
+            <button @click="$store.logs.toggleDebug()" class="btn btn-secondary btn-sm"
+                    :class="$store.logs.debug ? 'btn-primary' : ''"
+                    x-text="$store.logs.debug ? 'Debug: ON' : 'Debug: OFF'">
+            </button>
+
+            <button @click="$store.logs.clear()" class="btn btn-secondary btn-sm">Clear view</button>
+            <button onclick="clearAllLogs()" class="btn btn-danger btn-sm">Clear DB</button>
+        </div>
+    </div>
+
+    <!-- Log container -->
+    <div class="card">
+        <div id="log-container"
+             style="padding:0.75rem 1rem;min-height:400px;max-height:70vh;overflow-y:auto;font-family:'JetBrains Mono',monospace;">
+
+            <!-- SSE live entries -->
+            <template x-for="entry in $store.logs.entries" :key="entry.id ?? Math.random()">
+                <div class="log-entry" :class="$store.logs.levelClass(entry.level)">
+                    <span class="log-time" x-text="$store.logs.formatTime(entry.created_at)">—</span>
+                    <span class="log-inst" x-text="entry.instance_name">—</span>
+                    <span class="log-skill" x-text="entry.skill ?? ''"></span>
+                    <span class="log-msg" x-text="entry.message">—</span>
+                </div>
+            </template>
+
+            <!-- Static recent entries (before SSE connects) -->
+            <template x-if="$store.logs.entries.length === 0">
+                <div>
+                {% for e in recent %}
+                <div class="log-entry level-{{ e.level }}">
+                    <span class="log-time">{{ e.created_at[:19] }}</span>
+                    <span class="log-inst">{{ e.instance_name }}</span>
+                    <span class="log-skill">{{ e.skill or '' }}</span>
+                    <span class="log-msg">{{ e.message }}</span>
+                </div>
+                {% endfor %}
+                {% if not recent %}
+                <div style="color:var(--text-muted);font-size:0.85rem;padding:1rem 0;">No log entries yet.</div>
+                {% endif %}
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+
+<script>
+async function clearAllLogs() {
+    if (!confirm('Clear all logs from database?')) return;
+    const resp = await fetch('/api/activity', { method: 'DELETE' });
+    if (resp.ok) {
+        Alpine.store('toasts').add('Logs cleared', 'info');
+        Alpine.store('logs').clear();
+    }
+}
+
+// Auto-scroll to bottom when new entries arrive (unless user scrolled up)
+const logContainer = document.getElementById('log-container');
+let userScrolled = false;
+logContainer.addEventListener('scroll', () => {
+    const nearBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 50;
+    userScrolled = !nearBottom;
+});
+// Watch for new SSE entries via MutationObserver
+const obs = new MutationObserver(() => {
+    if (!userScrolled) logContainer.scrollTop = logContainer.scrollHeight;
+});
+obs.observe(logContainer, { childList: true, subtree: true });
+</script>
+{% endblock %}

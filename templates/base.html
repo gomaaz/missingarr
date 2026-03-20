@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <!-- htmx -->
+    <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+</head>
+<body x-data>
+
+<!-- Navbar -->
+<nav class="navbar">
+    <a href="/" class="navbar-brand">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        Missing<span>arr</span>
+    </a>
+    <div class="nav-links">
+        <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/instances" class="nav-link {% if '/instances' in request.url.path %}active{% endif %}">Instances</a>
+        <a href="/history" class="nav-link {% if '/history' in request.url.path %}active{% endif %}">History</a>
+        <a href="/logs" class="nav-link {% if '/logs' in request.url.path %}active{% endif %}">Logs</a>
+        <a href="/help" class="nav-link {% if '/help' in request.url.path %}active{% endif %}">Help</a>
+    </div>
+    <div class="navbar-right">
+        <span class="version-badge">v{{ version }}</span>
+        <a href="https://github.com/gomaaz/missingarr" target="_blank" class="btn btn-secondary btn-sm">GitHub</a>
+    </div>
+</nav>
+
+<!-- Main content -->
+<main class="main">
+    {% block content %}{% endblock %}
+</main>
+
+<!-- Toast notifications -->
+<div class="toast-container" x-data x-show="$store.toasts.items.length > 0">
+    <template x-for="toast in $store.toasts.items" :key="toast.id">
+        <div class="toast" :class="toast.type" x-transition>
+            <span x-text="toast.message"></span>
+            <button @click="$store.toasts.remove(toast.id)" style="margin-left:auto;background:none;border:none;color:inherit;cursor:pointer;font-size:1rem;">×</button>
+        </div>
+    </template>
+</div>
+
+<script src="/static/js/app.js"></script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

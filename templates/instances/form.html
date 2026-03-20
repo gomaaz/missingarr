@@ -1,0 +1,359 @@
+{% extends "base.html" %}
+{% block title %}{% if instance %}Edit{% else %}New{% endif %} Instance — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div style="max-width:720px;margin:0 auto;">
+    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.5rem;">
+        <a href="/instances" style="color:var(--text-muted);text-decoration:none;font-size:0.85rem;">← Instances</a>
+        <span style="color:var(--border);">/</span>
+        <h1 style="margin:0;font-size:1.2rem;font-weight:700;">
+            {% if instance %}Edit: {{ instance.name }}{% else %}New Instance{% endif %}
+        </h1>
+    </div>
+
+    <div class="card" x-data="instanceForm('{{ instance.type if instance else 'sonarr' }}')"
+         x-init="upgradesEnabled = {{ 'true' if instance and instance.search_upgrades_enabled else 'false' }}">
+        <div class="card-body">
+
+            <!-- Skill toggles (top of card) -->
+            <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0 1rem;border-bottom:1px solid var(--border);margin-bottom:1rem;flex-wrap:wrap;">
+                <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Active Skills:</span>
+                <label class="toggle-label" :class="{ checked: enabledCheck }" data-tooltip="{{ tooltips.enabled }}">
+                    <input type="checkbox" id="enabled" name="enabled" x-model="enabledCheck"
+                           {% if not instance or instance.enabled %}checked{% endif %}>
+                    Enabled
+                </label>
+                <label class="toggle-label" :class="{ checked: missingEnabled }" data-tooltip="{{ tooltips.search_missing_enabled }}">
+                    <input type="checkbox" id="search_missing_enabled" name="search_missing_enabled" x-model="missingEnabled"
+                           {% if not instance or instance.search_missing_enabled %}checked{% endif %}>
+                    Missing
+                </label>
+                <label class="toggle-label" :class="{ checked: upgradesEnabled }" data-tooltip="{{ tooltips.search_upgrades_enabled }}">
+                    <input type="checkbox" id="search_upgrades_enabled" name="search_upgrades_enabled"
+                           x-model="upgradesEnabled"
+                           {% if instance and instance.search_upgrades_enabled %}checked{% endif %}>
+                    Upgrades
+                </label>
+            </div>
+
+            <form id="instance-form">
+
+            <!-- Basic info -->
+            <div class="form-section">
+                <div class="form-section-title">Connection</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="name">
+                            Name
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.name }}">?</span>
+                        </label>
+                        <input class="form-control" type="text" id="name" name="name"
+                               value="{{ instance.name if instance else '' }}"
+                               placeholder="e.g. Radarr Main" required maxlength="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="type">
+                            Type
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.type }}">?</span>
+                        </label>
+                        <select class="form-control" id="type" name="type" x-model="type">
+                            <option value="sonarr" {% if instance and instance.type == 'sonarr' %}selected{% endif %}>Sonarr</option>
+                            <option value="radarr" {% if instance and instance.type == 'radarr' %}selected{% endif %}>Radarr</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="url">
+                        Arr URL
+                        <span class="tooltip-icon" data-tooltip="{{ tooltips.url }}">?</span>
+                    </label>
+                    <input class="form-control" type="url" id="url" name="url"
+                           value="{{ instance.url if instance else '' }}"
+                           placeholder="http://192.168.1.10:8989" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="api_key">
+                        API Key
+                        <span class="tooltip-icon" data-tooltip="{{ tooltips.api_key }}">?</span>
+                    </label>
+                    <input class="form-control" type="password" id="api_key" name="api_key"
+                           placeholder="{% if instance %}Leave blank to keep unchanged{% else %}Paste your API key{% endif %}"
+                           {% if not instance %}required{% endif %} autocomplete="off">
+                    {% if instance %}
+                    <div class="form-hint">Leave blank to keep the current API key unchanged.</div>
+                    {% endif %}
+                </div>
+                {% if instance %}
+                <div style="margin-top:0.5rem;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="testExistingConnection({{ instance.id }})">
+                        Test Connection
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Timing -->
+            <div class="form-section">
+                <div class="form-section-title">Timing</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="interval_minutes">
+                            Interval (min)
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.interval_minutes }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="interval_minutes" name="interval_minutes"
+                               value="{{ instance.interval_minutes if instance else 15 }}" min="1" max="10080">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="retry_hours">
+                            Retry (hours)
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.retry_hours }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="retry_hours" name="retry_hours"
+                               value="{{ instance.retry_hours if instance else 1 }}" min="1" max="168">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="quiet_start">
+                            Quiet Start (HH:MM)
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.quiet_start }}">?</span>
+                        </label>
+                        <input class="form-control" type="text" id="quiet_start" name="quiet_start"
+                               value="{{ instance.quiet_start if instance and instance.quiet_start else '' }}"
+                               placeholder="01:00" pattern="[0-2][0-9]:[0-5][0-9]">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="quiet_end">
+                            Quiet End (HH:MM)
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.quiet_end }}">?</span>
+                        </label>
+                        <input class="form-control" type="text" id="quiet_end" name="quiet_end"
+                               value="{{ instance.quiet_end if instance and instance.quiet_end else '' }}"
+                               placeholder="06:00" pattern="[0-2][0-9]:[0-5][0-9]">
+                    </div>
+                </div>
+                <div class="form-hint">Force runs from the dashboard bypass quiet hours.</div>
+            </div>
+
+            <!-- Rate Limiting -->
+            <div class="form-section">
+                <div class="form-section-title">Rate Limiting</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="rate_window_minutes">
+                            Rate Window (min)
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_window_minutes }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="rate_window_minutes" name="rate_window_minutes"
+                               value="{{ instance.rate_window_minutes if instance else 60 }}" min="1" max="1440">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="rate_cap">
+                            Rate Cap
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_cap }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="rate_cap" name="rate_cap"
+                               value="{{ instance.rate_cap if instance else 25 }}" min="1" max="1000">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search behavior -->
+            <div class="form-section">
+                <div class="form-section-title">Search Behavior</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="search_order">
+                            Search Order
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.search_order }}">?</span>
+                        </label>
+                        <select class="form-control" id="search_order" name="search_order">
+                            {% set so = instance.search_order if instance else 'random' %}
+                            <option value="random" {% if so == 'random' %}selected{% endif %}>Random</option>
+                            <option value="smart" {% if so == 'smart' %}selected{% endif %}>Smart (Recent, Random, Oldest)</option>
+                            <option value="newest_first" {% if so == 'newest_first' %}selected{% endif %}>Newest First</option>
+                            <option value="oldest_first" {% if so == 'oldest_first' %}selected{% endif %}>Oldest First</option>
+                        </select>
+                    </div>
+                    <div class="form-group" x-show="showMissingMode()">
+                        <label class="form-label" for="missing_mode">
+                            Missing Mode
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.missing_mode }}">?</span>
+                        </label>
+                        <select class="form-control" id="missing_mode" name="missing_mode">
+                            {% set mm = instance.missing_mode if instance else 'episode' %}
+                            <option value="smart" {% if mm == 'smart' %}selected{% endif %}>Smart</option>
+                            <option value="season_packs" {% if mm == 'season_packs' %}selected{% endif %}>Season Packs</option>
+                            <option value="show_batch" {% if mm == 'show_batch' %}selected{% endif %}>Show Batch</option>
+                            <option value="episode" {% if mm == 'episode' %}selected{% endif %}>Episode</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="hours_after_release">
+                            Hours After Release
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.hours_after_release }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="hours_after_release" name="hours_after_release"
+                               value="{{ instance.hours_after_release if instance else 9 }}" min="0" max="8760">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="seconds_between_actions">
+                            Seconds Between Actions
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.seconds_between_actions }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="seconds_between_actions" name="seconds_between_actions"
+                               value="{{ instance.seconds_between_actions if instance else 2 }}" min="0" max="3600">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="missing_per_run">
+                            Missing Per Run
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.missing_per_run }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="missing_per_run" name="missing_per_run"
+                               value="{{ instance.missing_per_run if instance else 5 }}" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="upgrades_per_run">
+                            Upgrades Per Run
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips.upgrades_per_run }}">?</span>
+                        </label>
+                        <input class="form-control" type="number" id="upgrades_per_run" name="upgrades_per_run"
+                               value="{{ instance.upgrades_per_run if instance else 1 }}" min="1" max="100">
+                    </div>
+                </div>
+
+                <!-- Upgrade Source — only for Radarr with upgrades enabled -->
+                <div class="form-group" x-show="showUpgradeSource()">
+                    <label class="form-label" for="upgrade_source">
+                        Upgrade Source
+                        <span class="tooltip-icon" data-tooltip="{{ tooltips.upgrade_source }}">?</span>
+                    </label>
+                    <select class="form-control" id="upgrade_source" name="upgrade_source">
+                        {% set us = instance.upgrade_source if instance else 'monitored_items_only' %}
+                        <option value="wanted_list_only" {% if us == 'wanted_list_only' %}selected{% endif %}>Wanted List Only</option>
+                        <option value="monitored_items_only" {% if us == 'monitored_items_only' %}selected{% endif %}>Monitored Items Only</option>
+                        <option value="both" {% if us == 'both' %}selected{% endif %}>Both</option>
+                    </select>
+                    <div class="form-hint">
+                        Wanted List Only = Arr's upgrade list. &nbsp;
+                        Monitored Items Only = monitored items with files. &nbsp;
+                        Both = both sources combined.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Submit -->
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1rem;">
+                <a href="/instances" class="btn btn-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary" id="save-btn">Save Instance</button>
+            </div>
+
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Track extra state for Alpine
+document.addEventListener('alpine:init', () => {});
+
+function instanceForm(instanceType) {
+    return {
+        type: instanceType || 'sonarr',
+        upgradesEnabled: false,
+        enabledCheck: true,
+        missingEnabled: true,
+
+        showMissingMode() { return this.type === 'sonarr'; },
+        showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
+    };
+}
+
+// Form submission
+document.getElementById('instance-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn = document.getElementById('save-btn');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const data = {
+        name: form.name.value,
+        type: form.type.value,
+        url: form.url.value,
+        enabled: form.enabled?.checked ?? true,
+        search_missing_enabled: form.search_missing_enabled?.checked ?? true,
+        search_upgrades_enabled: form.search_upgrades_enabled?.checked ?? false,
+        interval_minutes: parseInt(form.interval_minutes.value),
+        retry_hours: parseInt(form.retry_hours.value),
+        rate_window_minutes: parseInt(form.rate_window_minutes.value),
+        rate_cap: parseInt(form.rate_cap.value),
+        search_order: form.search_order.value,
+        missing_mode: form.missing_mode?.value ?? 'episode',
+        missing_per_run: parseInt(form.missing_per_run.value),
+        upgrades_per_run: parseInt(form.upgrades_per_run.value),
+        seconds_between_actions: parseInt(form.seconds_between_actions.value),
+        hours_after_release: parseInt(form.hours_after_release.value),
+        upgrade_source: form.upgrade_source?.value ?? 'monitored_items_only',
+        quiet_start: form.quiet_start.value || null,
+        quiet_end: form.quiet_end.value || null,
+    };
+
+    const apiKey = form.api_key.value;
+    if (apiKey) data.api_key = apiKey;
+
+    const method = '{{ method }}';
+    const action = '{{ action }}';
+
+    try {
+        const resp = await fetch(action, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        const result = await resp.json();
+        if (resp.ok) {
+            Alpine.store('toasts').add('Instance saved!', 'success');
+            setTimeout(() => { window.location.href = '/instances'; }, 600);
+        } else {
+            const msg = result.detail?.[0]?.msg ?? result.detail ?? 'Save failed';
+            Alpine.store('toasts').add(msg, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Save Instance';
+        }
+    } catch (err) {
+        Alpine.store('toasts').add('Network error', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Save Instance';
+    }
+});
+
+{% if instance %}
+window._editInstanceId = {{ instance.id }};
+async function testExistingConnection(id) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    try {
+        const resp = await fetch(`/api/instances/${id}/test`);
+        const data = await resp.json();
+        if (resp.ok) {
+            Alpine.store('toasts').add(`Connected — ${data.appName} v${data.version}`, 'success');
+        } else {
+            Alpine.store('toasts').add(data.detail || 'Connection failed', 'error');
+        }
+    } catch {
+        Alpine.store('toasts').add('Connection test failed', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test Connection';
+    }
+}
+{% endif %}
+</script>
+{% endblock %}

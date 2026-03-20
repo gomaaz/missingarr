@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Instances — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Instances</h1>
+    <a href="/instances/new" class="btn btn-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        Add Instance
+    </a>
+</div>
+
+{% if instances %}
+<div class="card">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Status</th>
+                <th>Interval</th>
+                <th>Skills</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for inst in instances %}
+        <tr>
+            <td><span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span></td>
+            <td style="font-weight:600;">{{ inst.name }}</td>
+            <td style="color:var(--text-muted);font-size:0.8rem;">{{ inst.url }}</td>
+            <td>
+                <span class="badge badge-{{ inst.connection_status }}">{{ inst.connection_status }}</span>
+                {% if not inst.enabled %}<span class="badge badge-unknown" style="margin-left:0.25rem;">disabled</span>{% endif %}
+            </td>
+            <td style="color:var(--text-secondary);">{{ inst.interval_minutes }}m</td>
+            <td>
+                {% if inst.search_missing_enabled %}<span class="badge badge-scheduled" style="margin-right:0.2rem;">missing</span>{% endif %}
+                {% if inst.search_upgrades_enabled %}<span class="badge badge-scheduled">upgrades</span>{% endif %}
+            </td>
+            <td>
+                <div style="display:flex;gap:0.4rem;">
+                    <a href="/instances/{{ inst.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+                    <button class="btn btn-danger btn-sm"
+                            onclick="deleteInstance({{ inst.id }}, '{{ inst.name|e }}')">
+                        Delete
+                    </button>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:3rem 1rem;">
+    <p style="color:var(--text-muted);">No instances configured yet.</p>
+    <a href="/instances/new" class="btn btn-primary" style="margin-top:0.5rem;">Add Instance</a>
+</div>
+{% endif %}
+
+<script>
+async function deleteInstance(id, name) {
+    if (!confirm(`Delete instance "${name}"? This will also remove all logs and history for this instance.`)) return;
+    const resp = await fetch(`/api/instances/${id}`, { method: 'DELETE' });
+    if (resp.ok || resp.status === 204) {
+        Alpine.store('toasts').add(`Instance "${name}" deleted`, 'info');
+        setTimeout(() => location.reload(), 800);
+    } else {
+        Alpine.store('toasts').add('Failed to delete instance', 'error');
+    }
+}
+</script>
+{% endblock %}

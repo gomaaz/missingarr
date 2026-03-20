@@ -1,0 +1,12 @@
+services:
+  missingarr:
+    image: gomaaz/missingarr:latest
+    container_name: missingarr
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - LOG_LEVEL=INFO
+      - TZ=Europe/Berlin
+    restart: unless-stopped

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <div>
+        <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Dashboard</h1>
+        <p style="margin:0.25rem 0 0;color:var(--text-muted);font-size:0.85rem;">
+            {{ cards|length }} instance{{ 's' if cards|length != 1 else '' }} configured
+        </p>
+    </div>
+    <a href="/instances/new" class="btn btn-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        Add Instance
+    </a>
+</div>
+
+{% if not cards %}
+<div class="card" style="text-align:center;padding:3rem 1rem;">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="margin:0 auto 1rem;display:block;">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+    </svg>
+    <h2 style="color:var(--text-secondary);font-size:1.1rem;margin:0 0 0.5rem;">No instances yet</h2>
+    <p style="color:var(--text-muted);font-size:0.85rem;margin:0 0 1.5rem;">Add your first Sonarr or Radarr instance to get started.</p>
+    <a href="/instances/new" class="btn btn-primary">Add Instance</a>
+</div>
+{% else %}
+<div class="instance-grid">
+{% for card in cards %}
+    {% set inst = card.instance %}
+    {% set state = card.state %}
+    {% set recent = card.recent %}
+    {% set conn = inst.connection_status %}
+    {% include "instances/card.html" %}
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

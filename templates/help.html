@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Help — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div style="max-width:860px;margin:0 auto;">
+<h1 style="margin:0 0 0.25rem;font-size:1.4rem;font-weight:700;">Help</h1>
+<p style="color:var(--text-muted);margin:0 0 2rem;font-size:0.9rem;">
+    Reference for all configuration options and features.
+</p>
+
+<!-- What is Missingarr -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>What is Missingarr?</strong></div>
+    <div class="card-body" style="font-size:0.9rem;line-height:1.7;color:var(--text-secondary);">
+        <p>Missingarr is a lightweight, self-hosted tool that connects to your <strong>Sonarr</strong> (TV shows) and <strong>Radarr</strong> (movies) instances and automatically searches for missing content and quality upgrades at configurable intervals.</p>
+        <p>It runs as a single Docker container with no external database required. Configuration is persisted in a SQLite file in the <code>/data</code> volume.</p>
+        <p>
+            <a href="https://github.com/gomaaz/missingarr" target="_blank" class="btn btn-secondary btn-sm" style="margin-right:0.5rem;">GitHub</a>
+            <a href="https://hub.docker.com/r/gomaaz/missingarr" target="_blank" class="btn btn-secondary btn-sm">Docker Hub</a>
+        </p>
+    </div>
+</div>
+
+<!-- Fields reference -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Field Reference</strong></div>
+    <div class="card-body">
+    <table class="table">
+        <thead><tr><th>Field</th><th>Description</th><th>Default</th></tr></thead>
+        <tbody>
+        {% for key, tip in tooltips.items() %}
+        <tr>
+            <td style="font-weight:600;font-size:0.8rem;white-space:nowrap;color:var(--accent);">{{ key.replace('_', ' ').title() }}</td>
+            <td style="font-size:0.82rem;color:var(--text-secondary);white-space:pre-wrap;">{{ tip }}</td>
+            <td style="font-size:0.8rem;color:var(--text-muted);">—</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<!-- Search Order -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Search Order Explained</strong></div>
+    <div class="card-body" style="font-size:0.9rem;color:var(--text-secondary);line-height:1.7;">
+        <ul style="padding-left:1.25rem;margin:0;">
+            <li><strong>Random</strong> — Items are shuffled before each run. Good for even distribution across your library.</li>
+            <li><strong>Smart</strong> — 50% of slots go to items from the last 30 days (recent), 30% random, 20% oldest. Balances new releases with backlog.</li>
+            <li><strong>Newest First</strong> — Recently added or released items are searched first.</li>
+            <li><strong>Oldest First</strong> — Items waiting longest are searched first. Useful for clearing old backlogs.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Missing Mode -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Missing Mode (Sonarr only)</strong></div>
+    <div class="card-body" style="font-size:0.9rem;color:var(--text-secondary);line-height:1.7;">
+        <ul style="padding-left:1.25rem;margin:0;">
+            <li><strong>Episode</strong> — Searches for individual missing episodes. Most granular.</li>
+            <li><strong>Season Packs</strong> — Searches for entire seasons as a pack. Useful if your indexers provide season packs.</li>
+            <li><strong>Show Batch</strong> — Triggers a search for the entire series at once. Use with caution — can be slow.</li>
+            <li><strong>Smart</strong> — Automatically chooses Season Pack if ≥50% of a season is missing, otherwise falls back to Episode search.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Rate Limiting -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Rate Limiting</strong></div>
+    <div class="card-body" style="font-size:0.9rem;color:var(--text-secondary);line-height:1.7;">
+        <p>Rate limiting prevents your indexers from being overwhelmed with search requests.</p>
+        <ul style="padding-left:1.25rem;margin:0;">
+            <li><strong>Rate Window</strong> — The rolling time window in minutes (e.g. 60 = last 60 minutes).</li>
+            <li><strong>Rate Cap</strong> — Maximum number of search actions allowed within that window.</li>
+            <li>Example: Window=60, Cap=25 → max 25 searches per hour.</li>
+            <li>The progress bar on each dashboard card shows current usage.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Quiet Hours -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Quiet Hours</strong></div>
+    <div class="card-body" style="font-size:0.9rem;color:var(--text-secondary);line-height:1.7;">
+        <p>During quiet hours, automatic searches are skipped. This is useful to avoid activity during night hours or when bandwidth is limited.</p>
+        <ul style="padding-left:1.25rem;margin:0;">
+            <li>Overnight ranges work: e.g. Start=23:00, End=06:00.</li>
+            <li><strong>Force runs</strong> from the dashboard always bypass quiet hours.</li>
+            <li>Leave both fields empty to disable quiet hours entirely.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- FAQ -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>FAQ & Troubleshooting</strong></div>
+    <div class="card-body" style="font-size:0.9rem;line-height:1.7;">
+        <div style="margin-bottom:1rem;">
+            <strong style="color:var(--text-primary);">Instance shows "offline"</strong>
+            <p style="color:var(--text-secondary);margin:0.25rem 0 0;">Missingarr cannot reach the configured URL. Check that the IP/port is correct and that your *arr instance is running. If running in Docker, make sure the network is accessible.</p>
+        </div>
+        <div style="margin-bottom:1rem;">
+            <strong style="color:var(--text-primary);">Instance shows "error"</strong>
+            <p style="color:var(--text-secondary);margin:0.25rem 0 0;">The connection works, but the API key is invalid. Find the correct key under Settings → General → API Key in your *arr instance.</p>
+        </div>
+        <div style="margin-bottom:1rem;">
+            <strong style="color:var(--text-primary);">Rate cap reached — searches stop mid-run</strong>
+            <p style="color:var(--text-secondary);margin:0.25rem 0 0;">Increase the Rate Cap or widen the Rate Window. The cap resets automatically after the window expires.</p>
+        </div>
+        <div>
+            <strong style="color:var(--text-primary);">Radarr v6 — "Invalid API key" even with correct key</strong>
+            <p style="color:var(--text-secondary);margin:0.25rem 0 0;">Radarr v6 removed Basic Authentication. Missingarr uses the X-Api-Key header which is the correct method. Make sure the API key is copied exactly without leading/trailing spaces.</p>
+        </div>
+    </div>
+</div>
+
+<!-- Links -->
+<div class="card">
+    <div class="card-header"><strong>External Links</strong></div>
+    <div class="card-body" style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+        <a href="https://github.com/gomaaz/missingarr" target="_blank" class="btn btn-secondary">Missingarr GitHub</a>
+        <a href="https://hub.docker.com/r/gomaaz/missingarr" target="_blank" class="btn btn-secondary">Docker Hub</a>
+        <a href="https://wiki.servarr.com/sonarr" target="_blank" class="btn btn-secondary">Sonarr Wiki</a>
+        <a href="https://wiki.servarr.com/radarr" target="_blank" class="btn btn-secondary">Radarr Wiki</a>
+        <a href="https://sonarr.tv/docs/api/" target="_blank" class="btn btn-secondary">Sonarr API Docs</a>
+        <a href="https://radarr.video/docs/api/" target="_blank" class="btn btn-secondary">Radarr API Docs</a>
+    </div>
+</div>
+
+</div>
+{% endblock %}

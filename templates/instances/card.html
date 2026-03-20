@@ -1,0 +1,137 @@
+{% set agent_status = state.get('status', 'off') if state else 'off' %}
+{% set next_run = state.get('next_run_at') if state else None %}
+{% set rate_used = state.get('rate_used', 0) if state else 0 %}
+{% set rate_cap = state.get('rate_cap', inst.rate_cap) %}
+{% set rate_pct = [((rate_used / rate_cap) * 100)|int, 100]|min if rate_cap > 0 else 0 %}
+{% set is_enabled = inst.enabled %}
+
+<div class="card instance-card {{ conn }}" id="icard-{{ inst.id }}"
+     x-data="countdownComponent('{{ next_run or '' }}', '{{ agent_status }}')"
+     x-init="init()"
+     x-destroy="destroy()"
+     hx-get="/api/instances/{{ inst.id }}/status"
+     hx-trigger="every 30s"
+     hx-swap="none"
+     hx-on::after-request="updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
+
+    <!-- Card Header -->
+    <div class="card-header">
+        <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;">
+            <span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span>
+            <span style="font-weight:600;font-size:0.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ inst.name }}">
+                {{ inst.name }} <span style="color:var(--text-muted);font-weight:400;">(#{{ inst.id }})</span>
+            </span>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
+            {% if not is_enabled %}
+                <span class="badge badge-unknown">OFF</span>
+            {% elif agent_status == 'running' %}
+                <span class="badge badge-running">RUNNING</span>
+            {% elif agent_status == 'quiet' %}
+                <span class="badge badge-unknown">QUIET</span>
+            {% else %}
+                <span class="badge badge-scheduled">WAIT</span>
+            {% endif %}
+            <button class="btn btn-force"
+                    onclick="forceRun({{ inst.id }}, 'search_missing')"
+                    {% if not is_enabled %}disabled{% endif %}
+                    title="Force run now (bypasses quiet hours)">
+                FORCE
+            </button>
+            <a href="/instances/{{ inst.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+        </div>
+    </div>
+
+    <!-- URL -->
+    <div style="padding:0.35rem 1rem;font-size:0.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15);">
+        <span class="badge {% if conn == 'online' %}badge-online{% elif conn == 'offline' %}badge-offline{% elif conn == 'error' %}badge-error{% else %}badge-unknown{% endif %}" style="margin-right:0.5rem;">{{ conn }}</span>
+        {{ inst.url }}
+    </div>
+
+    <div class="card-body">
+        <!-- Countdown -->
+        {% if is_enabled %}
+        <div class="countdown-display" x-text="display">--:--</div>
+        <div class="countdown-label">
+            {% if next_run %}
+                Next run · {{ inst.interval_minutes }}m interval
+            {% else %}
+                Starting up...
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="countdown-display" style="color:var(--text-muted);">Disabled</div>
+        <div class="countdown-label">Enable to activate searches</div>
+        {% endif %}
+
+        <!-- Rate window bar -->
+        <div style="margin-top:0.75rem;">
+            <div class="rate-label">
+                <span>Rate window ({{ inst.rate_window_minutes }}m)</span>
+                <span>{{ rate_used }} / {{ rate_cap }}</span>
+            </div>
+            <div class="rate-bar-container">
+                <div class="rate-bar {% if rate_pct >= 80 %}danger{% endif %}"
+                     style="width:{{ rate_pct }}%;"></div>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Wanted (last)</div>
+                <div class="stat-value">{{ state.get('last_wanted', 0) if state else 0 }}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Triggered (last)</div>
+                <div class="stat-value">{{ state.get('last_triggered', 0) if state else 0 }}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Interval</div>
+                <div class="stat-value">{{ inst.interval_minutes }}m</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Retry</div>
+                <div class="stat-value">{{ inst.retry_hours }}h</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Last Sync</div>
+                <div class="stat-value" style="font-size:0.8rem;">{{ state.get('last_sync', '-') if state else '-' }}</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Window</div>
+                <div class="stat-value">{{ inst.rate_window_minutes }}m</div>
+            </div>
+        </div>
+
+        <!-- Recent Actions -->
+        {% if recent %}
+        <div class="recent-actions">
+            <div class="recent-label">Recent Actions</div>
+            {% for r in recent %}
+            <div class="recent-item">
+                <span>{{ r.skill.replace('_', ' ').title() }} · {{ r.started_at[:16] }}</span>
+                <span class="ri-count">{{ r.triggered_count }}/{{ r.wanted_count }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="recent-actions">
+            <div class="recent-label">Recent Actions</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);padding:0.15rem 0;">—</div>
+        </div>
+        {% endif %}
+
+        <!-- Action buttons -->
+        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+            {% if inst.search_upgrades_enabled and inst.type == 'radarr' %}
+            <button class="btn btn-secondary btn-sm" onclick="forceRun({{ inst.id }}, 'search_upgrades')">
+                Force Upgrades
+            </button>
+            {% endif %}
+            <button class="btn btn-secondary btn-sm" onclick="toggleInstance({{ inst.id }}, {{ 'false' if is_enabled else 'true' }})">
+                {{ 'Disable' if is_enabled else 'Enable' }}
+            </button>
+        </div>
+    </div>
+</div>

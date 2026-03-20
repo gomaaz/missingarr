@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}History — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+    <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Search History</h1>
+    <button class="btn btn-danger btn-sm" onclick="clearHistory()">Clear History</button>
+</div>
+
+<div class="card">
+    {% if entries %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Instance</th>
+                <th>Skill</th>
+                <th>Wanted</th>
+                <th>Triggered</th>
+                <th>Duration</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for e in entries %}
+        {% set duration = '' %}
+        <tr>
+            <td style="color:var(--text-muted);font-size:0.8rem;white-space:nowrap;">{{ e.started_at[:16] }}</td>
+            <td>
+                <span style="font-weight:600;font-size:0.85rem;">{{ e.instance_name }}</span>
+            </td>
+            <td>
+                <span class="badge badge-scheduled">{{ e.skill.replace('_', ' ') }}</span>
+            </td>
+            <td style="font-weight:600;">{{ e.wanted_count }}</td>
+            <td style="font-weight:600;color:{{ 'var(--green)' if e.triggered_count > 0 else 'var(--text-muted)' }};">
+                {{ e.triggered_count }}
+            </td>
+            <td style="color:var(--text-muted);font-size:0.8rem;">
+                {% if e.finished_at %}
+                    {% set s = e.started_at %}
+                    {% set f = e.finished_at %}
+                    —
+                {% else %}
+                    running...
+                {% endif %}
+            </td>
+            <td>
+                {% if e.status == 'success' %}
+                    <span class="badge badge-online">success</span>
+                {% elif e.status == 'error' %}
+                    <span class="badge badge-offline" title="{{ e.error_message or '' }}">error</span>
+                {% else %}
+                    <span class="badge badge-running">running</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">
+        No search history yet. History is recorded after the first run.
+    </div>
+    {% endif %}
+</div>
+
+<script>
+async function clearHistory() {
+    if (!confirm('Clear all search history?')) return;
+    const resp = await fetch('/api/history', { method: 'DELETE' });
+    if (resp.ok) {
+        Alpine.store('toasts').add('History cleared', 'info');
+        setTimeout(() => location.reload(), 600);
+    }
+}
+</script>
+{% endblock %}
