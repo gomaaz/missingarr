@@ -56,6 +56,11 @@ pip install -r requirements.txt
 uvicorn backend.main:app --reload
 ```
 
+## Disclaimer
+
+> **This is a 100% vibe coding project.**
+> Built entirely with AI assistance (Claude Code). No guarantees — use at your own risk.
+
 ## License
 
 MIT
