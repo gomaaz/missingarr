@@ -4,41 +4,41 @@ Passed to Jinja2 templates via context.
 """
 
 TOOLTIPS = {
-    "name": "Frei wählbarer Name für diese Instanz, z.B. 'Radarr 4K' oder 'Sonarr Main'.",
-    "type": "Typ der Instanz: Sonarr für Serien, Radarr für Filme.",
-    "url": "Vollständige URL deiner Instanz inkl. Port, z.B. http://192.168.1.10:8989. Kein abschließender Slash.",
-    "api_key": "API-Schlüssel deiner *arr-Instanz. Zu finden unter: Einstellungen → Allgemein → API-Schlüssel.",
-    "enabled": "Aktiviert oder deaktiviert diese Instanz. Deaktivierte Instanzen werden nicht automatisch gesucht.",
-    "search_missing_enabled": "Sucht automatisch nach fehlenden Episoden (Sonarr) oder Filmen (Radarr).",
-    "search_upgrades_enabled": "Sucht automatisch nach Qualitäts-Upgrades für bereits vorhandene Titel (nur Radarr).",
-    "interval_minutes": "Wie oft (in Minuten) soll eine Suche gestartet werden? Empfehlung: 15–60 Minuten.",
-    "retry_hours": "Nach wie vielen Stunden soll ein fehlgeschlagener Suchvorgang erneut versucht werden?",
-    "rate_window_minutes": "Zeitfenster (in Minuten) für das Rate-Limiting. Innerhalb dieses Fensters wird die Rate Cap eingehalten.",
-    "rate_cap": "Maximale Anzahl an Such-Aktionen innerhalb des Rate-Windows. Verhindert API-Überlastung.",
+    "name": "A custom name for this instance, e.g. 'Radarr 4K' or 'Sonarr Main'.",
+    "type": "Instance type: Sonarr for TV shows, Radarr for movies.",
+    "url": "Full URL of your instance including port, e.g. http://192.168.1.10:8989. No trailing slash.",
+    "api_key": "API key of your *arr instance. Found under: Settings → General → API Key.",
+    "enabled": "Enables or disables this instance. Disabled instances will not be searched automatically.",
+    "search_missing_enabled": "Automatically searches for missing episodes (Sonarr) or movies (Radarr).",
+    "search_upgrades_enabled": "Automatically searches for quality upgrades of existing titles (Radarr only).",
+    "interval_minutes": "How often (in minutes) a search should be triggered. Recommended: 15–60 minutes.",
+    "retry_hours": "After how many hours a failed search attempt should be retried.",
+    "rate_window_minutes": "Rolling time window (in minutes) for rate limiting. The rate cap applies within this window.",
+    "rate_cap": "Maximum number of search actions allowed within the rate window. Prevents API overload.",
     "search_order": (
-        "Reihenfolge, in der fehlende Titel gesucht werden:\n"
-        "• Random: Zufällig – gleichmäßige Verteilung\n"
-        "• Smart: 50% neueste, 30% zufällig, 20% älteste Einträge\n"
-        "• Newest First: Neueste Titel zuerst\n"
-        "• Oldest First: Älteste Titel zuerst"
+        "Order in which missing titles are searched:\n"
+        "• Random: Shuffled — even distribution across your library\n"
+        "• Smart: 50% newest, 30% random, 20% oldest entries\n"
+        "• Newest First: Most recently added or released titles first\n"
+        "• Oldest First: Titles waiting longest are searched first"
     ),
     "missing_mode": (
-        "Bestimmt wie fehlende Episoden gesucht werden (nur Sonarr):\n"
-        "• Episode: Einzelne Episoden werden gesucht\n"
-        "• Season Packs: Ganze Staffeln werden als Paket gesucht\n"
-        "• Show Batch: Komplette Serien werden gesucht\n"
-        "• Smart: Automatische Wahl – Season Pack wenn ≥50% einer Staffel fehlen, sonst Episode"
+        "Determines how missing episodes are searched (Sonarr only):\n"
+        "• Episode: Search for individual missing episodes\n"
+        "• Season Packs: Search for entire seasons as a pack\n"
+        "• Show Batch: Search for the entire series at once\n"
+        "• Smart: Auto-selects Season Pack if ≥50% of a season is missing, otherwise Episode"
     ),
-    "missing_per_run": "Maximale Anzahl fehlender Titel, die pro Suchlauf verarbeitet werden.",
-    "upgrades_per_run": "Maximale Anzahl von Upgrade-Kandidaten, die pro Suchlauf verarbeitet werden.",
-    "seconds_between_actions": "Wartezeit in Sekunden zwischen einzelnen API-Aufrufen. Verhindert Überlastung.",
-    "hours_after_release": "Warte X Stunden nach dem Erscheinungsdatum, bevor ein Titel gesucht wird. 0 = sofort suchen.",
+    "missing_per_run": "Maximum number of missing titles processed per search run.",
+    "upgrades_per_run": "Maximum number of upgrade candidates processed per search run.",
+    "seconds_between_actions": "Delay in seconds between individual API calls. Prevents overloading the instance.",
+    "hours_after_release": "Wait X hours after the release date before searching for a title. Set to 0 to search immediately.",
     "upgrade_source": (
-        "Quelle für Upgrade-Kandidaten (nur Radarr):\n"
-        "• Wanted List Only: Nutzt Radarrs eigene Upgrade-Liste (cutoff unmet)\n"
-        "• Monitored Items Only: Alle überwachten Filme mit vorhandener Datei\n"
-        "• Both: Kombiniert beide Quellen"
+        "Source for upgrade candidates (Radarr only):\n"
+        "• Wanted List Only: Uses Radarr's built-in upgrade list (cutoff unmet)\n"
+        "• Monitored Items Only: All monitored movies that already have a file\n"
+        "• Both: Combines both sources"
     ),
-    "quiet_start": "Beginn der Ruhezeit (HH:MM). In diesem Zeitraum werden keine automatischen Suchen gestartet.",
-    "quiet_end": "Ende der Ruhezeit (HH:MM). Force-Runs aus dem Dashboard ignorieren die Ruhezeit.",
+    "quiet_start": "Start of quiet hours (HH:MM). No automatic searches will run during this period.",
+    "quiet_end": "End of quiet hours (HH:MM). Force runs from the dashboard always bypass quiet hours.",
 }

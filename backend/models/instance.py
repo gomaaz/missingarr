@@ -35,34 +35,34 @@ class InstanceBase(BaseModel):
     def validate_url(cls, v: str) -> str:
         v = v.rstrip("/")
         if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError("URL muss mit http:// oder https:// beginnen")
+            raise ValueError("URL must start with http:// or https://")
         return v
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("Name darf nicht leer sein")
+            raise ValueError("Name must not be empty")
         if len(v) > 100:
-            raise ValueError("Name darf max. 100 Zeichen haben")
+            raise ValueError("Name must not exceed 100 characters")
         return v.strip()
 
     @field_validator("interval_minutes")
     @classmethod
     def validate_interval(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("Interval muss mindestens 1 Minute sein")
+            raise ValueError("Interval must be at least 1 minute")
         if v > 10080:
-            raise ValueError("Interval darf max. 10080 Minuten (1 Woche) sein")
+            raise ValueError("Interval must not exceed 10080 minutes (1 week)")
         return v
 
     @field_validator("rate_cap")
     @classmethod
     def validate_rate_cap(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("Rate Cap muss mindestens 1 sein")
+            raise ValueError("Rate Cap must be at least 1")
         if v > 1000:
-            raise ValueError("Rate Cap darf max. 1000 sein")
+            raise ValueError("Rate Cap must not exceed 1000")
         return v
 
     @field_validator("quiet_start", "quiet_end")
@@ -72,31 +72,31 @@ class InstanceBase(BaseModel):
             return None
         parts = v.split(":")
         if len(parts) != 2:
-            raise ValueError("Zeit muss im Format HH:MM sein")
+            raise ValueError("Time must be in HH:MM format")
         try:
             h, m = int(parts[0]), int(parts[1])
             if not (0 <= h <= 23 and 0 <= m <= 59):
                 raise ValueError
         except ValueError:
-            raise ValueError("Zeit muss im Format HH:MM sein (00:00–23:59)")
+            raise ValueError("Time must be in HH:MM format (00:00–23:59)")
         return f"{h:02d}:{m:02d}"
 
     @field_validator("missing_per_run", "upgrades_per_run")
     @classmethod
     def validate_per_run(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("Muss mindestens 1 sein")
+            raise ValueError("Must be at least 1")
         if v > 100:
-            raise ValueError("Darf max. 100 sein")
+            raise ValueError("Must not exceed 100")
         return v
 
     @field_validator("seconds_between_actions")
     @classmethod
     def validate_seconds(cls, v: int) -> int:
         if v < 0:
-            raise ValueError("Darf nicht negativ sein")
+            raise ValueError("Must not be negative")
         if v > 3600:
-            raise ValueError("Darf max. 3600 Sekunden sein")
+            raise ValueError("Must not exceed 3600 seconds")
         return v
 
 
@@ -107,9 +107,9 @@ class InstanceCreate(InstanceBase):
     @classmethod
     def validate_api_key(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("API-Key darf nicht leer sein")
+            raise ValueError("API key must not be empty")
         if len(v) < 8:
-            raise ValueError("API-Key muss mindestens 8 Zeichen haben")
+            raise ValueError("API key must be at least 8 characters")
         return v.strip()
 
 
@@ -123,7 +123,7 @@ class InstanceUpdate(InstanceBase):
             return None
         v = v.strip()
         if len(v) < 8:
-            raise ValueError("API-Key muss mindestens 8 Zeichen haben")
+            raise ValueError("API key must be at least 8 characters")
         return v
 
 
