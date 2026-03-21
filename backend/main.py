@@ -57,10 +57,10 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# Session cookie (required for auth)
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="ma_session", https_only=False)
-# Auth gate — redirects unauthenticated requests to /login
+# Middleware order: last added = outermost = runs first.
+# SessionMiddleware must wrap AuthMiddleware so session is available when auth checks it.
 app.add_middleware(AuthMiddleware)
+app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="ma_session", https_only=False)
 
 # Static files & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
