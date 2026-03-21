@@ -2,10 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from backend.config import settings
 from backend.database import init_db
@@ -13,6 +14,7 @@ from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
+from backend.auth import AuthMiddleware, verify_password, auth_enabled
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -54,6 +56,11 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# Session cookie (required for auth)
+app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="ma_session", https_only=False)
+# Auth gate — redirects unauthenticated requests to /login
+app.add_middleware(AuthMiddleware)
+
 # Static files & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -66,6 +73,7 @@ def template_ctx(request: Request, **extra) -> dict:
         "app_name": settings.app_name,
         "version": settings.version,
         "tooltips": TOOLTIPS,
+        "auth_enabled": auth_enabled(),
         **extra,
     }
 
@@ -170,3 +178,45 @@ async def help_page(request: Request):
         "help.html",
         template_ctx(request),
     )
+
+
+# ─── Auth routes ───────────────────────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/", error: str = ""):
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=302)
+    if request.session.get("user"):
+        return RedirectResponse(next or "/", status_code=302)
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "app_name": settings.app_name, "next": next, "error": error},
+    )
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(default="/"),
+):
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=302)
+
+    if username == settings.auth_username and verify_password(password):
+        request.session["user"] = username
+        return RedirectResponse(next or "/", status_code=302)
+
+    # Invalid credentials — re-render login with error
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "app_name": settings.app_name, "next": next, "error": "Invalid username or password."},
+        status_code=401,
+    )
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=302)

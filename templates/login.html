@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — {{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;">
+    <div style="width:100%;max-width:360px;">
+
+        <!-- Logo -->
+        <div style="text-align:center;margin-bottom:2rem;">
+            <div style="display:inline-flex;align-items:center;gap:0.5rem;font-size:1.4rem;font-weight:700;color:var(--text-primary);">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                Missing<span style="color:var(--orange);">arr</span>
+            </div>
+        </div>
+
+        <div class="card" style="padding:2rem;">
+            <h2 style="margin:0 0 1.5rem;font-size:1.1rem;font-weight:600;text-align:center;color:var(--text-secondary);">Sign in</h2>
+
+            {% if error %}
+            <div style="background:rgba(220,50,50,0.12);border:1px solid rgba(220,50,50,0.3);border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.85rem;color:#e05050;">
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <form method="post" action="/login">
+                <input type="hidden" name="next" value="{{ next }}">
+
+                <div style="margin-bottom:1rem;">
+                    <label class="form-label">Username</label>
+                    <input type="text" name="username" class="form-input"
+                           autocomplete="username" autofocus required
+                           style="width:100%;">
+                </div>
+
+                <div style="margin-bottom:1.5rem;">
+                    <label class="form-label">Password</label>
+                    <input type="password" name="password" class="form-input"
+                           autocomplete="current-password" required
+                           style="width:100%;">
+                </div>
+
+                <button type="submit" class="btn btn-primary" style="width:100%;">
+                    Sign in
+                </button>
+            </form>
+        </div>
+
+        <p style="text-align:center;margin-top:1rem;font-size:0.78rem;color:var(--text-muted);">
+            Set <code>AUTH_USERNAME</code> and <code>AUTH_PASSWORD</code> in your environment.
+        </p>
+    </div>
+</div>
+</body>
+</html>
