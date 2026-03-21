@@ -1,6 +1,8 @@
 # Missingarr
 
-Automated missing content & quality upgrade searcher for **Sonarr** and **Radarr**.
+A lightweight alternative to [Huntarr.io](https://huntarr.io) with one single purpose: automatically search for **missing and upgrade-eligible titles** in your **Sonarr** and **Radarr** instances.
+
+> **Disclaimer:** This is a 100 % vibe-coded project — built for personal use and shared as-is. It does not aim to replicate all Huntarr features, just the core search loop in a minimal footprint.
 
 - Configurable search intervals, rate limiting, quiet hours
 - Multiple instances (mix of Sonarr + Radarr)

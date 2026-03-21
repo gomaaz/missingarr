@@ -210,7 +210,7 @@ class SearchMissingSkill(BaseSkill):
         episode_id = record.get("id")
         series_id = record.get("seriesId")
         season_number = record.get("seasonNumber")
-        series_title = record.get("series", {}).get("title", "") or record.get("seriesTitle", "")
+        series_title = (record.get("series") or {}).get("title", "") or record.get("seriesTitle", "")
         ep_title = record.get("title", "")
 
         if mode == "episode" and episode_id:

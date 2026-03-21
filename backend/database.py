@@ -125,3 +125,14 @@ def init_db():
                 value TEXT NOT NULL
             );
         """)
+
+        # Migrations: add columns introduced after initial release
+        for sql in [
+            "ALTER TABLE search_history_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
+            "ALTER TABLE searched_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
+            "ALTER TABLE searched_items ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+        ]:
+            try:
+                conn.execute(sql)
+            except Exception:
+                pass  # column already exists
