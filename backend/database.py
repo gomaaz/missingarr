@@ -119,4 +119,9 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_searched_instance ON searched_items(instance_id);
             CREATE INDEX IF NOT EXISTS idx_searched_at ON searched_items(searched_at DESC);
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)

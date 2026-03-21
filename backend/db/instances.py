@@ -1,6 +1,7 @@
 import sqlite3
 from typing import Optional
 from backend.database import get_db
+from backend.crypto import encrypt, decrypt
 
 
 def _mask_api_key(key: str) -> str:
@@ -10,7 +11,10 @@ def _mask_api_key(key: str) -> str:
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
-    return dict(row)
+    d = dict(row)
+    if "api_key" in d and d["api_key"]:
+        d["api_key"] = decrypt(d["api_key"])
+    return d
 
 
 def get_all(include_disabled: bool = True) -> list[dict]:
@@ -50,7 +54,7 @@ def create(data: dict) -> dict:
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                data["name"], data["type"], data["url"], data["api_key"],
+                data["name"], data["type"], data["url"], encrypt(data["api_key"]),
                 int(data.get("enabled", True)),
                 int(data.get("search_missing_enabled", True)),
                 int(data.get("search_upgrades_enabled", False)),
@@ -82,7 +86,12 @@ def update(instance_id: int, data: dict) -> Optional[dict]:
         if not existing:
             return None
 
-        api_key = data.get("api_key") or existing["api_key"]
+        # Keep existing encrypted key if no new key provided
+        raw_key = data.get("api_key")
+        if raw_key:
+            api_key = encrypt(raw_key)
+        else:
+            api_key = existing["api_key"]  # already encrypted in DB
 
         conn.execute(
             """
