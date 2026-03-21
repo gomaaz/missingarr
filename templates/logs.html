@@ -2,19 +2,46 @@
 {% block title %}Logs — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div x-data x-init="$store.logs.init()">
+<div x-data="logsTable()" x-init="init()">
+
+    <!-- Toolbar -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.75rem;">
         <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Logs</h1>
-        <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+
+            <!-- Instance filter -->
+            <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
+                    x-model="filterInstance" @change="page = 0">
+                <option value="">All instances</option>
+                {% for inst in all_instances %}
+                <option value="{{ inst.name }}">{{ inst.name }}</option>
+                {% endfor %}
+            </select>
+
+            <!-- Level filter -->
+            <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
+                    x-model="filterLevel" @change="page = 0">
+                <option value="">All levels</option>
+                <option value="info">Info</option>
+                <option value="warn">Warn</option>
+                <option value="error">Error</option>
+                <option value="debug">Debug</option>
+            </select>
+
+            <!-- Per page -->
+            <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
+                    x-model.number="perPage" @change="page = 0">
+                <option value="20">20 / page</option>
+                <option value="50">50 / page</option>
+                <option value="100">100 / page</option>
+            </select>
+
             <!-- Live toggle -->
-            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">
-                <span x-text="$store.logs.enabled ? 'Live ●' : 'Paused ○'"
-                      :style="$store.logs.enabled ? 'color:var(--green)' : 'color:var(--text-muted)'"></span>
-                <input type="checkbox" :checked="$store.logs.enabled"
-                       @change="$store.logs.toggleEnabled()" style="display:none;">
-                <button @click="$store.logs.toggleEnabled()" class="btn btn-secondary btn-sm"
-                        x-text="$store.logs.enabled ? 'Pause' : 'Resume'"></button>
-            </label>
+            <button @click="$store.logs.toggleEnabled()" class="btn btn-secondary btn-sm"
+                    :class="$store.logs.enabled ? 'btn-active' : ''"
+                    x-text="$store.logs.enabled ? 'Live ●' : 'Paused ○'"
+                    :style="$store.logs.enabled ? 'color:var(--green)' : ''">
+            </button>
 
             <!-- Debug toggle -->
             <button @click="$store.logs.toggleDebug()" class="btn btn-secondary btn-sm"
@@ -27,42 +54,127 @@
         </div>
     </div>
 
-    <!-- Log container -->
-    <div class="card">
-        <div id="log-container"
-             style="padding:0.75rem 1rem;min-height:400px;max-height:70vh;overflow-y:auto;font-family:'JetBrains Mono',monospace;">
+    <!-- Table -->
+    <div class="card" style="overflow:hidden;">
+        <div style="overflow-x:auto;">
+            <table class="table" style="table-layout:fixed;width:100%;">
+                <colgroup>
+                    <col style="width:140px;">
+                    <col style="width:130px;">
+                    <col style="width:60px;">
+                    <col style="width:110px;">
+                    <col>
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Instance</th>
+                        <th>Level</th>
+                        <th>Skill</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(entry, i) in pageEntries()" :key="i">
+                        <tr :class="`log-row-${entry.level}`">
+                            <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;font-family:'JetBrains Mono',monospace;"
+                                x-text="fmt(entry.created_at)"></td>
+                            <td style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                x-text="entry.instance_name" :title="entry.instance_name"></td>
+                            <td>
+                                <span :class="`badge log-badge-${entry.level}`" x-text="entry.level"></span>
+                            </td>
+                            <td style="font-size:0.78rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                x-text="(entry.skill || '').replace('_',' ')"></td>
+                            <td style="font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                x-text="entry.message" :title="entry.message"></td>
+                        </tr>
+                    </template>
 
-            <!-- SSE live entries -->
-            <template x-for="entry in $store.logs.entries" :key="entry.id ?? Math.random()">
-                <div class="log-entry" :class="$store.logs.levelClass(entry.level)">
-                    <span class="log-time" x-text="$store.logs.formatTime(entry.created_at)">—</span>
-                    <span class="log-inst" x-text="entry.instance_name">—</span>
-                    <span class="log-skill" x-text="entry.skill ?? ''"></span>
-                    <span class="log-msg" x-text="entry.message">—</span>
-                </div>
-            </template>
+                    <template x-if="filteredEntries().length === 0">
+                        <tr>
+                            <td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;">
+                                No log entries yet.
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
 
-            <!-- Static recent entries (before SSE connects) -->
-            <template x-if="$store.logs.entries.length === 0">
-                <div>
-                {% for e in recent %}
-                <div class="log-entry level-{{ e.level }}">
-                    <span class="log-time">{{ e.created_at[:19] }}</span>
-                    <span class="log-inst">{{ e.instance_name }}</span>
-                    <span class="log-skill">{{ e.skill or '' }}</span>
-                    <span class="log-msg">{{ e.message }}</span>
-                </div>
-                {% endfor %}
-                {% if not recent %}
-                <div style="color:var(--text-muted);font-size:0.85rem;padding:1rem 0;">No log entries yet.</div>
-                {% endif %}
-                </div>
-            </template>
+        <!-- Pagination -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
+            <span x-text="paginationLabel()"></span>
+            <div style="display:flex;gap:0.4rem;">
+                <button class="btn btn-secondary btn-sm" @click="page--" :disabled="page === 0">← Prev</button>
+                <template x-for="p in pageCount()" :key="p">
+                    <button class="btn btn-sm"
+                            :class="page === p - 1 ? 'btn-primary' : 'btn-secondary'"
+                            @click="page = p - 1"
+                            x-text="p"
+                            x-show="Math.abs(page - (p-1)) <= 2">
+                    </button>
+                </template>
+                <button class="btn btn-secondary btn-sm" @click="page++" :disabled="page >= pageCount() - 1">Next →</button>
+            </div>
         </div>
     </div>
 </div>
 
+<style>
+.log-row-error td { background: rgba(220,50,50,0.06); }
+.log-row-warn  td { background: rgba(220,160,50,0.06); }
+.log-row-debug td { opacity: 0.6; }
+
+.log-badge-info  { background: var(--border); color: var(--text-secondary); }
+.log-badge-warn  { background: rgba(220,160,50,0.25); color: #e0a030; }
+.log-badge-error { background: rgba(220,50,50,0.25); color: #e05050; }
+.log-badge-debug { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+</style>
+
 <script>
+function logsTable() {
+    return {
+        page: 0,
+        perPage: 20,
+        filterInstance: '',
+        filterLevel: '',
+
+        init() {
+            this.$watch('$store.logs.entries', () => { /* reactivity via Alpine */ });
+        },
+
+        filteredEntries() {
+            let entries = this.$store.logs.entries;
+            if (this.filterInstance) entries = entries.filter(e => e.instance_name === this.filterInstance);
+            if (this.filterLevel)    entries = entries.filter(e => e.level === this.filterLevel);
+            return entries;
+        },
+
+        pageEntries() {
+            const filtered = this.filteredEntries();
+            const start = this.page * this.perPage;
+            return filtered.slice(start, start + this.perPage);
+        },
+
+        pageCount() {
+            return Math.max(1, Math.ceil(this.filteredEntries().length / this.perPage));
+        },
+
+        paginationLabel() {
+            const total = this.filteredEntries().length;
+            const start = this.page * this.perPage + 1;
+            const end = Math.min(start + this.perPage - 1, total);
+            return total === 0 ? '0 entries' : `${start}–${end} of ${total}`;
+        },
+
+        fmt(ts) {
+            if (!ts) return '—';
+            return ts.replace('T', ' ').substring(0, 19);
+        }
+    };
+}
+
 async function clearAllLogs() {
     if (!confirm('Clear all logs from database?')) return;
     const resp = await fetch('/api/activity', { method: 'DELETE' });
@@ -71,18 +183,5 @@ async function clearAllLogs() {
         Alpine.store('logs').clear();
     }
 }
-
-// Auto-scroll to bottom when new entries arrive (unless user scrolled up)
-const logContainer = document.getElementById('log-container');
-let userScrolled = false;
-logContainer.addEventListener('scroll', () => {
-    const nearBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 50;
-    userScrolled = !nearBottom;
-});
-// Watch for new SSE entries via MutationObserver
-const obs = new MutationObserver(() => {
-    if (!userScrolled) logContainer.scrollTop = logContainer.scrollHeight;
-});
-obs.observe(logContainer, { childList: true, subtree: true });
 </script>
 {% endblock %}
