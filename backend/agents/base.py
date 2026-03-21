@@ -127,18 +127,24 @@ class BaseAgent(ABC):
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
 
-    def _run_skill(self, skill_name: str):
+    def _run_skill(self, skill_name: str, force: bool = False):
         skill = self._get_skill(skill_name)
         if not skill:
             return
 
-        # Check quiet hours (skip health_check)
-        if skill_name != "health_check" and self._in_quiet_hours():
+        # Check quiet hours — skipped for health_check and force runs
+        if skill_name != "health_check" and not force and self._in_quiet_hours():
             self.log("debug", skill_name, "Skipping — quiet hours active")
             self.state["status"] = "quiet"
             return
 
-        self.state["status"] = "running"
+        # Guard against concurrent runs of the same skill
+        with self._lock:
+            if self.state.get("status") == "running":
+                self.log("warn", skill_name, "Already running — skipping duplicate trigger")
+                return
+            self.state["status"] = "running"
+
         try:
             skill.execute(self)
         except Exception as exc:
@@ -155,13 +161,9 @@ class BaseAgent(ABC):
             self.log("warn", "system", f"Skill '{skill_name}' not available on this agent")
             return
 
-        if not force and self._in_quiet_hours():
-            self.log("info", "system", "Manual trigger skipped — quiet hours (use FORCE to override)")
-            return
-
         t = threading.Thread(
             target=self._run_skill,
-            args=[skill_name],
+            args=[skill_name, force],
             daemon=True,
         )
         t.start()
