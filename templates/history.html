@@ -2,16 +2,19 @@
 {% block title %}History — {{ app_name }}{% endblock %}
 
 {% block content %}
-<script>
-const _historyRows = {{ items | tojson }};
-</script>
 <div x-data="{
     search: '',
     instance: '',
     type: '',
     perPage: 50,
     page: 1,
-    rows: _historyRows,
+    rows: [],
+    loading: true,
+    async init() {
+        const resp = await fetch('/api/history/items?limit=1000');
+        this.rows = resp.ok ? await resp.json() : [];
+        this.loading = false;
+    },
     get filtered() {
         return this.rows.filter(r => {
             if (this.instance && r.instance_name !== this.instance) return false;
@@ -71,7 +74,11 @@ const _historyRows = {{ items | tojson }};
 </div>
 
 <div class="card" style="overflow:auto;">
-    <template x-if="paged.length > 0">
+    <template x-if="loading">
+        <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">Loading…</div>
+    </template>
+
+    <template x-if="!loading && paged.length > 0">
         <table class="table">
             <thead>
                 <tr>
@@ -130,7 +137,7 @@ const _historyRows = {{ items | tojson }};
         </table>
     </template>
 
-    <template x-if="paged.length === 0">
+    <template x-if="!loading && paged.length === 0">
         <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">
             <template x-if="rows.length === 0">
                 <span>No search history yet. History is recorded after the first run.</span>

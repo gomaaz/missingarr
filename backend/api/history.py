@@ -20,6 +20,19 @@ def list_history(
     )
 
 
+@router.get("/items")
+def list_items_flat(
+    instance_id: Optional[int] = None,
+    item_type: Optional[str] = None,
+    limit: int = 500,
+):
+    return db.history.query_items_flat(
+        instance_id=instance_id,
+        item_type=item_type,
+        limit=min(limit, 1000),
+    )
+
+
 @router.delete("")
 def clear_history():
     db.history.clear()
