@@ -2,13 +2,16 @@
 {% block title %}History — {{ app_name }}{% endblock %}
 
 {% block content %}
+<script>
+const _historyRows = {{ items | tojson }};
+</script>
 <div x-data="{
     search: '',
     instance: '',
     type: '',
     perPage: 50,
     page: 1,
-    rows: {{ items | tojson }},
+    rows: _historyRows,
     get filtered() {
         return this.rows.filter(r => {
             if (this.instance && r.instance_name !== this.instance) return false;
