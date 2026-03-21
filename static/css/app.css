@@ -229,6 +229,53 @@ select.form-control { cursor: pointer; }
 select.form-control option { background: var(--bg-secondary); }
 
 .form-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+/* Dark select / dropdown — applied to both .form-control and .form-select */
+select,
+select.form-control,
+select.form-select,
+.form-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--bg-secondary);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    padding-right: 2rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    outline: none;
+}
+select:focus,
+select.form-control:focus,
+select.form-select:focus,
+.form-select:focus {
+    border-color: var(--accent);
+}
+select option,
+select.form-control option,
+select.form-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* Standalone form-input for login etc */
+.form-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.9rem;
+    transition: border-color 0.15s;
+    outline: none;
+}
+.form-input:focus { border-color: var(--accent); }
+.form-input::placeholder { color: var(--text-muted); }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .form-section {
     border: 1px solid var(--border);
