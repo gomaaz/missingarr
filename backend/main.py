@@ -14,7 +14,7 @@ from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
-from backend.auth import AuthMiddleware, verify_password, auth_enabled
+from backend.auth import AuthMiddleware, verify_password, auth_enabled, init_auth
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -27,6 +27,7 @@ logger = logging.getLogger("missingarr")
 async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.app_name} v{settings.version}")
+    init_auth()
     init_db()
 
     # Wire broadcaster to current event loop

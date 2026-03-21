@@ -1,8 +1,9 @@
 """
 Auth helpers for Missingarr.
 
-Set AUTH_USERNAME + AUTH_PASSWORD env vars to enable login protection.
-Leave AUTH_PASSWORD empty to run without authentication (trusted network only).
+Authentication is always active. Set AUTH_USERNAME and AUTH_PASSWORD env vars
+to configure credentials. If AUTH_PASSWORD is not set, a random password is
+generated at startup and printed to the logs.
 """
 import secrets
 import logging
@@ -16,39 +17,45 @@ from backend.config import settings
 logger = logging.getLogger("missingarr.auth")
 
 _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Paths that never require authentication
-_PUBLIC = {"/login", "/static"}
 _PUBLIC_PREFIXES = ("/static/", "/api/health")
+
+# Resolved at startup — either from env var or auto-generated
+_active_password: str = ""
+
+
+def init_auth() -> None:
+    """Call once at startup to resolve the active password."""
+    global _active_password
+    if settings.auth_password:
+        _active_password = settings.auth_password
+        logger.info(f"Auth enabled — username: {settings.auth_username}")
+    else:
+        _active_password = secrets.token_urlsafe(12)
+        logger.warning("=" * 60)
+        logger.warning("  AUTH_PASSWORD not set — generated a temporary password:")
+        logger.warning(f"  Username : {settings.auth_username}")
+        logger.warning(f"  Password : {_active_password}")
+        logger.warning("  Set AUTH_PASSWORD in your environment to make it permanent.")
+        logger.warning("=" * 60)
 
 
 def auth_enabled() -> bool:
-    return bool(settings.auth_password)
+    return True
 
 
 def verify_password(plain: str) -> bool:
-    """Constant-time comparison against the configured password."""
-    if not settings.auth_password:
+    """Constant-time comparison. Supports plain-text and bcrypt hashes."""
+    if not _active_password:
         return False
-    # Support both plain-text and bcrypt-hashed passwords
-    stored = settings.auth_password
-    if stored.startswith("$2"):
+    if _active_password.startswith("$2"):
         try:
-            return _pwd_ctx.verify(plain, stored)
+            return _pwd_ctx.verify(plain, _active_password)
         except Exception:
             return False
-    # Plain-text fallback — use constant-time compare
-    return secrets.compare_digest(plain.encode(), stored.encode())
-
-
-def hash_password(plain: str) -> str:
-    """Generate a bcrypt hash for storage in SECRET_KEY env var."""
-    return _pwd_ctx.hash(plain)
+    return secrets.compare_digest(plain.encode(), _active_password.encode())
 
 
 def is_authenticated(request: Request) -> bool:
-    if not auth_enabled():
-        return True
     return request.session.get("user") == settings.auth_username
 
 
@@ -56,7 +63,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        # Always allow public paths
         if path == "/login" or path.startswith(_PUBLIC_PREFIXES):
             return await call_next(request)
 
