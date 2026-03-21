@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 COPY templates/ ./templates/
 COPY static/ ./static/
+COPY VERSION ./VERSION
 
 VOLUME ["/data"]
 

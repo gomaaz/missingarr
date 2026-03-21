@@ -1,12 +1,20 @@
 import secrets
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+# Read version from VERSION file as fallback when env var is not set
+def _read_version_file() -> str:
+    for candidate in (Path("VERSION"), Path(__file__).parent.parent / "VERSION"):
+        if candidate.exists():
+            return candidate.read_text().strip()
+    return "dev"
 
 
 class Settings(BaseSettings):
     database_url: str = "./data/missingarr.db"
     log_level: str = "INFO"
     tz: str = "Europe/Berlin"
-    version: str = "dev"
+    version: str = _read_version_file()
     app_name: str = "Missingarr"
     max_log_entries: int = 10000
 
