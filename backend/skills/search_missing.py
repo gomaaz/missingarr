@@ -15,10 +15,19 @@ class SearchMissingSkill(BaseSkill):
         triggered_count = 0
 
         try:
-            agent.log("info", self.name, "Searching for missing content...")
+            per_run = cfg.get("missing_per_run", 5)
+            search_order = cfg.get("search_order", "random")
+            missing_mode = cfg.get("missing_mode", "episode")
+            delay = cfg.get("seconds_between_actions", 2)
+
+            # Fetch a larger pool so random order picks from a broad set,
+            # not just the same top-N items every run.
+            fetch_size = min(per_run * 10, 100) if search_order == "random" else per_run * 2
+
+            agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, per_run={per_run})...")
 
             params = {
-                "pageSize": cfg.get("missing_per_run", 5),
+                "pageSize": fetch_size,
                 "page": 1,
                 "monitored": "true",
                 "sortKey": "airDateUtc" if cfg["type"] == "sonarr" else "physicalRelease",
@@ -28,7 +37,6 @@ class SearchMissingSkill(BaseSkill):
             resp = agent.http_get("/api/v3/wanted/missing", params=params)
             records = resp.get("records", [])
             total = resp.get("totalRecords", 0)
-            wanted_count = min(len(records), cfg.get("missing_per_run", 5))
 
             if not records:
                 agent.log("info", self.name, "No missing content found")
@@ -56,27 +64,44 @@ class SearchMissingSkill(BaseSkill):
                 records = filtered
 
             if not records:
-                agent.log("info", self.name, f"All {wanted_count} results are too recent (hours_after_release={hours}h)")
-                db.history.finish_run(run_id, wanted_count, 0, "success")
+                agent.log("info", self.name, f"All results are too recent (hours_after_release={hours}h)")
+                db.history.finish_run(run_id, 0, 0, "success")
                 return
 
-            # Apply search_order
-            records = self._apply_order(records, cfg.get("search_order", "random"), cfg["type"])
+            # Apply search_order to the full pool
+            records = self._apply_order(records, search_order, cfg["type"])
+
+            # Filter already-searched items from cache, then take per_run
+            skipped = 0
+            candidates = []
+            for record in records:
+                cache_key = self._cache_key(cfg["type"], record, missing_mode)
+                if cache_key and db.searched.exists(cfg["id"], cache_key):
+                    skipped += 1
+                    continue
+                candidates.append(record)
+                if len(candidates) >= per_run:
+                    break
+
+            wanted_count = len(candidates)
+
+            if skipped:
+                agent.log("debug", self.name, f"Skipped {skipped} already-searched items from pool of {len(records)}")
+
+            if not candidates:
+                agent.log("info", self.name, f"All {skipped} items in pool already searched — nothing to do (total missing: {total})")
+                db.history.finish_run(run_id, 0, 0, "success")
+                agent.state["last_wanted"] = 0
+                agent.state["last_triggered"] = 0
+                return
 
             # Execute searches respecting rate cap
-            delay = cfg.get("seconds_between_actions", 2)
-            missing_mode = cfg.get("missing_mode", "episode")
-
-            for record in records:
+            for record in candidates:
                 if not agent.check_rate_cap():
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                if cache_key and db.searched.exists(cfg["id"], cache_key):
-                    agent.log("debug", self.name, f"Already searched, skipping: {record.get('title') or record.get('id')}")
-                    continue
-
                 success, title, item_type = self._trigger_search(agent, cfg, record, missing_mode)
                 if success:
                     triggered_count += 1
@@ -85,12 +110,12 @@ class SearchMissingSkill(BaseSkill):
                     if cache_key:
                         db.searched.add(cfg["id"], cache_key, title, item_type)
 
-                if delay > 0 and record is not records[-1]:
+                if delay > 0 and record is not candidates[-1]:
                     time.sleep(delay)
 
             agent.log(
                 "info", self.name,
-                f"Done — wanted: {wanted_count}, triggered: {triggered_count} (total missing: {total})",
+                f"Done — candidates: {wanted_count}, triggered: {triggered_count} (total missing: {total})",
             )
             db.history.finish_run(run_id, wanted_count, triggered_count, "success")
             agent.state["last_wanted"] = wanted_count
