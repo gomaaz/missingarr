@@ -55,25 +55,27 @@
         </tr>
         {% if e.search_items %}
         <tr id="items-{{ e.id }}" style="display:none;">
-            <td colspan="8" style="padding:0 1rem 0.75rem 2.5rem;background:var(--bg-card);">
-                <div style="display:flex;flex-wrap:wrap;gap:0.35rem;padding-top:0.4rem;">
-                {% for item in e.search_items %}
-                    <span style="
-                        display:inline-flex;align-items:center;gap:0.3rem;
-                        background:var(--bg-input);border:1px solid var(--border);
-                        border-radius:4px;padding:0.2rem 0.5rem;
-                        font-size:0.78rem;color:var(--text-main);
-                    ">
-                        <span style="color:var(--text-muted);font-size:0.7rem;">
-                            {% if item.item_type == 'movie' %}🎬
-                            {% elif item.item_type == 'episode' %}📺
-                            {% elif item.item_type == 'season' %}📦
-                            {% else %}🎞️{% endif %}
-                        </span>
-                        {{ item.title }}
-                    </span>
-                {% endfor %}
-                </div>
+            <td colspan="8" style="padding:0;background:rgba(0,0,0,0.15);">
+                <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <th style="padding:0.35rem 0.75rem 0.35rem 2.5rem;font-size:0.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;width:80px;">Type</th>
+                            <th style="padding:0.35rem 0.75rem;font-size:0.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Title</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for item in e.search_items %}
+                        <tr style="border-bottom:1px solid var(--border)22;">
+                            <td style="padding:0.3rem 0.75rem 0.3rem 2.5rem;">
+                                <span class="badge badge-scheduled" style="font-size:0.7rem;">{{ item.item_type }}</span>
+                            </td>
+                            <td style="padding:0.3rem 0.75rem;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:600px;" title="{{ item.title }}">
+                                {{ item.title }}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
             </td>
         </tr>
         {% endif %}
