@@ -104,6 +104,49 @@ def query_with_items(
     return rows
 
 
+def query_items_flat(
+    instance_id: Optional[int] = None,
+    item_type: Optional[str] = None,
+    limit: int = 250,
+    offset: int = 0,
+) -> list[dict]:
+    """Flat list of triggered items joined with their run + instance data."""
+    conditions = []
+    params: list = []
+
+    if instance_id is not None:
+        conditions.append("h.instance_id=?")
+        params.append(instance_id)
+    if item_type:
+        conditions.append("si.item_type=?")
+        params.append(item_type)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params += [limit, offset]
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                h.started_at,
+                h.instance_name,
+                h.skill,
+                h.status,
+                COALESCE(inst.type, '') AS arr_type,
+                si.title,
+                si.item_type
+            FROM search_history_items si
+            JOIN search_history h ON h.id = si.run_id
+            LEFT JOIN instances inst ON inst.id = h.instance_id
+            {where}
+            ORDER BY h.started_at DESC, si.id
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def clear():
     with get_db() as conn:
         conn.execute("DELETE FROM search_history")

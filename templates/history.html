@@ -2,113 +2,157 @@
 {% block title %}History — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+<div x-data="{
+    search: '',
+    instance: '',
+    type: '',
+    perPage: 50,
+    page: 1,
+    rows: {{ items | tojson }},
+    get filtered() {
+        return this.rows.filter(r => {
+            if (this.instance && r.instance_name !== this.instance) return false;
+            if (this.type && r.item_type !== this.type) return false;
+            if (this.search) {
+                const q = this.search.toLowerCase();
+                if (!r.title.toLowerCase().includes(q) && !r.instance_name.toLowerCase().includes(q)) return false;
+            }
+            return true;
+        });
+    },
+    get paged() {
+        const start = (this.page - 1) * this.perPage;
+        return this.filtered.slice(start, start + this.perPage);
+    },
+    get totalPages() { return Math.max(1, Math.ceil(this.filtered.length / this.perPage)); },
+    reset() { this.page = 1; },
+    fmtTime(s) {
+        if (!s) return '—';
+        return s.replace('T', ' ').substring(0, 16);
+    }
+}">
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.75rem;">
     <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Search History</h1>
     <button class="btn btn-danger btn-sm" onclick="clearHistory()">Clear History</button>
 </div>
 
-<div class="card">
-    {% if entries %}
-    <table class="table">
-        <thead>
-            <tr>
-                <th style="width:1.5rem;"></th>
-                <th>Time</th>
-                <th>Instance</th>
-                <th>Skill</th>
-                <th>Wanted</th>
-                <th>Triggered</th>
-                <th>Duration</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for e in entries %}
-        <tr class="history-row" onclick="toggleItems('items-{{ e.id }}')" style="cursor:pointer;">
-            <td style="color:var(--text-muted);font-size:0.75rem;text-align:center;">
-                {% if e.search_items %}▶{% endif %}
-            </td>
-            <td style="color:var(--text-muted);font-size:0.8rem;white-space:nowrap;">{{ e.started_at[:16] }}</td>
-            <td>
-                <span style="font-weight:600;font-size:0.85rem;">{{ e.instance_name }}</span>
-            </td>
-            <td>
-                <span class="badge badge-scheduled">{{ e.skill.replace('_', ' ') }}</span>
-            </td>
-            <td style="font-weight:600;">{{ e.wanted_count }}</td>
-            <td style="font-weight:600;color:{{ 'var(--green)' if e.triggered_count > 0 else 'var(--text-muted)' }};">
-                {{ e.triggered_count }}
-            </td>
-            <td style="color:var(--text-muted);font-size:0.8rem;" id="dur-{{ e.id }}"
-                data-start="{{ e.started_at }}" data-end="{{ e.finished_at or '' }}">
-                {% if e.finished_at %}—{% else %}running...{% endif %}
-            </td>
-            <td>
-                {% if e.status == 'success' %}
-                    <span class="badge badge-online">success</span>
-                {% elif e.status == 'error' %}
-                    <span class="badge badge-offline" title="{{ e.error_message or '' }}">error</span>
-                {% else %}
-                    <span class="badge badge-running">running</span>
-                {% endif %}
-            </td>
-        </tr>
-        {% if e.search_items %}
-        <tr id="items-{{ e.id }}" style="display:none;">
-            <td colspan="8" style="padding:0;background:rgba(0,0,0,0.15);">
-                <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-                    <thead>
-                        <tr style="border-bottom:1px solid var(--border);">
-                            <th style="padding:0.35rem 0.75rem 0.35rem 2.5rem;font-size:0.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;width:80px;">Type</th>
-                            <th style="padding:0.35rem 0.75rem;font-size:0.68rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Title</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    {% for item in e.search_items %}
-                        <tr style="border-bottom:1px solid var(--border)22;">
-                            <td style="padding:0.3rem 0.75rem 0.3rem 2.5rem;">
-                                <span class="badge badge-scheduled" style="font-size:0.7rem;">{{ item.item_type }}</span>
-                            </td>
-                            <td style="padding:0.3rem 0.75rem;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:600px;" title="{{ item.title }}">
-                                {{ item.title }}
-                            </td>
-                        </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </td>
-        </tr>
-        {% endif %}
+<!-- Filters -->
+<div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center;">
+    <input type="text" class="form-input" placeholder="Search title or instance…"
+           x-model="search" @input="reset()" style="width:220px;">
+
+    <select class="form-input" x-model="instance" @change="reset()">
+        <option value="">All instances</option>
+        {% for inst in instances %}
+        <option value="{{ inst.name }}">{{ inst.name }}</option>
         {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">
-        No search history yet. History is recorded after the first run.
+    </select>
+
+    <select class="form-input" x-model="type" @change="reset()">
+        <option value="">All types</option>
+        <option value="episode">Episode</option>
+        <option value="season">Season</option>
+        <option value="series">Series</option>
+        <option value="movie">Movie</option>
+        <option value="upgrade">Upgrade</option>
+    </select>
+
+    <select class="form-input" x-model.number="perPage" @change="reset()" style="width:110px;">
+        <option value="25">25 / page</option>
+        <option value="50" selected>50 / page</option>
+        <option value="100">100 / page</option>
+    </select>
+
+    <span style="font-size:0.82rem;color:var(--text-muted);" x-text="filtered.length + ' items'"></span>
+</div>
+
+<div class="card" style="overflow:auto;">
+    <template x-if="paged.length > 0">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th style="white-space:nowrap;">Time</th>
+                    <th>Type</th>
+                    <th>Title</th>
+                    <th>Instance</th>
+                    <th>*arr</th>
+                    <th>Skill</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="(row, idx) in paged" :key="idx">
+                    <tr>
+                        <td style="color:var(--text-muted);font-size:0.78rem;white-space:nowrap;" x-text="fmtTime(row.started_at)"></td>
+                        <td>
+                            <span class="badge"
+                                :class="{
+                                    'badge-scheduled': row.item_type === 'episode',
+                                    'badge-running': row.item_type === 'season',
+                                    'badge-online': row.item_type === 'movie',
+                                    'badge-offline': row.item_type === 'upgrade',
+                                    'badge-unknown': row.item_type === 'series'
+                                }"
+                                x-text="row.item_type">
+                            </span>
+                        </td>
+                        <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                            :title="row.title" x-text="row.title"></td>
+                        <td style="font-size:0.85rem;white-space:nowrap;" x-text="row.instance_name"></td>
+                        <td>
+                            <span class="badge"
+                                :class="row.arr_type === 'sonarr' ? 'badge-scheduled' : 'badge-online'"
+                                x-text="row.arr_type || '—'">
+                            </span>
+                        </td>
+                        <td>
+                            <span style="font-size:0.78rem;color:var(--text-muted);"
+                                x-text="row.skill.replace('search_', '').replace('_', ' ')">
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge"
+                                :class="{
+                                    'badge-online': row.status === 'success',
+                                    'badge-offline': row.status === 'error',
+                                    'badge-running': row.status === 'running'
+                                }"
+                                x-text="row.status">
+                            </span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </template>
+
+    <template x-if="paged.length === 0">
+        <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">
+            <template x-if="rows.length === 0">
+                <span>No search history yet. History is recorded after the first run.</span>
+            </template>
+            <template x-if="rows.length > 0">
+                <span>No items match your filters.</span>
+            </template>
+        </div>
+    </template>
+</div>
+
+<!-- Pagination -->
+<template x-if="totalPages > 1">
+    <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-top:1rem;">
+        <button class="btn btn-secondary btn-sm" @click="page--" :disabled="page <= 1">&laquo;</button>
+        <span style="font-size:0.85rem;color:var(--text-muted);">
+            Page <span x-text="page"></span> of <span x-text="totalPages"></span>
+        </span>
+        <button class="btn btn-secondary btn-sm" @click="page++" :disabled="page >= totalPages">&raquo;</button>
     </div>
-    {% endif %}
+</template>
+
 </div>
 
 <script>
-function toggleItems(id) {
-    const row = document.getElementById(id);
-    if (!row) return;
-    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
-}
-
-// Calculate durations from timestamps
-document.querySelectorAll('[id^="dur-"]').forEach(cell => {
-    const start = cell.dataset.start;
-    const end = cell.dataset.end;
-    if (!start || !end) return;
-    try {
-        const s = new Date(start.replace(' ', 'T') + (start.includes('+') ? '' : 'Z'));
-        const f = new Date(end.replace(' ', 'T') + (end.includes('+') ? '' : 'Z'));
-        const secs = Math.round((f - s) / 1000);
-        cell.textContent = secs < 60 ? `${secs}s` : `${Math.floor(secs/60)}m ${secs%60}s`;
-    } catch {}
-});
-
 async function clearHistory() {
     if (!confirm('Clear all search history?')) return;
     const resp = await fetch('/api/history', { method: 'DELETE' });
