@@ -152,6 +152,26 @@ async function forceRun(instanceId, skill = 'search_missing') {
     }
 }
 
+async function testCardConnection(instanceId, btn) {
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const resp = await fetch(`/api/instances/${instanceId}/test`);
+        const data = await resp.json();
+        if (resp.ok) {
+            Alpine.store('toasts').add(`Online — ${data.appName} v${data.version}`, 'success');
+        } else {
+            Alpine.store('toasts').add(data.detail || 'Connection failed', 'error');
+        }
+    } catch {
+        Alpine.store('toasts').add('Connection test failed', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = orig;
+    }
+}
+
 async function toggleInstance(instanceId, enabled) {
     try {
         const resp = await fetch(`/api/instances/${instanceId}/toggle?enabled=${enabled}`, {

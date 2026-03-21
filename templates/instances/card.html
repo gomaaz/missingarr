@@ -23,6 +23,7 @@
             </span>
         </div>
         <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
+            <!-- Status badge -->
             {% if not is_enabled %}
                 <span class="badge badge-unknown">OFF</span>
             {% elif agent_status == 'running' %}
@@ -32,17 +33,41 @@
             {% else %}
                 <span class="badge badge-scheduled">WAIT</span>
             {% endif %}
+
+            <!-- Test connection button -->
+            <button class="btn btn-secondary btn-sm"
+                    onclick="testCardConnection({{ inst.id }}, this)"
+                    title="Test connection">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline;vertical-align:middle;">
+                    <path d="M18.364 5.636a9 9 0 0 1 0 12.728M15.536 8.464a5 5 0 0 1 0 7.072M6.343 17.657a9 9 0 0 1 0-12.728M9.172 14.828a5 5 0 0 1 0-7.072"/>
+                    <circle cx="12" cy="12" r="1" fill="currentColor"/>
+                </svg>
+                Test
+            </button>
+
+            <!-- Enable / Disable toggle -->
+            <button class="btn btn-sm {{ 'btn-toggle-on' if is_enabled else 'btn-toggle-off' }}"
+                    onclick="toggleInstance({{ inst.id }}, {{ 'false' if is_enabled else 'true' }})"
+                    title="{{ 'Disable instance' if is_enabled else 'Enable instance' }}">
+                <span style="display:inline-block;width:26px;height:14px;border-radius:7px;background:{{ 'var(--green)' if is_enabled else 'var(--border)' }};position:relative;vertical-align:middle;transition:background 0.2s;margin-right:0.3rem;">
+                    <span style="display:block;width:10px;height:10px;border-radius:50%;background:#fff;position:absolute;top:2px;{{ 'right:2px' if is_enabled else 'left:2px' }};transition:all 0.2s;"></span>
+                </span>
+                {{ 'ON' if is_enabled else 'OFF' }}
+            </button>
+
+            <!-- Force run -->
             <button class="btn btn-force"
                     onclick="forceRun({{ inst.id }}, 'search_missing')"
                     {% if not is_enabled %}disabled{% endif %}
                     title="Force run now (bypasses quiet hours)">
                 FORCE
             </button>
+
             <a href="/instances/{{ inst.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
         </div>
     </div>
 
-    <!-- URL -->
+    <!-- URL + connection status -->
     <div style="padding:0.35rem 1rem;font-size:0.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15);">
         <span class="badge {% if conn == 'online' %}badge-online{% elif conn == 'offline' %}badge-offline{% elif conn == 'error' %}badge-error{% else %}badge-unknown{% endif %}" style="margin-right:0.5rem;">{{ conn }}</span>
         {{ inst.url }}
@@ -122,16 +147,13 @@
         </div>
         {% endif %}
 
-        <!-- Action buttons -->
-        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
-            {% if inst.search_upgrades_enabled and inst.type == 'radarr' %}
+        <!-- Force Upgrades (Radarr only, subtle) -->
+        {% if inst.search_upgrades_enabled and inst.type == 'radarr' and is_enabled %}
+        <div style="margin-top:0.6rem;">
             <button class="btn btn-secondary btn-sm" onclick="forceRun({{ inst.id }}, 'search_upgrades')">
                 Force Upgrades
             </button>
-            {% endif %}
-            <button class="btn btn-secondary btn-sm" onclick="toggleInstance({{ inst.id }}, {{ 'false' if is_enabled else 'true' }})">
-                {{ 'Disable' if is_enabled else 'Enable' }}
-            </button>
         </div>
+        {% endif %}
     </div>
 </div>
