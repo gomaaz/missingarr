@@ -132,6 +132,12 @@ class BaseAgent(ABC):
         if not skill:
             return
 
+        # Refresh config from DB so search preferences changed in the UI
+        # are picked up immediately without requiring an agent restart.
+        fresh = db.instances.get_by_id(self.config["id"])
+        if fresh:
+            self.config = fresh
+
         # Check quiet hours — skipped for health_check and force runs
         if skill_name != "health_check" and not force and self._in_quiet_hours():
             self.log("debug", skill_name, "Skipping — quiet hours active")
