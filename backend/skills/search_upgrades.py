@@ -36,11 +36,18 @@ class SearchUpgradesSkill(BaseSkill):
 
                 movie_id = movie["id"]
                 label = movie["label"]
+                cache_key = f"upg:{movie_id}"
+
+                if db.searched.exists(cfg["id"], cache_key):
+                    agent.log("debug", self.name, f"Already searched for upgrade, skipping: {label}")
+                    continue
+
                 try:
                     agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
                     triggered_count += 1
                     agent.record_action()
                     db.history.insert_item(run_id, label, movie_id, "movie")
+                    db.searched.add(cfg["id"], cache_key, label, "movie")
                     agent.log("debug", self.name, f"Upgrade search: {label}")
                 except Exception as exc:
                     agent.log("warn", self.name, f"Failed to trigger upgrade for {label}: {exc}")

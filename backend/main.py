@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.database import init_db
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
-from backend.api import health, instances, activity, history
+from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
 
 logging.basicConfig(
@@ -75,6 +75,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(instances.router, prefix="/api")
 app.include_router(activity.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
+app.include_router(searched.router, prefix="/api")
 
 
 # ─── UI routes ─────────────────────────────────────────────────────────────────
@@ -149,6 +150,17 @@ async def logs_page(request: Request):
     return templates.TemplateResponse(
         "logs.html",
         template_ctx(request, recent=recent, instances=all_instances),
+    )
+
+
+@app.get("/searched", response_class=HTMLResponse)
+async def searched_page(request: Request):
+    from backend import db
+    all_instances = db.instances.get_all()
+    counts = db.searched.count()
+    return templates.TemplateResponse(
+        "searched.html",
+        template_ctx(request, instances=all_instances, counts=counts),
     )
 
 

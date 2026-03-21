@@ -106,4 +106,17 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_history_items_run ON search_history_items(run_id);
+
+            CREATE TABLE IF NOT EXISTS searched_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+                cache_key   TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                item_type   TEXT NOT NULL,
+                searched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(instance_id, cache_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_searched_instance ON searched_items(instance_id);
+            CREATE INDEX IF NOT EXISTS idx_searched_at ON searched_items(searched_at DESC);
         """)

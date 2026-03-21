@@ -72,11 +72,18 @@ class SearchMissingSkill(BaseSkill):
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
+                cache_key = self._cache_key(cfg["type"], record, missing_mode)
+                if cache_key and db.searched.exists(cfg["id"], cache_key):
+                    agent.log("debug", self.name, f"Already searched, skipping: {record.get('title') or record.get('id')}")
+                    continue
+
                 success, title, item_type = self._trigger_search(agent, cfg, record, missing_mode)
                 if success:
                     triggered_count += 1
                     agent.record_action()
                     db.history.insert_item(run_id, title, record.get("id"), item_type)
+                    if cache_key:
+                        db.searched.add(cfg["id"], cache_key, title, item_type)
 
                 if delay > 0 and record is not records[-1]:
                     time.sleep(delay)
@@ -93,6 +100,22 @@ class SearchMissingSkill(BaseSkill):
         except Exception as exc:
             agent.log("error", self.name, f"Search failed: {exc}")
             db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
+
+    def _cache_key(self, arr_type: str, record: dict, mode: str) -> str:
+        """Build a stable cache key for the searched item."""
+        if arr_type == "radarr":
+            return f"mov:{record.get('id')}"
+        # Sonarr — key depends on mode
+        if mode == "episode":
+            return f"ep:{record.get('id')}"
+        elif mode == "season_packs":
+            return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
+        elif mode == "show_batch":
+            return f"ser:{record.get('seriesId')}"
+        elif mode == "smart":
+            # Key on season level (smart may pick episode or season per run)
+            return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
+        return f"ep:{record.get('id')}"
 
     def _apply_order(self, records: list, order: str, arr_type: str) -> list:
         date_key = "airDateUtc" if arr_type == "sonarr" else "physicalRelease"

@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Searched Items — {{ app_name }}{% endblock %}
+
+{% block content %}
+<div x-data="searchedPage()" x-init="init()">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.75rem;">
+        <div>
+            <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Searched Items</h1>
+            <p style="margin:0.25rem 0 0;color:var(--text-muted);font-size:0.85rem;">
+                Items that have already been searched — they will be skipped in future runs until reset.
+            </p>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button class="btn btn-danger btn-sm" onclick="clearAll()">Reset All</button>
+        </div>
+    </div>
+
+    <!-- Per-instance summary cards -->
+    <div class="instance-grid" style="margin-bottom:1.5rem;">
+        {% for inst in instances %}
+        {% set inst_count = counts | selectattr('instance_id', 'equalto', inst.id) | list %}
+        {% set total = inst_count[0].total if inst_count else 0 %}
+        <div class="card" style="padding:1rem;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                    <span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span>
+                    <span style="font-weight:600;font-size:0.9rem;">{{ inst.name }}</span>
+                </div>
+                <button class="btn btn-secondary btn-sm"
+                        onclick="clearInstance({{ inst.id }}, '{{ inst.name|e }}')">
+                    Reset
+                </button>
+            </div>
+            <div style="font-size:2rem;font-weight:700;color:var(--text-primary);"
+                 id="count-{{ inst.id }}">{{ total }}</div>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.15rem;">items in cache</div>
+            <div style="margin-top:0.75rem;">
+                <button class="btn btn-secondary btn-sm"
+                        @click="loadInstance({{ inst.id }})"
+                        x-text="activeInstance === {{ inst.id }} ? 'Hide' : 'Show items'">
+                    Show items
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+
+        {% if not instances %}
+        <div class="card" style="text-align:center;padding:2rem;grid-column:1/-1;">
+            <p style="color:var(--text-muted);">No instances configured yet.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Item table (shown when an instance is selected) -->
+    <template x-if="activeInstance !== null">
+        <div class="card" style="overflow:hidden;">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border);">
+                <div style="display:flex;align-items:center;gap:0.75rem;">
+                    <span style="font-weight:600;font-size:0.9rem;" x-text="activeInstanceName"></span>
+                    <span style="font-size:0.8rem;color:var(--text-muted);" x-text="`${filteredItems().length} items`"></span>
+                </div>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <!-- Type filter -->
+                    <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
+                            x-model="filterType" @change="tablePage = 0">
+                        <option value="">All types</option>
+                        <option value="episode">Episode</option>
+                        <option value="season">Season</option>
+                        <option value="series">Series</option>
+                        <option value="movie">Movie</option>
+                    </select>
+                    <!-- Per page -->
+                    <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
+                            x-model.number="perPage" @change="tablePage = 0">
+                        <option value="20">20 / page</option>
+                        <option value="50">50 / page</option>
+                        <option value="100">100 / page</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="overflow-x:auto;">
+                <table class="table" style="table-layout:fixed;width:100%;">
+                    <colgroup>
+                        <col style="width:155px;">
+                        <col style="width:80px;">
+                        <col>
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Searched At</th>
+                            <th>Type</th>
+                            <th>Title</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="(item, i) in pageItems()" :key="i">
+                            <tr>
+                                <td style="font-size:0.78rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;white-space:nowrap;"
+                                    x-text="item.searched_at ? item.searched_at.replace('T',' ').substring(0,19) : '—'"></td>
+                                <td>
+                                    <span class="badge badge-scheduled" style="font-size:0.72rem;" x-text="item.item_type"></span>
+                                </td>
+                                <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                    x-text="item.title" :title="item.title"></td>
+                            </tr>
+                        </template>
+                        <template x-if="filteredItems().length === 0 && !loading">
+                            <tr>
+                                <td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;">
+                                    No searched items yet.
+                                </td>
+                            </tr>
+                        </template>
+                        <template x-if="loading">
+                            <tr>
+                                <td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;">
+                                    Loading…
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination -->
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
+                <span x-text="paginationLabel()"></span>
+                <div style="display:flex;gap:0.4rem;">
+                    <button class="btn btn-secondary btn-sm" @click="tablePage--" :disabled="tablePage === 0">← Prev</button>
+                    <template x-for="p in pageCount()" :key="p">
+                        <button class="btn btn-sm"
+                                :class="tablePage === p - 1 ? 'btn-primary' : 'btn-secondary'"
+                                @click="tablePage = p - 1"
+                                x-text="p"
+                                x-show="Math.abs(tablePage - (p-1)) <= 2">
+                        </button>
+                    </template>
+                    <button class="btn btn-secondary btn-sm" @click="tablePage++" :disabled="tablePage >= pageCount() - 1">Next →</button>
+                </div>
+            </div>
+        </div>
+    </template>
+</div>
+
+<script>
+function searchedPage() {
+    return {
+        activeInstance: null,
+        activeInstanceName: '',
+        items: [],
+        loading: false,
+        filterType: '',
+        tablePage: 0,
+        perPage: 20,
+
+        init() {},
+
+        async loadInstance(id) {
+            if (this.activeInstance === id) {
+                this.activeInstance = null;
+                return;
+            }
+            this.activeInstance = id;
+            this.activeInstanceName = document.querySelector(`[data-iname="${id}"]`)?.textContent || '';
+            this.tablePage = 0;
+            this.filterType = '';
+            await this.fetchItems(id);
+        },
+
+        async fetchItems(id) {
+            this.loading = true;
+            try {
+                const resp = await fetch(`/api/searched?instance_id=${id}&limit=500`);
+                this.items = await resp.json();
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        filteredItems() {
+            if (!this.filterType) return this.items;
+            return this.items.filter(i => i.item_type === this.filterType);
+        },
+
+        pageItems() {
+            const f = this.filteredItems();
+            return f.slice(this.tablePage * this.perPage, (this.tablePage + 1) * this.perPage);
+        },
+
+        pageCount() {
+            return Math.max(1, Math.ceil(this.filteredItems().length / this.perPage));
+        },
+
+        paginationLabel() {
+            const total = this.filteredItems().length;
+            const start = this.tablePage * this.perPage + 1;
+            const end = Math.min(start + this.perPage - 1, total);
+            return total === 0 ? '0 items' : `${start}–${end} of ${total}`;
+        },
+    };
+}
+
+async function clearInstance(id, name) {
+    if (!confirm(`Reset searched cache for "${name}"? It will be re-searched on the next run.`)) return;
+    const resp = await fetch(`/api/searched/${id}`, { method: 'DELETE' });
+    if (resp.ok) {
+        const data = await resp.json();
+        document.getElementById(`count-${id}`).textContent = '0';
+        Alpine.store('toasts').add(`Reset ${data.deleted} items for ${name}`, 'info');
+        // If currently viewing this instance, reload
+        const page = document.querySelector('[x-data]').__x.$data;
+        if (page && page.activeInstance === id) {
+            page.items = [];
+        }
+    }
+}
+
+async function clearAll() {
+    if (!confirm('Reset ALL searched items? All instances will re-search everything on the next run.')) return;
+    const resp = await fetch('/api/searched', { method: 'DELETE' });
+    if (resp.ok) {
+        const data = await resp.json();
+        document.querySelectorAll('[id^="count-"]').forEach(el => el.textContent = '0');
+        Alpine.store('toasts').add(`Reset ${data.deleted} items total`, 'info');
+    }
+}
+</script>
+{% endblock %}
