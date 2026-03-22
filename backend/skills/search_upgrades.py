@@ -125,9 +125,17 @@ class SearchUpgradesSkill(BaseSkill):
 
         if source in ("wanted_list_only", "both"):
             try:
+                pool_size = max(per_run * 5, 50)
+                page = 1
+                probe = agent.http_get("/api/v3/wanted/cutoff", params={"pageSize": 1, "page": 1, "monitored": "true"})
+                total = probe.get("totalRecords", 0)
+                if total > pool_size:
+                    max_page = min(10, total // pool_size)
+                    if max_page >= 2:
+                        page = random.randint(1, max_page)
                 resp = agent.http_get(
                     "/api/v3/wanted/cutoff",
-                    params={"pageSize": max(per_run * 5, 50), "page": 1, "monitored": "true"},
+                    params={"pageSize": pool_size, "page": page, "monitored": "true"},
                 )
                 for r in resp.get("records", []):
                     if "id" in r:
@@ -156,9 +164,17 @@ class SearchUpgradesSkill(BaseSkill):
         """Sonarr upgrades always use the cutoff (quality unmet) list."""
         items = []
         try:
+            pool_size = max(per_run * 5, 50)
+            page = 1
+            probe = agent.http_get("/api/v3/wanted/cutoff", params={"pageSize": 1, "page": 1, "monitored": "true"})
+            total = probe.get("totalRecords", 0)
+            if total > pool_size:
+                max_page = min(10, total // pool_size)
+                if max_page >= 2:
+                    page = random.randint(1, max_page)
             resp = agent.http_get(
                 "/api/v3/wanted/cutoff",
-                params={"pageSize": max(per_run * 5, 50), "page": 1, "monitored": "true"},
+                params={"pageSize": pool_size, "page": page, "monitored": "true"},
             )
             for r in resp.get("records", []):
                 if "id" not in r:

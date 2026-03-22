@@ -41,7 +41,7 @@ class SearchMissingSkill(BaseSkill):
                     if total_available > fetch_size:
                         max_page = min(10, total_available // fetch_size)
                         if max_page >= 2:
-                            params["page"] = random.randint(2, max_page)
+                            params["page"] = random.randint(1, max_page)
                 except Exception:
                     pass
 
