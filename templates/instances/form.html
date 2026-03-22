@@ -323,7 +323,8 @@ document.getElementById('instance-form').addEventListener('submit', async functi
         const result = await resp.json();
         if (resp.ok) {
             Alpine.store('toasts').add('Instance saved!', 'success');
-            setTimeout(() => { window.location.href = '/instances'; }, 600);
+            btn.disabled = false;
+            btn.textContent = 'Save Instance';
         } else {
             const msg = result.detail?.[0]?.msg ?? result.detail ?? 'Save failed';
             Alpine.store('toasts').add(msg, 'error');
