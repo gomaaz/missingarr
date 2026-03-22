@@ -94,7 +94,7 @@ class SearchMissingSkill(BaseSkill):
                     skipped += 1
                     continue
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                if not force and cache_key and db.searched.exists(cfg["id"], cache_key):
+                if not force and cache_key and db.searched.exists(cfg["id"], cache_key, cfg.get("retry_hours", 0)):
                     skipped += 1
                     continue
                 # Skip if another record with the same key is already a candidate

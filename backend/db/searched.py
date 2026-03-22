@@ -2,12 +2,22 @@ from typing import Optional
 from backend.database import get_db
 
 
-def exists(instance_id: int, cache_key: str) -> bool:
+def exists(instance_id: int, cache_key: str, retry_hours: int = 0) -> bool:
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM searched_items WHERE instance_id=? AND cache_key=?",
-            (instance_id, cache_key),
-        ).fetchone()
+        if retry_hours > 0:
+            row = conn.execute(
+                """
+                SELECT 1 FROM searched_items
+                WHERE instance_id=? AND cache_key=?
+                AND searched_at > datetime('now', ? || ' hours')
+                """,
+                (instance_id, cache_key, f"-{retry_hours}"),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM searched_items WHERE instance_id=? AND cache_key=?",
+                (instance_id, cache_key),
+            ).fetchone()
         return row is not None
 
 

@@ -28,7 +28,7 @@ class SearchUpgradesSkill(BaseSkill):
             seen_keys: set = set()
             for item in raw:
                 cache_key = self._cache_key(arr_type, item)
-                if not force and db.searched.exists(cfg["id"], cache_key):
+                if not force and db.searched.exists(cfg["id"], cache_key, cfg.get("retry_hours", 0)):
                     continue
                 if cache_key in seen_keys:
                     continue
