@@ -24,6 +24,17 @@ class SearchMissingSkill(BaseSkill):
             # not just the same top-N items every run.
             fetch_size = min(per_run * 10, 100) if search_order == "random" else per_run * 2
 
+            # Pre-fetch series titles for Sonarr so labels are always populated
+            # even when the wanted/missing API omits the nested series object.
+            series_lookup: dict[int, str] = {}
+            if cfg["type"] == "sonarr":
+                try:
+                    all_series = agent.http_get("/api/v3/series")
+                    if isinstance(all_series, list):
+                        series_lookup = {s["id"]: s.get("title", "") for s in all_series}
+                except Exception:
+                    pass
+
             agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, per_run={per_run})...")
 
             params = {
@@ -102,7 +113,7 @@ class SearchMissingSkill(BaseSkill):
                     break
 
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                success, title, item_type = self._trigger_search(agent, cfg, record, missing_mode)
+                success, title, item_type = self._trigger_search(agent, cfg, record, missing_mode, series_lookup)
                 if success:
                     triggered_count += 1
                     agent.record_action()
@@ -196,21 +207,24 @@ class SearchMissingSkill(BaseSkill):
 
         return records
 
-    def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str) -> tuple[bool, str, str]:
+    def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str]:
         try:
             if cfg["type"] == "sonarr":
-                return self._sonarr_search(agent, record, missing_mode)
+                return self._sonarr_search(agent, record, missing_mode, series_lookup or {})
             else:
                 return self._radarr_search(agent, record)
         except Exception as exc:
             agent.log("warn", self.name, f"Failed to trigger search: {exc}")
             return False, "", ""
 
-    def _sonarr_search(self, agent, record: dict, mode: str) -> tuple[bool, str, str]:
+    def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str]:
         episode_id = record.get("id")
         series_id = record.get("seriesId")
         season_number = record.get("seasonNumber")
         series_title = (record.get("series") or {}).get("title", "") or record.get("seriesTitle", "")
+        # Fall back to pre-fetched series lookup if API didn't include nested series data
+        if not series_title and series_id and series_lookup:
+            series_title = series_lookup.get(series_id, f"Series #{series_id}")
         ep_title = record.get("title", "")
 
         if mode == "episode" and episode_id:

@@ -5,6 +5,8 @@ Authentication is always active. Set AUTH_USERNAME and AUTH_PASSWORD env vars
 to configure credentials. If AUTH_PASSWORD is not set, a random password is
 generated at startup and printed to the logs.
 """
+import hmac as _hmac
+import hashlib
 import secrets
 import logging
 from passlib.context import CryptContext
@@ -21,6 +23,32 @@ _PUBLIC_PREFIXES = ("/static/", "/api/health")
 
 # Resolved at startup — either from env var or auto-generated
 _active_password: str = ""
+
+_REMEMBER_COOKIE = "ma_remember"
+_REMEMBER_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
+
+
+def _remember_secret() -> str:
+    from backend.database import get_or_create_secret_key
+    return get_or_create_secret_key()
+
+
+def create_remember_token(username: str) -> str:
+    key = _remember_secret().encode()
+    sig = _hmac.new(key, username.encode(), hashlib.sha256).hexdigest()
+    return f"{username}:{sig}"
+
+
+def verify_remember_token(token: str) -> str | None:
+    try:
+        username, sig = token.rsplit(":", 1)
+        key = _remember_secret().encode()
+        expected = _hmac.new(key, username.encode(), hashlib.sha256).hexdigest()
+        if _hmac.compare_digest(sig, expected):
+            return username
+    except Exception:
+        pass
+    return None
 
 
 def init_auth() -> None:
@@ -67,6 +95,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not is_authenticated(request):
+            # Check remember-me cookie and auto-restore session
+            token = request.cookies.get(_REMEMBER_COOKIE)
+            if token:
+                username = verify_remember_token(token)
+                if username == settings.auth_username:
+                    request.session["user"] = username
+                    return await call_next(request)
             return RedirectResponse(f"/login?next={path}", status_code=302)
 
         return await call_next(request)

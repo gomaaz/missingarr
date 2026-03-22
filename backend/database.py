@@ -136,3 +136,31 @@ def init_db():
                 conn.execute(sql)
             except Exception:
                 pass  # column already exists
+
+
+_cached_secret_key: str | None = None
+
+
+def get_or_create_secret_key() -> str:
+    """Return a stable secret key persisted in the DB.
+
+    Using this instead of the env-generated Settings.secret_key means
+    the session cookie stays valid across Docker restarts.
+    """
+    global _cached_secret_key
+    if _cached_secret_key:
+        return _cached_secret_key
+    import secrets as _s
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key='secret_key'"
+        ).fetchone()
+        if row:
+            _cached_secret_key = row[0]
+        else:
+            _cached_secret_key = _s.token_hex(32)
+            conn.execute(
+                "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('secret_key', ?)",
+                (_cached_secret_key,),
+            )
+    return _cached_secret_key

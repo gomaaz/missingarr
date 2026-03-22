@@ -9,12 +9,15 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from backend.config import settings
-from backend.database import init_db
+from backend.database import init_db, get_or_create_secret_key
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
-from backend.auth import AuthMiddleware, verify_password, auth_enabled, init_auth
+from backend.auth import (
+    AuthMiddleware, verify_password, auth_enabled, init_auth,
+    create_remember_token, _REMEMBER_COOKIE, _REMEMBER_MAX_AGE,
+)
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -49,6 +52,10 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
+# Init DB early so we can read the persisted secret key before middleware is wired.
+init_db()
+_session_secret = get_or_create_secret_key()
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
@@ -59,8 +66,9 @@ app = FastAPI(
 
 # Middleware order: last added = outermost = runs first.
 # SessionMiddleware must wrap AuthMiddleware so session is available when auth checks it.
+# Uses a DB-persisted secret key so sessions survive Docker restarts.
 app.add_middleware(AuthMiddleware)
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="ma_session", https_only=False)
+app.add_middleware(SessionMiddleware, secret_key=_session_secret, session_cookie="ma_session", https_only=False)
 
 # Static files & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -200,13 +208,23 @@ async def login_submit(
     username: str = Form(...),
     password: str = Form(...),
     next: str = Form(default="/"),
+    remember: bool = Form(default=False),
 ):
     if not auth_enabled():
         return RedirectResponse("/", status_code=302)
 
     if username == settings.auth_username and verify_password(password):
         request.session["user"] = username
-        return RedirectResponse(next or "/", status_code=302)
+        response = RedirectResponse(next or "/", status_code=302)
+        if remember:
+            token = create_remember_token(username)
+            response.set_cookie(
+                _REMEMBER_COOKIE, token,
+                max_age=_REMEMBER_MAX_AGE,
+                httponly=True,
+                samesite="lax",
+            )
+        return response
 
     # Invalid credentials — re-render login with error
     return templates.TemplateResponse(
@@ -219,4 +237,6 @@ async def login_submit(
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=302)
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie(_REMEMBER_COOKIE)
+    return response
