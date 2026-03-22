@@ -136,6 +136,71 @@ function instanceForm(instanceType) {
     };
 }
 
+// ── Card live-update (called by htmx after every /status poll) ────────────────
+function updateCardState(instanceId, responseText) {
+    try {
+        const data = JSON.parse(responseText);
+        const state = data.agent_state || {};
+        const card = document.getElementById(`icard-${instanceId}`);
+        if (!card) return;
+
+        // Update Alpine countdown component (nextRun + status)
+        const alpineData = Alpine.$data(card);
+        if (alpineData) {
+            alpineData.nextRun = state.next_run_at ? new Date(state.next_run_at) : null;
+            alpineData.status = state.status || 'unknown';
+        }
+
+        // Status badge
+        const badgeEl = card.querySelector('[data-status-badge]');
+        if (badgeEl) {
+            const s = state.status || 'off';
+            if (s === 'running') {
+                badgeEl.className = 'badge badge-running';
+                badgeEl.textContent = 'RUNNING';
+            } else if (s === 'quiet') {
+                badgeEl.className = 'badge badge-unknown';
+                badgeEl.textContent = 'QUIET';
+            } else if (s === 'off') {
+                badgeEl.className = 'badge badge-unknown';
+                badgeEl.textContent = 'OFF';
+            } else {
+                badgeEl.className = 'badge badge-scheduled';
+                badgeEl.textContent = 'WAIT';
+            }
+        }
+
+        // Connection badge
+        const connEl = card.querySelector('[data-conn-badge]');
+        if (connEl) {
+            const c = data.connection_status || 'unknown';
+            const cls = c === 'online' ? 'badge-online' : c === 'offline' ? 'badge-offline' : c === 'error' ? 'badge-error' : 'badge-unknown';
+            connEl.className = `badge ${cls}`;
+            connEl.textContent = c;
+        }
+
+        // Rate bar
+        const rateCap = state.rate_cap || 1;
+        const rateUsed = state.rate_used || 0;
+        const ratePct = Math.min(100, Math.round((rateUsed / rateCap) * 100));
+        const rateBar = card.querySelector('[data-rate-bar]');
+        if (rateBar) {
+            rateBar.style.width = ratePct + '%';
+            rateBar.classList.toggle('danger', ratePct >= 80);
+        }
+        const rateUsedEl = card.querySelector('[data-rate-used]');
+        if (rateUsedEl) rateUsedEl.textContent = `${rateUsed} / ${rateCap}`;
+
+        // Stats
+        card.querySelectorAll('[data-stat]').forEach(el => {
+            const key = el.dataset.stat;
+            if (key === 'last_wanted') el.textContent = state.last_wanted ?? '-';
+            else if (key === 'last_triggered') el.textContent = state.last_triggered ?? '-';
+            else if (key === 'last_sync') el.textContent = state.last_sync || '-';
+        });
+    } catch (_) {}
+}
+
 // ── Force trigger ─────────────────────────────────────────────────────────────
 async function forceRun(instanceId, skill = 'search_missing') {
     try {

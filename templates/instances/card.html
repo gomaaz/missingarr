@@ -10,7 +10,7 @@
      x-init="init()"
      x-destroy="destroy()"
      hx-get="/api/instances/{{ inst.id }}/status"
-     hx-trigger="every 30s"
+     hx-trigger="every 5s"
      hx-swap="none"
      hx-on::after-request="updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
 
@@ -25,13 +25,13 @@
         <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
             <!-- Status badge -->
             {% if not is_enabled %}
-                <span class="badge badge-unknown">OFF</span>
+                <span class="badge badge-unknown" data-status-badge>OFF</span>
             {% elif agent_status == 'running' %}
-                <span class="badge badge-running">RUNNING</span>
+                <span class="badge badge-running" data-status-badge>RUNNING</span>
             {% elif agent_status == 'quiet' %}
-                <span class="badge badge-unknown">QUIET</span>
+                <span class="badge badge-unknown" data-status-badge>QUIET</span>
             {% else %}
-                <span class="badge badge-scheduled">WAIT</span>
+                <span class="badge badge-scheduled" data-status-badge>WAIT</span>
             {% endif %}
 
             <!-- Test connection button -->
@@ -69,7 +69,7 @@
 
     <!-- URL + connection status -->
     <div style="padding:0.35rem 1rem;font-size:0.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15);">
-        <span class="badge {% if conn == 'online' %}badge-online{% elif conn == 'offline' %}badge-offline{% elif conn == 'error' %}badge-error{% else %}badge-unknown{% endif %}" style="margin-right:0.5rem;">{{ conn }}</span>
+        <span class="badge {% if conn == 'online' %}badge-online{% elif conn == 'offline' %}badge-offline{% elif conn == 'error' %}badge-error{% else %}badge-unknown{% endif %}" style="margin-right:0.5rem;" data-conn-badge>{{ conn }}</span>
         {{ inst.url }}
     </div>
 
@@ -93,11 +93,11 @@
         <div style="margin-top:0.75rem;">
             <div class="rate-label">
                 <span>Rate window ({{ inst.rate_window_minutes }}m)</span>
-                <span>{{ rate_used }} / {{ rate_cap }}</span>
+                <span data-rate-used>{{ rate_used }} / {{ rate_cap }}</span>
             </div>
             <div class="rate-bar-container">
                 <div class="rate-bar {% if rate_pct >= 80 %}danger{% endif %}"
-                     style="width:{{ rate_pct }}%;"></div>
+                     style="width:{{ rate_pct }}%;" data-rate-bar></div>
             </div>
         </div>
 
@@ -105,11 +105,11 @@
         <div class="stats-grid">
             <div class="stat-item">
                 <div class="stat-label">Wanted (last)</div>
-                <div class="stat-value">{{ state.get('last_wanted', 0) if state else 0 }}</div>
+                <div class="stat-value" data-stat="last_wanted">{{ state.get('last_wanted', 0) if state else 0 }}</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Triggered (last)</div>
-                <div class="stat-value">{{ state.get('last_triggered', 0) if state else 0 }}</div>
+                <div class="stat-value" data-stat="last_triggered">{{ state.get('last_triggered', 0) if state else 0 }}</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Interval</div>
@@ -121,7 +121,7 @@
             </div>
             <div class="stat-item">
                 <div class="stat-label">Last Sync</div>
-                <div class="stat-value" style="font-size:0.8rem;">{{ state.get('last_sync', '-') if state else '-' }}</div>
+                <div class="stat-value" style="font-size:0.8rem;" data-stat="last_sync">{{ state.get('last_sync', '-') if state else '-' }}</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Window</div>
