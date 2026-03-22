@@ -24,8 +24,6 @@ class SearchMissingSkill(BaseSkill):
             # not just the same top-N items every run.
             fetch_size = min(per_run * 10, 100) if search_order == "random" else per_run * 2
 
-            agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, per_run={per_run})...")
-
             params = {
                 "pageSize": fetch_size,
                 "page": 1,
@@ -33,6 +31,21 @@ class SearchMissingSkill(BaseSkill):
                 "sortKey": "airDateUtc" if cfg["type"] == "sonarr" else "physicalRelease",
                 "sortDirection": "descending",
             }
+
+            # For random order: probe for total so we can pick a random page and
+            # reach items beyond the first page — true rotation across the full backlog.
+            if search_order == "random":
+                try:
+                    probe = agent.http_get("/api/v3/wanted/missing", params={**params, "pageSize": 1})
+                    total_available = probe.get("totalRecords", 0)
+                    if total_available > fetch_size:
+                        max_page = min(10, total_available // fetch_size)
+                        if max_page >= 2:
+                            params["page"] = random.randint(2, max_page)
+                except Exception:
+                    pass
+
+            agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, page={params['page']}, per_run={per_run})...")
 
             resp = agent.http_get("/api/v3/wanted/missing", params=params)
             records = resp.get("records", [])

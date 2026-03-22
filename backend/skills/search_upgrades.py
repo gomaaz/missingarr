@@ -1,3 +1,4 @@
+import random
 import time
 from backend.skills.base import BaseSkill
 from backend import db
@@ -106,15 +107,16 @@ class SearchUpgradesSkill(BaseSkill):
         else:
             items = self._collect_sonarr(agent, per_run)
 
-        # Deduplicate, respect per_run limit
+        # Shuffle for rotation before dedup so different items surface each run
+        random.shuffle(items)
+
+        # Deduplicate by episode/movie ID — season-level dedup happens in execute()
         seen = set()
         result = []
         for item in items:
             if item["id"] not in seen:
                 seen.add(item["id"])
                 result.append(item)
-                if len(result) >= per_run:
-                    break
 
         return result
 
@@ -125,7 +127,7 @@ class SearchUpgradesSkill(BaseSkill):
             try:
                 resp = agent.http_get(
                     "/api/v3/wanted/cutoff",
-                    params={"pageSize": per_run, "page": 1, "monitored": "true"},
+                    params={"pageSize": max(per_run * 5, 50), "page": 1, "monitored": "true"},
                 )
                 for r in resp.get("records", []):
                     if "id" in r:
@@ -156,7 +158,7 @@ class SearchUpgradesSkill(BaseSkill):
         try:
             resp = agent.http_get(
                 "/api/v3/wanted/cutoff",
-                params={"pageSize": per_run, "page": 1, "monitored": "true"},
+                params={"pageSize": max(per_run * 5, 50), "page": 1, "monitored": "true"},
             )
             for r in resp.get("records", []):
                 if "id" not in r:
