@@ -12,6 +12,7 @@
      hx-get="/api/instances/{{ inst.id }}/status"
      hx-trigger="every 5s"
      hx-swap="none"
+     hx-disinherit="hx-swap"
      hx-on::after-request="updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
 
     <!-- Card Header -->
