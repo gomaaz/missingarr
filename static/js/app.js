@@ -293,7 +293,10 @@ async function toggleInstance(instanceId, enabled) {
         });
         if (resp.ok) {
             Alpine.store('toasts').add(enabled ? 'Instance enabled' : 'Instance disabled', 'info');
-            setTimeout(() => location.reload(), 800);
+            htmx.ajax('GET', `/instances/${instanceId}/card`, {
+                target: `#icard-${instanceId}`,
+                swap: 'outerHTML'
+            });
         }
     } catch {
         Alpine.store('toasts').add('Failed to toggle instance', 'error');

@@ -131,6 +131,22 @@ async def instance_new(request: Request):
     )
 
 
+@app.get("/instances/{instance_id}/card", response_class=HTMLResponse)
+async def instance_card(instance_id: int, request: Request):
+    from backend import db
+    inst = db.instances.get_by_id(instance_id)
+    if not inst:
+        from fastapi import HTTPException
+        raise HTTPException(404)
+    orchestrator = request.app.state.orchestrator
+    state = orchestrator.get_agent_state(instance_id) or {}
+    recent = db.history.get_last_for_instance(instance_id)
+    return templates.TemplateResponse(
+        "instances/card.html",
+        template_ctx(request, inst=inst, state=state, recent=recent, conn=inst["connection_status"]),
+    )
+
+
 @app.get("/instances/{instance_id}/edit", response_class=HTMLResponse)
 async def instance_edit(instance_id: int, request: Request):
     from backend import db
