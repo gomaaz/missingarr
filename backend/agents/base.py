@@ -171,9 +171,10 @@ class BaseAgent(ABC):
         """Manual trigger — runs in a separate thread to not block the caller."""
         skill = self._get_skill(skill_name)
         if not skill:
-            self.log("warn", "system", f"Skill '{skill_name}' not available on this agent")
+            self.log("warn", "system", f"Force trigger ignored — skill '{skill_name}' not registered on this agent")
             return
 
+        self.log("info", "system", f"Force trigger received for '{skill_name}'")
         t = threading.Thread(
             target=self._run_skill,
             args=[skill_name, force],

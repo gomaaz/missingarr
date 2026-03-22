@@ -5,9 +5,7 @@ from backend.skills.health_check import HealthCheckSkill
 
 class SonarrAgent(BaseAgent):
     def build_skills(self):
-        skills = []
-        cfg = self.config
-        if cfg.get("search_missing_enabled", True):
-            skills.append(SearchMissingSkill())
-        skills.append(HealthCheckSkill())
-        return skills
+        # Always register all skills so force triggers work regardless of
+        # which scheduled jobs are enabled. Scheduler jobs are separately
+        # gated on the _enabled flags inside _run().
+        return [SearchMissingSkill(), HealthCheckSkill()]
