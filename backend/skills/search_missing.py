@@ -68,7 +68,7 @@ class SearchMissingSkill(BaseSkill):
                             released = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                             if released <= cutoff:
                                 filtered.append(r)
-                        except ValueError:
+                        except (ValueError, TypeError):
                             filtered.append(r)
                     else:
                         filtered.append(r)
@@ -230,7 +230,7 @@ class SearchMissingSkill(BaseSkill):
 
         if mode == "episode" and episode_id:
             agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-            label = f"{series_title} S{season_number:02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+            label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
             agent.log("debug", self.name, f"EpisodeSearch: {label}")
             return True, label, "episode"
 
@@ -259,17 +259,17 @@ class SearchMissingSkill(BaseSkill):
                     return True, label, "season"
                 else:
                     agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-                    label = f"{series_title} S{season_number:02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+                    label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
                     agent.log("debug", self.name, f"Smart: EpisodeSearch (missing {missing_eps}/{total_eps} eps)")
                     return True, label, "episode"
             except Exception:
                 agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-                label = f"{series_title} S{season_number:02d}E{record.get('episodeNumber', 0):02d}" if series_title else ep_title
+                label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d}" if series_title else ep_title
                 return True, label, "episode"
 
         elif episode_id:
             agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-            label = f"{series_title} S{season_number:02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+            label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
             return True, label, "episode"
 
         return False, "", ""
