@@ -144,12 +144,19 @@ class BaseAgent(ABC):
             self.state["status"] = "quiet"
             return
 
-        # Guard against concurrent runs of the same skill
-        with self._lock:
-            if self.state.get("status") == "running":
+        # Guard against concurrent runs of the same skill.
+        # Force triggers wait up to 90 s for any active run to finish first;
+        # non-force triggers are dropped immediately if a run is active.
+        wait_until = time.monotonic() + (90 if force else 0)
+        while True:
+            with self._lock:
+                if self.state.get("status") != "running":
+                    self.state["status"] = "running"
+                    break
+            if time.monotonic() >= wait_until:
                 self.log("warn", skill_name, "Already running — skipping duplicate trigger")
                 return
-            self.state["status"] = "running"
+            time.sleep(1)
 
         try:
             skill.execute(self)

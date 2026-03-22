@@ -142,10 +142,17 @@ async function forceRun(instanceId, skill = 'search_missing') {
         const resp = await fetch(`/api/instances/${instanceId}/trigger?skill=${skill}&force=true`, {
             method: 'POST'
         });
+        // If auth redirected us to /login the response will be the login page HTML.
+        // Detect this by checking resp.redirected or the final URL.
+        if (resp.redirected || resp.url.includes('/login')) {
+            location.reload();
+            return;
+        }
         if (resp.ok) {
             Alpine.store('toasts').add('Run triggered!', 'success');
         } else {
-            Alpine.store('toasts').add('Failed to trigger run', 'error');
+            const data = await resp.json().catch(() => ({}));
+            Alpine.store('toasts').add(data.detail || 'Failed to trigger run', 'error');
         }
     } catch {
         Alpine.store('toasts').add('Network error', 'error');
