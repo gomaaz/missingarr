@@ -1,5 +1,6 @@
 import random
 import time
+from datetime import datetime, timezone
 from backend.skills.base import BaseSkill
 from backend import db
 
@@ -42,6 +43,9 @@ class SearchUpgradesSkill(BaseSkill):
             if not candidates:
                 agent.log("info", self.name, "No upgrade candidates found")
                 db.history.finish_run(run_id, 0, 0, "success")
+                agent.state["last_wanted"] = 0
+                agent.state["last_triggered"] = 0
+                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
                 return
 
             for item in candidates:
@@ -68,6 +72,9 @@ class SearchUpgradesSkill(BaseSkill):
 
             agent.log("info", self.name, f"Done — candidates: {wanted_count}, triggered: {triggered_count}")
             db.history.finish_run(run_id, wanted_count, triggered_count, "success")
+            agent.state["last_wanted"] = wanted_count
+            agent.state["last_triggered"] = triggered_count
+            agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
         except Exception as exc:
             agent.log("error", self.name, f"Upgrade search failed: {exc}")
@@ -130,7 +137,7 @@ class SearchUpgradesSkill(BaseSkill):
                 probe = agent.http_get("/api/v3/wanted/cutoff", params={"pageSize": 1, "page": 1, "monitored": "true"})
                 total = probe.get("totalRecords", 0)
                 if total > pool_size:
-                    max_page = min(10, total // pool_size)
+                    max_page = min(10, -(-total // pool_size))  # ceil division
                     if max_page >= 2:
                         page = random.randint(1, max_page)
                 resp = agent.http_get(
@@ -138,7 +145,7 @@ class SearchUpgradesSkill(BaseSkill):
                     params={"pageSize": pool_size, "page": page, "monitored": "true"},
                 )
                 for r in resp.get("records", []):
-                    if "id" in r:
+                    if "id" in r and r.get("hasFile"):
                         year = r.get("year", "")
                         title = r.get("title") or f"Movie #{r['id']}"
                         label = f"{title} ({year})" if year else title
@@ -169,7 +176,7 @@ class SearchUpgradesSkill(BaseSkill):
             probe = agent.http_get("/api/v3/wanted/cutoff", params={"pageSize": 1, "page": 1, "monitored": "true"})
             total = probe.get("totalRecords", 0)
             if total > pool_size:
-                max_page = min(10, total // pool_size)
+                max_page = min(10, -(-total // pool_size))  # ceil division
                 if max_page >= 2:
                     page = random.randint(1, max_page)
             resp = agent.http_get(

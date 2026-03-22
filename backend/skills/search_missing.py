@@ -39,7 +39,7 @@ class SearchMissingSkill(BaseSkill):
                     probe = agent.http_get("/api/v3/wanted/missing", params={**params, "pageSize": 1})
                     total_available = probe.get("totalRecords", 0)
                     if total_available > fetch_size:
-                        max_page = min(10, total_available // fetch_size)
+                        max_page = min(10, -(-total_available // fetch_size))  # ceil division
                         if max_page >= 2:
                             params["page"] = random.randint(1, max_page)
                 except Exception:
@@ -56,6 +56,7 @@ class SearchMissingSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
+                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
                 return
 
             # Filter: hours_after_release (skipped for force runs)
@@ -79,6 +80,9 @@ class SearchMissingSkill(BaseSkill):
             if not records:
                 agent.log("info", self.name, f"All results are too recent (hours_after_release={hours}h)")
                 db.history.finish_run(run_id, 0, 0, "success")
+                agent.state["last_wanted"] = 0
+                agent.state["last_triggered"] = 0
+                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
                 return
 
             # Apply search_order to the full pool
@@ -117,6 +121,7 @@ class SearchMissingSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
+                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
                 return
 
             # Lazy series title lookup for Sonarr — only fetch the specific series
@@ -180,8 +185,9 @@ class SearchMissingSkill(BaseSkill):
         elif mode == "show_batch":
             return f"ser:{record.get('seriesId')}"
         elif mode == "smart":
-            # Key on season level (smart may pick episode or season per run)
-            return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
+            # Smart mode may pick episode or season search — cache at episode level
+            # so other missing episodes in the same season are not blocked
+            return f"ep:{record.get('id')}"
         return f"ep:{record.get('id')}"
 
     def _apply_order(self, records: list, order: str, arr_type: str) -> list:
@@ -218,22 +224,26 @@ class SearchMissingSkill(BaseSkill):
                 except ValueError:
                     rest.append(r)
 
-            n = len(records)
-            n_recent = max(1, int(n * 0.5))
-            n_oldest = max(1, int(n * 0.2))
-
             random.shuffle(recent)
-            rest_random = rest[:]
-            random.shuffle(rest_random)
+            random.shuffle(rest)
+
+            # Build result: recent first, then random rest, then oldest rest
             rest_oldest = sorted(rest, key=lambda r: r.get(date_key) or "")
 
-            result = recent[:n_recent] + rest_random[:int(n * 0.3)] + rest_oldest[:n_oldest]
-            seen = set()
+            n = len(records)
+            n_recent = max(1, int(n * 0.5))
+            n_random = max(1, int(n * 0.3))
+            n_oldest = max(1, int(n * 0.2))
+
+            result = recent[:n_recent] + rest[:n_random] + rest_oldest[:n_oldest]
+
+            # Deduplicate by record ID (same record can appear in rest and rest_oldest)
+            seen: set = set()
             records = []
             for r in result:
-                rid = id(r)
-                if rid not in seen:
-                    seen.add(rid)
+                rec_id = r.get("id")
+                if rec_id not in seen:
+                    seen.add(rec_id)
                     records.append(r)
 
         return records
@@ -270,7 +280,7 @@ class SearchMissingSkill(BaseSkill):
             agent.log("debug", self.name, f"SeasonSearch: {label}")
             return True, label, "season"
 
-        elif mode == "show_batch" and series_id:
+        elif mode == "show_batch" and series_id is not None:
             agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
             agent.log("debug", self.name, f"SeriesSearch: {series_title}")
             return True, series_title, "series"
@@ -292,7 +302,8 @@ class SearchMissingSkill(BaseSkill):
                     label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
                     agent.log("debug", self.name, f"Smart: EpisodeSearch (missing {missing_eps}/{total_eps} eps)")
                     return True, label, "episode"
-            except Exception:
+            except Exception as exc:
+                agent.log("debug", self.name, f"Smart mode episode fetch failed, falling back to EpisodeSearch: {exc}")
                 agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                 label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d}" if series_title else ep_title
                 return True, label, "episode"

@@ -61,6 +61,7 @@ class BaseAgent(ABC):
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         self.state["status"] = "off"
+        self.state["next_run_at"] = None
         self.log("info", "system", f"Agent stopped — '{self.config['name']}'")
 
     def reload(self, new_config: dict):

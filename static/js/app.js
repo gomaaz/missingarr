@@ -47,7 +47,9 @@ document.addEventListener('alpine:init', () => {
                 } catch {}
             };
             this._evtSource.onerror = () => {
-                setTimeout(() => this.connect(), 5000);
+                if (this.enabled) {
+                    setTimeout(() => this.connect(), 5000);
+                }
             };
         },
 

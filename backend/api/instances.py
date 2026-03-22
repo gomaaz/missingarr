@@ -116,6 +116,9 @@ def test_connection(instance_id: int, request: Request):
             "version": data.get("version"),
             "appName": data.get("appName"),
         }
+    except req_lib.exceptions.Timeout:
+        db.instances.update_status(instance_id, "offline")
+        raise HTTPException(504, "Connection timed out")
     except req_lib.exceptions.ConnectionError:
         db.instances.update_status(instance_id, "offline")
         raise HTTPException(503, "Cannot connect to instance")
