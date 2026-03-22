@@ -81,9 +81,16 @@ class InstanceBase(BaseModel):
             raise ValueError("Time must be in HH:MM format (00:00–23:59)")
         return f"{h:02d}:{m:02d}"
 
-    @field_validator("missing_per_run", "upgrades_per_run")
+    @field_validator("missing_per_run")
     @classmethod
-    def validate_per_run(cls, v: int) -> int:
+    def validate_missing_per_run(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Must be at least 1")
+        return v
+
+    @field_validator("upgrades_per_run")
+    @classmethod
+    def validate_upgrades_per_run(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Must be at least 1")
         if v > 100:
