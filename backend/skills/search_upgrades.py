@@ -20,7 +20,22 @@ class SearchUpgradesSkill(BaseSkill):
             per_run = cfg.get("upgrades_per_run", 1)
             delay = cfg.get("seconds_between_actions", 2)
 
-            candidates = self._collect_candidates(agent, arr_type, source, per_run)
+            raw = self._collect_candidates(agent, arr_type, source, per_run)
+
+            # Pre-filter: skip already-searched items and deduplicate within this run
+            candidates = []
+            seen_keys: set = set()
+            for item in raw:
+                cache_key = self._cache_key(arr_type, item)
+                if not force and db.searched.exists(cfg["id"], cache_key):
+                    continue
+                if cache_key in seen_keys:
+                    continue
+                candidates.append(item)
+                seen_keys.add(cache_key)
+                if len(candidates) >= per_run:
+                    break
+
             wanted_count = len(candidates)
 
             if not candidates:
@@ -35,11 +50,7 @@ class SearchUpgradesSkill(BaseSkill):
 
                 item_id = item["id"]
                 label = item["label"]
-                cache_key = f"upg:{item_id}"
-
-                if not force and db.searched.exists(cfg["id"], cache_key):
-                    agent.log("debug", self.name, f"Already searched for upgrade, skipping: {label}")
-                    continue
+                cache_key = self._cache_key(arr_type, item)
 
                 try:
                     item_type = self._trigger_upgrade(agent, arr_type, item)
@@ -60,6 +71,16 @@ class SearchUpgradesSkill(BaseSkill):
         except Exception as exc:
             agent.log("error", self.name, f"Upgrade search failed: {exc}")
             db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
+
+    def _cache_key(self, arr_type: str, item: dict) -> str:
+        if arr_type == "radarr":
+            return f"upg:{item['id']}"
+        # Sonarr: key at season level if available (SeasonSearch deduplication)
+        series_id = item.get("series_id")
+        season_number = item.get("season_number")
+        if series_id is not None and season_number is not None:
+            return f"upg:sea:{series_id}:{season_number}"
+        return f"upg:{item['id']}"
 
     def _trigger_upgrade(self, agent, arr_type: str, item: dict) -> str:
         if arr_type == "radarr":
