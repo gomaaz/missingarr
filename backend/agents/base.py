@@ -34,6 +34,7 @@ class BaseAgent(ABC):
             "last_triggered": 0,
             "last_sync": None,
             "connection_status": config.get("connection_status", "unknown"),
+            "last_seen_at": config.get("last_seen_at"),
         }
 
         self._skills: list[BaseSkill] = []

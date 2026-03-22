@@ -77,13 +77,20 @@ def trigger_instance(instance_id: int, request: Request, skill: str = "search_mi
 @router.get("/{instance_id}/status")
 def instance_status(instance_id: int, request: Request):
     state = _get_orchestrator(request).get_agent_state(instance_id)
+    if state is not None:
+        return {
+            "connection_status": state.get("connection_status", "unknown"),
+            "last_seen_at": state.get("last_seen_at"),
+            "agent_state": state,
+        }
+    # Agent not running (disabled) — fall back to DB
     inst = db.instances.get_by_id(instance_id)
     if not inst:
         raise HTTPException(404, "Instance not found")
     return {
         "connection_status": inst.get("connection_status", "unknown"),
         "last_seen_at": inst.get("last_seen_at"),
-        "agent_state": state or {},
+        "agent_state": {},
     }
 
 
