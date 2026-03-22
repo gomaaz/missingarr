@@ -75,7 +75,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    <template x-for="(entry, i) in pageEntries()" :key="i">
+                    <template x-for="entry in pageEntries()" :key="entry._id">
                         <tr :class="`log-row-${entry.level}`">
                             <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;font-family:'JetBrains Mono',monospace;"
                                 x-text="fmt(entry.created_at)"></td>
@@ -139,30 +139,33 @@ function logsTable() {
         perPage: 20,
         filterInstance: '',
         filterLevel: '',
+        _filtered: [],
 
         init() {
-            this.$watch('$store.logs.entries', () => { /* reactivity via Alpine */ });
+            this._refilter();
+            this.$watch('$store.logs.entries', () => this._refilter());
+            this.$watch('filterInstance', () => { this.page = 0; this._refilter(); });
+            this.$watch('filterLevel',    () => { this.page = 0; this._refilter(); });
         },
 
-        filteredEntries() {
+        _refilter() {
             let entries = this.$store.logs.entries;
             if (this.filterInstance) entries = entries.filter(e => e.instance_name === this.filterInstance);
             if (this.filterLevel)    entries = entries.filter(e => e.level === this.filterLevel);
-            return entries;
+            this._filtered = entries;
         },
 
         pageEntries() {
-            const filtered = this.filteredEntries();
             const start = this.page * this.perPage;
-            return filtered.slice(start, start + this.perPage);
+            return this._filtered.slice(start, start + this.perPage);
         },
 
         pageCount() {
-            return Math.max(1, Math.ceil(this.filteredEntries().length / this.perPage));
+            return Math.max(1, Math.ceil(this._filtered.length / this.perPage));
         },
 
         paginationLabel() {
-            const total = this.filteredEntries().length;
+            const total = this._filtered.length;
             const start = this.page * this.perPage + 1;
             const end = Math.min(start + this.perPage - 1, total);
             return total === 0 ? '0 entries' : `${start}–${end} of ${total}`;

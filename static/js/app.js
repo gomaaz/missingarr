@@ -23,6 +23,9 @@ document.addEventListener('alpine:init', () => {
         entries: [],
         maxEntries: 500,
         _evtSource: null,
+        _nextId: 0,
+        _buffer: [],
+        _flushTimer: null,
 
         init() {
             this.connect();
@@ -36,21 +39,32 @@ document.addEventListener('alpine:init', () => {
                 if (!this.enabled) return;
                 try {
                     const entry = JSON.parse(e.data);
-                    this.entries.unshift(entry);
-                    if (this.entries.length > this.maxEntries) {
-                        this.entries.splice(this.maxEntries);
+                    entry._id = this._nextId++;
+                    this._buffer.push(entry);
+                    if (!this._flushTimer) {
+                        this._flushTimer = setTimeout(() => this._flush(), 150);
                     }
                 } catch {}
             };
             this._evtSource.onerror = () => {
-                // Reconnect after 5s
                 setTimeout(() => this.connect(), 5000);
             };
         },
 
+        _flush() {
+            this._flushTimer = null;
+            if (!this._buffer.length) return;
+            // Reverse so the newest message ends up at index 0 after unshift
+            const toAdd = this._buffer.splice(0).reverse();
+            this.entries.unshift(...toAdd);
+            if (this.entries.length > this.maxEntries) {
+                this.entries.splice(this.maxEntries);
+            }
+        },
+
         toggleDebug() {
             this.debug = !this.debug;
-            this.connect(); // reconnect with new debug param
+            this.connect();
         },
 
         toggleEnabled() {
@@ -58,6 +72,9 @@ document.addEventListener('alpine:init', () => {
             if (!this.enabled && this._evtSource) {
                 this._evtSource.close();
                 this._evtSource = null;
+                clearTimeout(this._flushTimer);
+                this._flushTimer = null;
+                this._buffer = [];
             } else if (this.enabled) {
                 this.connect();
             }
@@ -65,6 +82,9 @@ document.addEventListener('alpine:init', () => {
 
         clear() {
             this.entries = [];
+            this._buffer = [];
+            clearTimeout(this._flushTimer);
+            this._flushTimer = null;
         },
 
         levelClass(level) {
