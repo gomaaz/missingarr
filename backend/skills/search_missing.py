@@ -8,7 +8,7 @@ from backend import db
 class SearchMissingSkill(BaseSkill):
     name = "search_missing"
 
-    def execute(self, agent) -> None:
+    def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
         run_id = db.history.start_run(cfg["id"], cfg["name"], self.name)
         wanted_count = 0
@@ -82,12 +82,13 @@ class SearchMissingSkill(BaseSkill):
             # Apply search_order to the full pool
             records = self._apply_order(records, search_order, cfg["type"])
 
-            # Filter already-searched items from cache, then take per_run
+            # Filter already-searched items from cache, then take per_run.
+            # Force runs bypass the cache so they always trigger fresh searches.
             skipped = 0
             candidates = []
             for record in records:
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                if cache_key and db.searched.exists(cfg["id"], cache_key):
+                if not force and cache_key and db.searched.exists(cfg["id"], cache_key):
                     skipped += 1
                     continue
                 candidates.append(record)

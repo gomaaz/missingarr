@@ -7,7 +7,7 @@ from backend import db
 class HealthCheckSkill(BaseSkill):
     name = "health_check"
 
-    def execute(self, agent) -> None:
+    def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
         agent.log("debug", self.name, "Checking connection...")
 

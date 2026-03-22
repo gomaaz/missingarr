@@ -159,7 +159,7 @@ class BaseAgent(ABC):
             time.sleep(1)
 
         try:
-            skill.execute(self)
+            skill.execute(self, force=force)
         except Exception as exc:
             self.log("error", skill_name, f"Unhandled exception: {exc}")
         finally:

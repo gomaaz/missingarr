@@ -9,6 +9,6 @@ class BaseSkill(ABC):
     name: str = ""
 
     @abstractmethod
-    def execute(self, agent: "BaseAgent") -> None:
+    def execute(self, agent: "BaseAgent", force: bool = False) -> None:
         """Execute this skill using the provided agent context."""
         ...

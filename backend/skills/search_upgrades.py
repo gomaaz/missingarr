@@ -6,7 +6,7 @@ from backend import db
 class SearchUpgradesSkill(BaseSkill):
     name = "search_upgrades"
 
-    def execute(self, agent) -> None:
+    def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
         if cfg["type"] != "radarr":
             return
@@ -38,7 +38,7 @@ class SearchUpgradesSkill(BaseSkill):
                 label = movie["label"]
                 cache_key = f"upg:{movie_id}"
 
-                if db.searched.exists(cfg["id"], cache_key):
+                if not force and db.searched.exists(cfg["id"], cache_key):
                     agent.log("debug", self.name, f"Already searched for upgrade, skipping: {label}")
                     continue
 
