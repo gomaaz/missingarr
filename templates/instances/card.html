@@ -147,13 +147,26 @@
         </div>
         {% endif %}
 
-        <!-- Force Upgrades (Radarr only, subtle) -->
-        {% if inst.search_upgrades_enabled and inst.type == 'radarr' and is_enabled %}
-        <div style="margin-top:0.6rem;">
-            <button class="btn btn-secondary btn-sm" onclick="forceRun({{ inst.id }}, 'search_upgrades')">
+        <!-- Skill toggles -->
+        <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.75rem;flex-wrap:wrap;">
+            <span style="font-size:0.7rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Skills:</span>
+            <button class="btn btn-sm {{ 'btn-toggle-on' if inst.search_missing_enabled else 'btn-toggle-off' }}"
+                    onclick="toggleSkill({{ inst.id }}, 'missing', {{ 'true' if inst.search_missing_enabled else 'false' }}, this)"
+                    data-skill-btn="missing"
+                    title="Toggle missing search">
+                Missing
+            </button>
+            <button class="btn btn-sm {{ 'btn-toggle-on' if inst.search_upgrades_enabled else 'btn-toggle-off' }}"
+                    onclick="toggleSkill({{ inst.id }}, 'upgrades', {{ 'true' if inst.search_upgrades_enabled else 'false' }}, this)"
+                    data-skill-btn="upgrades"
+                    title="Toggle upgrades search">
+                Upgrades
+            </button>
+            {% if inst.search_upgrades_enabled and is_enabled %}
+            <button class="btn btn-secondary btn-sm" onclick="forceRun({{ inst.id }}, 'search_upgrades')" style="margin-left:auto;">
                 Force Upgrades
             </button>
+            {% endif %}
         </div>
-        {% endif %}
     </div>
 </div>

@@ -54,6 +54,17 @@ def delete_instance(instance_id: int, request: Request):
         raise HTTPException(404, "Instance not found")
 
 
+@router.post("/{instance_id}/toggle-skill")
+def toggle_skill(instance_id: int, request: Request, skill: str, enabled: bool):
+    if skill not in ("missing", "upgrades"):
+        raise HTTPException(400, "skill must be 'missing' or 'upgrades'")
+    inst = db.instances.get_by_id(instance_id)
+    if not inst:
+        raise HTTPException(404, "Instance not found")
+    db.instances.toggle_skill(instance_id, skill, enabled)
+    return {"status": "ok", "skill": skill, "enabled": enabled}
+
+
 @router.post("/{instance_id}/trigger")
 def trigger_instance(instance_id: int, request: Request, skill: str = "search_missing", force: bool = True):
     inst = db.instances.get_by_id(instance_id)

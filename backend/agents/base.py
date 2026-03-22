@@ -138,6 +138,14 @@ class BaseAgent(ABC):
         if fresh:
             self.config = fresh
 
+        # Check skill-level enable flags — config already refreshed above
+        if not force and skill_name == "search_missing" and not self.config.get("search_missing_enabled"):
+            self.log("debug", skill_name, "Skipping — missing search disabled")
+            return
+        if not force and skill_name == "search_upgrades" and not self.config.get("search_upgrades_enabled"):
+            self.log("debug", skill_name, "Skipping — upgrades search disabled")
+            return
+
         # Check quiet hours — skipped for health_check and force runs
         if skill_name != "health_check" and not force and self._in_quiet_hours():
             self.log("debug", skill_name, "Skipping — quiet hours active")

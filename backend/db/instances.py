@@ -156,6 +156,15 @@ def update_status(instance_id: int, status: str, last_seen_at: Optional[str] = N
             )
 
 
+def toggle_skill(instance_id: int, skill: str, enabled: bool):
+    col = "search_missing_enabled" if skill == "missing" else "search_upgrades_enabled"
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE instances SET {col}=?, updated_at=datetime('now') WHERE id=?",
+            (int(enabled), instance_id),
+        )
+
+
 def toggle_enabled(instance_id: int, enabled: bool) -> Optional[dict]:
     with get_db() as conn:
         conn.execute(

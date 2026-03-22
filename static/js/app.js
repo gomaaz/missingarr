@@ -244,6 +244,28 @@ async function testCardConnection(instanceId, btn) {
     }
 }
 
+async function toggleSkill(instanceId, skill, currentlyEnabled, btn) {
+    const newEnabled = !currentlyEnabled;
+    try {
+        const resp = await fetch(`/api/instances/${instanceId}/toggle-skill?skill=${skill}&enabled=${newEnabled}`, {
+            method: 'POST'
+        });
+        if (resp.ok) {
+            btn.className = btn.className.replace(
+                newEnabled ? 'btn-toggle-off' : 'btn-toggle-on',
+                newEnabled ? 'btn-toggle-on' : 'btn-toggle-off'
+            );
+            btn.setAttribute('onclick', `toggleSkill(${instanceId}, '${skill}', ${newEnabled}, this)`);
+            const name = skill.charAt(0).toUpperCase() + skill.slice(1);
+            Alpine.store('toasts').add(`${name} ${newEnabled ? 'enabled' : 'disabled'}`, 'info');
+        } else {
+            Alpine.store('toasts').add('Failed to toggle skill', 'error');
+        }
+    } catch {
+        Alpine.store('toasts').add('Failed to toggle skill', 'error');
+    }
+}
+
 async function toggleInstance(instanceId, enabled) {
     try {
         const resp = await fetch(`/api/instances/${instanceId}/toggle?enabled=${enabled}`, {

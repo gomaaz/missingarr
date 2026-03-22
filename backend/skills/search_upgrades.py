@@ -8,8 +8,7 @@ class SearchUpgradesSkill(BaseSkill):
 
     def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
-        if cfg["type"] != "radarr":
-            return
+        arr_type = cfg["type"]
 
         run_id = db.history.start_run(cfg["id"], cfg["name"], self.name)
         wanted_count = 0
@@ -21,7 +20,7 @@ class SearchUpgradesSkill(BaseSkill):
             per_run = cfg.get("upgrades_per_run", 1)
             delay = cfg.get("seconds_between_actions", 2)
 
-            candidates = self._collect_candidates(agent, source, per_run)
+            candidates = self._collect_candidates(agent, arr_type, source, per_run)
             wanted_count = len(candidates)
 
             if not candidates:
@@ -29,30 +28,30 @@ class SearchUpgradesSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 return
 
-            for movie in candidates:
+            for item in candidates:
                 if not agent.check_rate_cap():
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
-                movie_id = movie["id"]
-                label = movie["label"]
-                cache_key = f"upg:{movie_id}"
+                item_id = item["id"]
+                label = item["label"]
+                cache_key = f"upg:{item_id}"
 
                 if not force and db.searched.exists(cfg["id"], cache_key):
                     agent.log("debug", self.name, f"Already searched for upgrade, skipping: {label}")
                     continue
 
                 try:
-                    agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
+                    item_type = self._trigger_upgrade(agent, arr_type, item)
                     triggered_count += 1
                     agent.record_action()
-                    db.history.insert_item(run_id, label, movie_id, "movie")
-                    db.searched.add(cfg["id"], cache_key, label, "movie")
+                    db.history.insert_item(run_id, label, item_id, item_type)
+                    db.searched.add(cfg["id"], cache_key, label, item_type)
                     agent.log("debug", self.name, f"Upgrade search: {label}")
                 except Exception as exc:
                     agent.log("warn", self.name, f"Failed to trigger upgrade for {label}: {exc}")
 
-                if delay > 0 and movie != candidates[-1]:
+                if delay > 0 and item != candidates[-1]:
                     time.sleep(delay)
 
             agent.log("info", self.name, f"Done — candidates: {wanted_count}, triggered: {triggered_count}")
@@ -62,7 +61,43 @@ class SearchUpgradesSkill(BaseSkill):
             agent.log("error", self.name, f"Upgrade search failed: {exc}")
             db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
 
-    def _collect_candidates(self, agent, source: str, per_run: int) -> list[dict]:
+    def _trigger_upgrade(self, agent, arr_type: str, item: dict) -> str:
+        if arr_type == "radarr":
+            agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [item["id"]]})
+            return "movie"
+        else:
+            # Sonarr: prefer SeasonSearch if season info available, else EpisodeSearch
+            series_id = item.get("series_id")
+            season_number = item.get("season_number")
+            episode_id = item.get("id")
+            if series_id is not None and season_number is not None:
+                agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
+                return "season"
+            else:
+                agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+                return "episode"
+
+    def _collect_candidates(self, agent, arr_type: str, source: str, per_run: int) -> list[dict]:
+        items = []
+
+        if arr_type == "radarr":
+            items = self._collect_radarr(agent, source, per_run)
+        else:
+            items = self._collect_sonarr(agent, per_run)
+
+        # Deduplicate, respect per_run limit
+        seen = set()
+        result = []
+        for item in items:
+            if item["id"] not in seen:
+                seen.add(item["id"])
+                result.append(item)
+                if len(result) >= per_run:
+                    break
+
+        return result
+
+    def _collect_radarr(self, agent, source: str, per_run: int) -> list[dict]:
         items = []
 
         if source in ("wanted_list_only", "both"):
@@ -92,14 +127,36 @@ class SearchUpgradesSkill(BaseSkill):
             except Exception as exc:
                 agent.log("warn", self.name, f"Failed to fetch monitored movies: {exc}")
 
-        # Deduplicate, respect per_run limit
-        seen = set()
-        result = []
-        for item in items:
-            if item["id"] not in seen:
-                seen.add(item["id"])
-                result.append(item)
-                if len(result) >= per_run:
-                    break
+        return items
 
-        return result
+    def _collect_sonarr(self, agent, per_run: int) -> list[dict]:
+        """Sonarr upgrades always use the cutoff (quality unmet) list."""
+        items = []
+        try:
+            resp = agent.http_get(
+                "/api/v3/wanted/cutoff",
+                params={"pageSize": per_run, "page": 1, "monitored": "true"},
+            )
+            for r in resp.get("records", []):
+                if "id" not in r:
+                    continue
+                series = r.get("series") or {}
+                series_title = series.get("title") or r.get("seriesTitle", "") or f"Series #{r.get('seriesId', '?')}"
+                season_number = r.get("seasonNumber")
+                ep_number = r.get("episodeNumber", 0)
+                ep_title = r.get("title", "")
+                if season_number is not None:
+                    label = f"{series_title} S{(season_number or 0):02d}E{ep_number:02d}"
+                    if ep_title:
+                        label += f" – {ep_title}"
+                else:
+                    label = ep_title or f"Episode #{r['id']}"
+                items.append({
+                    "id": r["id"],
+                    "label": label,
+                    "series_id": r.get("seriesId"),
+                    "season_number": season_number,
+                })
+        except Exception as exc:
+            agent.log("warn", self.name, f"Failed to fetch Sonarr cutoff list: {exc}")
+        return items
