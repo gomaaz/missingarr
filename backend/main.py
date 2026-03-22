@@ -108,6 +108,7 @@ async def dashboard(request: Request):
         recent = db.history.get_last_for_instance(inst["id"])
         cards.append({"instance": inst, "state": state, "recent": recent})
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         template_ctx(request, cards=cards),
     )
@@ -118,6 +119,7 @@ async def instances_list(request: Request):
     from backend import db
     all_instances = db.instances.get_all()
     return templates.TemplateResponse(
+        request,
         "instances/list.html",
         template_ctx(request, instances=all_instances),
     )
@@ -126,6 +128,7 @@ async def instances_list(request: Request):
 @app.get("/instances/new", response_class=HTMLResponse)
 async def instance_new(request: Request):
     return templates.TemplateResponse(
+        request,
         "instances/form.html",
         template_ctx(request, instance=None, action="/api/instances", method="POST"),
     )
@@ -142,6 +145,7 @@ async def instance_card(instance_id: int, request: Request):
     state = orchestrator.get_agent_state(instance_id) or {}
     recent = db.history.get_last_for_instance(instance_id)
     return templates.TemplateResponse(
+        request,
         "instances/card.html",
         template_ctx(request, inst=inst, state=state, recent=recent, conn=inst["connection_status"]),
     )
@@ -154,6 +158,7 @@ async def instance_edit(instance_id: int, request: Request):
     if not inst:
         return RedirectResponse("/instances")
     return templates.TemplateResponse(
+        request,
         "instances/form.html",
         template_ctx(
             request,
@@ -169,6 +174,7 @@ async def history_page(request: Request):
     from backend import db
     all_instances = db.instances.get_all()
     return templates.TemplateResponse(
+        request,
         "history.html",
         template_ctx(request, instances=all_instances),
     )
@@ -180,6 +186,7 @@ async def logs_page(request: Request):
     recent = db.activity.query(limit=100, include_debug=False)
     all_instances = db.instances.get_all()
     return templates.TemplateResponse(
+        request,
         "logs.html",
         template_ctx(request, recent=recent, instances=all_instances),
     )
@@ -191,6 +198,7 @@ async def searched_page(request: Request):
     all_instances = db.instances.get_all()
     counts = db.searched.count()
     return templates.TemplateResponse(
+        request,
         "searched.html",
         template_ctx(request, instances=all_instances, counts=counts),
     )
@@ -199,6 +207,7 @@ async def searched_page(request: Request):
 @app.get("/help", response_class=HTMLResponse)
 async def help_page(request: Request):
     return templates.TemplateResponse(
+        request,
         "help.html",
         template_ctx(request),
     )
@@ -213,6 +222,7 @@ async def login_page(request: Request, next: str = "/", error: str = ""):
     if request.session.get("user"):
         return RedirectResponse(next or "/", status_code=302)
     return templates.TemplateResponse(
+        request,
         "login.html",
         {"request": request, "app_name": settings.app_name, "next": next, "error": error},
     )
@@ -244,6 +254,7 @@ async def login_submit(
 
     # Invalid credentials — re-render login with error
     return templates.TemplateResponse(
+        request,
         "login.html",
         {"request": request, "app_name": settings.app_name, "next": next, "error": "Invalid username or password."},
         status_code=401,
