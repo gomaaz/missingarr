@@ -167,6 +167,10 @@ body {
 .btn-force { background: var(--accent); color: #fff; font-size: 0.7rem; padding: 0.25rem 0.6rem; }
 .btn-off { background: #374151; color: var(--text-secondary); font-size: 0.7rem; padding: 0.25rem 0.6rem; }
 .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+.btn-toggle-on  { background: #16652522; color: var(--green); border-color: #22c55e66; }
+.btn-toggle-on:hover  { background: #16652544; }
+.btn-toggle-off { background: transparent; color: var(--text-muted); border-color: var(--border); }
+.btn-toggle-off:hover { color: var(--text-secondary); border-color: #4d5270; }
 
 /* Status badges */
 .badge {
