@@ -72,15 +72,22 @@ class SearchMissingSkill(BaseSkill):
             records = self._apply_order(records, search_order, cfg["type"])
 
             # Filter already-searched items from cache, then take per_run.
-            # Force runs bypass the cache so they always trigger fresh searches.
+            # Force runs bypass the DB cache but still deduplicate within this run.
             skipped = 0
             candidates = []
+            seen_keys: set = set()  # dedup within this run (same season/series key)
             for record in records:
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
                 if not force and cache_key and db.searched.exists(cfg["id"], cache_key):
                     skipped += 1
                     continue
+                # Skip if another record with the same key is already a candidate
+                # (prevents duplicate season/series searches in show_batch/season_packs)
+                if cache_key and cache_key in seen_keys:
+                    continue
                 candidates.append(record)
+                if cache_key:
+                    seen_keys.add(cache_key)
                 if len(candidates) >= per_run:
                     break
 
