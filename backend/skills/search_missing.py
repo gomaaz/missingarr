@@ -24,17 +24,6 @@ class SearchMissingSkill(BaseSkill):
             # not just the same top-N items every run.
             fetch_size = min(per_run * 10, 100) if search_order == "random" else per_run * 2
 
-            # Pre-fetch series titles for Sonarr so labels are always populated
-            # even when the wanted/missing API omits the nested series object.
-            series_lookup: dict[int, str] = {}
-            if cfg["type"] == "sonarr":
-                try:
-                    all_series = agent.http_get("/api/v3/series")
-                    if isinstance(all_series, list):
-                        series_lookup = {s["id"]: s.get("title", "") for s in all_series}
-                except Exception:
-                    pass
-
             agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, per_run={per_run})...")
 
             params = {
@@ -106,6 +95,24 @@ class SearchMissingSkill(BaseSkill):
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
                 return
+
+            # Lazy series title lookup for Sonarr — only fetch the specific series
+            # whose titles are missing from the wanted/missing response (typically 0–5),
+            # instead of pre-fetching the entire library which is slow for large instances.
+            series_lookup: dict[int, str] = {}
+            if cfg["type"] == "sonarr":
+                needed = {
+                    r.get("seriesId") for r in candidates
+                    if r.get("seriesId")
+                    and not (r.get("series") or {}).get("title", "")
+                    and not r.get("seriesTitle", "")
+                }
+                for sid in needed:
+                    try:
+                        s = agent.http_get(f"/api/v3/series/{sid}")
+                        series_lookup[sid] = s.get("title", "")
+                    except Exception:
+                        pass
 
             # Execute searches respecting rate cap
             for record in candidates:
