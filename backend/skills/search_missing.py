@@ -56,9 +56,9 @@ class SearchMissingSkill(BaseSkill):
                 agent.state["last_triggered"] = 0
                 return
 
-            # Filter: hours_after_release
+            # Filter: hours_after_release (skipped for force runs)
             hours = cfg.get("hours_after_release", 9)
-            if hours > 0:
+            if not force and hours > 0:
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
                 filtered = []
                 for r in records:
