@@ -77,6 +77,9 @@ class SearchMissingSkill(BaseSkill):
             candidates = []
             seen_keys: set = set()  # dedup within this run (same season/series key)
             for record in records:
+                if record.get("hasFile"):
+                    skipped += 1
+                    continue
                 cache_key = self._cache_key(cfg["type"], record, missing_mode)
                 if not force and cache_key and db.searched.exists(cfg["id"], cache_key):
                     skipped += 1
