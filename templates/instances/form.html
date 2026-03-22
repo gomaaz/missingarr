@@ -12,7 +12,11 @@
     </div>
 
     <div class="card" x-data="instanceForm('{{ instance.type if instance else 'sonarr' }}')"
-         x-init="upgradesEnabled = {{ 'true' if instance and instance.search_upgrades_enabled else 'false' }}">
+         x-init="
+             enabledCheck     = {{ 'true' if not instance or instance.enabled else 'false' }};
+             missingEnabled   = {{ 'true' if not instance or instance.search_missing_enabled else 'false' }};
+             upgradesEnabled  = {{ 'true' if instance and instance.search_upgrades_enabled else 'false' }};
+         ">
         <div class="card-body">
 
             <!-- Skill toggles (top of card) -->
@@ -265,9 +269,9 @@ document.addEventListener('alpine:init', () => {});
 function instanceForm(instanceType) {
     return {
         type: instanceType || 'sonarr',
+        enabledCheck: false,
+        missingEnabled: false,
         upgradesEnabled: false,
-        enabledCheck: true,
-        missingEnabled: true,
 
         showMissingMode() { return this.type === 'sonarr'; },
         showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
