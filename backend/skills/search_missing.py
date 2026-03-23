@@ -275,15 +275,59 @@ class SearchMissingSkill(BaseSkill):
             return True, label, "episode"
 
         elif mode == "season_packs" and series_id is not None and season_number is not None:
-            agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
-            label = f"{series_title} Season {season_number}"
-            agent.log("debug", self.name, f"SeasonSearch: {label}")
-            return True, label, "season"
+            try:
+                eps = agent.http_get(f"/api/v3/episode?seriesId={series_id}&seasonNumber={season_number}&includeImages=false")
+                total_eps = len(eps) if isinstance(eps, list) else 0
+                missing_eps = sum(1 for e in (eps if isinstance(eps, list) else []) if not e.get("hasFile"))
+                ratio = missing_eps / total_eps if total_eps > 0 else 1.0
+                if ratio >= 0.5:
+                    agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
+                    label = f"{series_title} Season {season_number}"
+                    agent.log("debug", self.name, f"SeasonSearch: {label} (missing {missing_eps}/{total_eps} eps)")
+                    return True, label, "season"
+                else:
+                    agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+                    label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+                    agent.log("debug", self.name, f"season_packs → EpisodeSearch (only {missing_eps}/{total_eps} eps missing)")
+                    return True, label, "episode"
+            except Exception as exc:
+                agent.log("debug", self.name, f"season_packs ratio check failed, falling back to EpisodeSearch: {exc}")
+                agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+                label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+                return True, label, "episode"
 
         elif mode == "show_batch" and series_id is not None:
-            agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
-            agent.log("debug", self.name, f"SeriesSearch: {series_title}")
-            return True, series_title, "series"
+            try:
+                eps = agent.http_get(f"/api/v3/episode?seriesId={series_id}&includeImages=false")
+                eps_list = eps if isinstance(eps, list) else []
+                total_eps = len(eps_list)
+                missing_eps = sum(1 for e in eps_list if not e.get("hasFile"))
+                series_ratio = missing_eps / total_eps if total_eps > 0 else 1.0
+                if series_ratio >= 0.5:
+                    agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
+                    agent.log("debug", self.name, f"SeriesSearch: {series_title} (missing {missing_eps}/{total_eps} eps)")
+                    return True, series_title, "series"
+                else:
+                    # Check season ratio using same data to avoid extra API call
+                    sea_eps = [e for e in eps_list if e.get("seasonNumber") == season_number]
+                    total_sea = len(sea_eps)
+                    missing_sea = sum(1 for e in sea_eps if not e.get("hasFile"))
+                    sea_ratio = missing_sea / total_sea if total_sea > 0 else 1.0
+                    if sea_ratio >= 0.5 and season_number is not None:
+                        agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
+                        label = f"{series_title} Season {season_number}"
+                        agent.log("debug", self.name, f"show_batch → SeasonSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
+                        return True, label, "season"
+                    else:
+                        agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+                        label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+                        agent.log("debug", self.name, f"show_batch → EpisodeSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
+                        return True, label, "episode"
+            except Exception as exc:
+                agent.log("debug", self.name, f"show_batch ratio check failed, falling back to EpisodeSearch: {exc}")
+                agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+                label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
+                return True, label, "episode"
 
         elif mode == "smart" and series_id is not None and season_number is not None:
             try:
