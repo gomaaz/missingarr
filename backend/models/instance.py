@@ -43,27 +43,7 @@ class InstanceBase(BaseModel):
     def validate_name(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("Name must not be empty")
-        if len(v) > 100:
-            raise ValueError("Name must not exceed 100 characters")
         return v.strip()
-
-    @field_validator("interval_minutes")
-    @classmethod
-    def validate_interval(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("Interval must be at least 1 minute")
-        if v > 10080:
-            raise ValueError("Interval must not exceed 10080 minutes (1 week)")
-        return v
-
-    @field_validator("rate_cap")
-    @classmethod
-    def validate_rate_cap(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("Rate Cap must be at least 1")
-        if v > 1000:
-            raise ValueError("Rate Cap must not exceed 1000")
-        return v
 
     @field_validator("quiet_start", "quiet_end")
     @classmethod
@@ -81,30 +61,6 @@ class InstanceBase(BaseModel):
             raise ValueError("Time must be in HH:MM format (00:00–23:59)")
         return f"{h:02d}:{m:02d}"
 
-    @field_validator("missing_per_run")
-    @classmethod
-    def validate_missing_per_run(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("Must be at least 1")
-        return v
-
-    @field_validator("upgrades_per_run")
-    @classmethod
-    def validate_upgrades_per_run(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("Must be at least 1")
-        if v > 100:
-            raise ValueError("Must not exceed 100")
-        return v
-
-    @field_validator("seconds_between_actions")
-    @classmethod
-    def validate_seconds(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError("Must not be negative")
-        if v > 3600:
-            raise ValueError("Must not exceed 3600 seconds")
-        return v
 
 
 class InstanceCreate(InstanceBase):
@@ -115,8 +71,6 @@ class InstanceCreate(InstanceBase):
     def validate_api_key(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("API key must not be empty")
-        if len(v) < 8:
-            raise ValueError("API key must be at least 8 characters")
         return v.strip()
 
 
@@ -128,10 +82,7 @@ class InstanceUpdate(InstanceBase):
     def validate_api_key_optional(cls, v: Optional[str]) -> Optional[str]:
         if v is None or v == "":
             return None
-        v = v.strip()
-        if len(v) < 8:
-            raise ValueError("API key must be at least 8 characters")
-        return v
+        return v.strip()
 
 
 class InstanceRead(InstanceBase):

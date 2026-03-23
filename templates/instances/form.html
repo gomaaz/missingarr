@@ -106,7 +106,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.interval_minutes }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="interval_minutes" name="interval_minutes"
-                               value="{{ instance.interval_minutes if instance else 15 }}" min="1" max="10080">
+                               value="{{ instance.interval_minutes if instance else 15 }}">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="retry_hours">
@@ -114,7 +114,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.retry_hours }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="retry_hours" name="retry_hours"
-                               value="{{ instance.retry_hours if instance else 1 }}" min="1" max="168">
+                               value="{{ instance.retry_hours if instance else 1 }}">
                     </div>
                 </div>
                 <div class="form-row">
@@ -150,7 +150,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_window_minutes }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="rate_window_minutes" name="rate_window_minutes"
-                               value="{{ instance.rate_window_minutes if instance else 60 }}" min="1" max="1440">
+                               value="{{ instance.rate_window_minutes if instance else 60 }}">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="rate_cap">
@@ -158,7 +158,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_cap }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="rate_cap" name="rate_cap"
-                               value="{{ instance.rate_cap if instance else 25 }}" min="1" max="1000">
+                               value="{{ instance.rate_cap if instance else 25 }}">
                     </div>
                 </div>
             </div>
@@ -201,7 +201,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.hours_after_release }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="hours_after_release" name="hours_after_release"
-                               value="{{ instance.hours_after_release if instance else 9 }}" min="0" max="8760">
+                               value="{{ instance.hours_after_release if instance else 9 }}">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="seconds_between_actions">
@@ -209,7 +209,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.seconds_between_actions }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="seconds_between_actions" name="seconds_between_actions"
-                               value="{{ instance.seconds_between_actions if instance else 2 }}" min="0" max="3600">
+                               value="{{ instance.seconds_between_actions if instance else 2 }}">
                     </div>
                 </div>
                 <div class="form-row">
@@ -219,7 +219,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.missing_per_run }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="missing_per_run" name="missing_per_run"
-                               value="{{ instance.missing_per_run if instance else 5 }}" min="1">
+                               value="{{ instance.missing_per_run if instance else 5 }}">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="upgrades_per_run">
@@ -227,7 +227,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.upgrades_per_run }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="upgrades_per_run" name="upgrades_per_run"
-                               value="{{ instance.upgrades_per_run if instance else 1 }}" min="1" max="100">
+                               value="{{ instance.upgrades_per_run if instance else 1 }}">
                     </div>
                 </div>
 
