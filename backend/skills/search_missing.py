@@ -90,34 +90,40 @@ class SearchMissingSkill(BaseSkill):
 
             # Filter already-searched items from cache, then take per_run.
             # Force runs bypass the DB cache but still deduplicate within this run.
-            skipped = 0
+            skipped_file = 0
+            skipped_cache = 0
             candidates = []
             seen_keys: set = set()  # dedup within this run (same season/series key)
             for record in records:
                 if record.get("hasFile"):
-                    skipped += 1
+                    skipped_file += 1
                     continue
-                cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                if not force and cache_key and db.searched.exists(cfg["id"], cache_key, cfg.get("retry_hours", 0)):
-                    skipped += 1
+                # Use hierarchical keys for DB check: covers episode, season, and series level.
+                check_keys = self._check_keys(cfg["type"], record, missing_mode)
+                if not force and check_keys and db.searched.exists_any(cfg["id"], check_keys, cfg.get("retry_hours", 0)):
+                    skipped_cache += 1
                     continue
-                # Skip if another record with the same key is already a candidate
-                # (prevents duplicate season/series searches in show_batch/season_packs)
-                if cache_key and cache_key in seen_keys:
+                # Use the broad intent key for within-run dedup
+                # (prevents duplicate season/series searches within the same run).
+                dedup_key = self._cache_key(cfg["type"], record, missing_mode)
+                if dedup_key and dedup_key in seen_keys:
                     continue
                 candidates.append(record)
-                if cache_key:
-                    seen_keys.add(cache_key)
+                if dedup_key:
+                    seen_keys.add(dedup_key)
                 if len(candidates) >= per_run:
                     break
 
             wanted_count = len(candidates)
 
-            if skipped:
-                agent.log("debug", self.name, f"Skipped {skipped} already-searched items from pool of {len(records)}")
+            if skipped_file:
+                agent.log("debug", self.name, f"Skipped {skipped_file} items that already have a file")
+            if skipped_cache:
+                agent.log("debug", self.name, f"Skipped {skipped_cache} already-searched items from pool of {len(records)}")
 
             if not candidates:
-                agent.log("info", self.name, f"All {skipped} items in pool already searched — nothing to do (total missing: {total})")
+                skipped = skipped_file + skipped_cache
+                agent.log("info", self.name, f"All {skipped} items in pool already searched or exist — nothing to do (total missing: {total})")
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
@@ -148,14 +154,13 @@ class SearchMissingSkill(BaseSkill):
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
-                cache_key = self._cache_key(cfg["type"], record, missing_mode)
-                success, title, item_type = self._trigger_search(agent, cfg, record, missing_mode, series_lookup)
+                success, title, item_type, stored_key = self._trigger_search(agent, cfg, record, missing_mode, series_lookup)
                 if success:
                     triggered_count += 1
                     agent.record_action()
                     db.history.insert_item(run_id, title, record.get("id"), item_type)
-                    if cache_key:
-                        db.searched.add(cfg["id"], cache_key, title, item_type)
+                    if stored_key:
+                        db.searched.add(cfg["id"], stored_key, title, item_type)
 
                 if delay > 0 and record is not candidates[-1]:
                     time.sleep(delay)
@@ -174,10 +179,10 @@ class SearchMissingSkill(BaseSkill):
             db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
 
     def _cache_key(self, arr_type: str, record: dict, mode: str) -> str:
-        """Build a stable cache key for the searched item."""
+        """Broad intent key used for within-run deduplication (seen_keys set).
+        Prevents triggering duplicate season/series searches in the same run."""
         if arr_type == "radarr":
             return f"mov:{record.get('id')}"
-        # Sonarr — key depends on mode
         if mode == "episode":
             return f"ep:{record.get('id')}"
         elif mode == "season_packs":
@@ -185,10 +190,30 @@ class SearchMissingSkill(BaseSkill):
         elif mode == "show_batch":
             return f"ser:{record.get('seriesId')}"
         elif mode == "smart":
-            # Smart mode may pick episode or season search — cache at episode level
-            # so other missing episodes in the same season are not blocked
-            return f"ep:{record.get('id')}"
+            # Use season-level key so multiple episodes from the same season don't each
+            # trigger a separate SeasonSearch within the same run.
+            return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
         return f"ep:{record.get('id')}"
+
+    def _check_keys(self, arr_type: str, record: dict, mode: str) -> list:
+        """Hierarchical cache keys for cross-run DB lookup.
+        Checks narrow (episode) → broad (season/series) so that a past SeasonSearch
+        blocks individual episode candidates and a past EpisodeSearch blocks that
+        specific episode — without incorrectly blocking the whole season."""
+        if arr_type == "radarr":
+            return [f"mov:{record.get('id')}"]
+        series_id = record.get("seriesId")
+        season = record.get("seasonNumber")
+        ep_id = record.get("id")
+        if mode == "episode":
+            return [f"ep:{ep_id}"]
+        elif mode == "season_packs":
+            return [f"sea:{series_id}:{season}", f"ep:{ep_id}"]
+        elif mode == "show_batch":
+            return [f"ser:{series_id}", f"sea:{series_id}:{season}", f"ep:{ep_id}"]
+        elif mode == "smart":
+            return [f"sea:{series_id}:{season}", f"ep:{ep_id}"]
+        return [f"ep:{ep_id}"]
 
     def _apply_order(self, records: list, order: str, arr_type: str) -> list:
         date_key = "airDateUtc" if arr_type == "sonarr" else "physicalRelease"
@@ -248,7 +273,8 @@ class SearchMissingSkill(BaseSkill):
 
         return records
 
-    def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str]:
+    def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str, str]:
+        """Returns (success, title, item_type, stored_cache_key)."""
         try:
             if cfg["type"] == "sonarr":
                 return self._sonarr_search(agent, record, missing_mode, series_lookup or {})
@@ -256,9 +282,12 @@ class SearchMissingSkill(BaseSkill):
                 return self._radarr_search(agent, record)
         except Exception as exc:
             agent.log("warn", self.name, f"Failed to trigger search: {exc}")
-            return False, "", ""
+            return False, "", "", ""
 
-    def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str]:
+    def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict | None = None) -> tuple[bool, str, str, str]:
+        """Returns (success, title, item_type, stored_cache_key).
+        The stored_cache_key reflects the actual command issued, not the intent mode,
+        so subsequent runs check at the correct granularity."""
         episode_id = record.get("id")
         series_id = record.get("seriesId")
         season_number = record.get("seasonNumber")
@@ -272,7 +301,7 @@ class SearchMissingSkill(BaseSkill):
             agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
             label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
             agent.log("debug", self.name, f"EpisodeSearch: {label}")
-            return True, label, "episode"
+            return True, label, "episode", f"ep:{episode_id}"
 
         elif mode == "season_packs" and series_id is not None and season_number is not None:
             try:
@@ -284,17 +313,17 @@ class SearchMissingSkill(BaseSkill):
                     agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
                     label = f"{series_title} Season {season_number}"
                     agent.log("debug", self.name, f"SeasonSearch: {label} (missing {missing_eps}/{total_eps} eps)")
-                    return True, label, "season"
+                    return True, label, "season", f"sea:{series_id}:{season_number}"
                 else:
                     agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                     label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
                     agent.log("debug", self.name, f"season_packs → EpisodeSearch (only {missing_eps}/{total_eps} eps missing)")
-                    return True, label, "episode"
+                    return True, label, "episode", f"ep:{episode_id}"
             except Exception as exc:
                 agent.log("debug", self.name, f"season_packs ratio check failed, falling back to EpisodeSearch: {exc}")
                 agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                 label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
-                return True, label, "episode"
+                return True, label, "episode", f"ep:{episode_id}"
 
         elif mode == "show_batch" and series_id is not None:
             try:
@@ -306,7 +335,7 @@ class SearchMissingSkill(BaseSkill):
                 if series_ratio >= 0.5:
                     agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
                     agent.log("debug", self.name, f"SeriesSearch: {series_title} (missing {missing_eps}/{total_eps} eps)")
-                    return True, series_title, "series"
+                    return True, series_title, "series", f"ser:{series_id}"
                 else:
                     # Check season ratio using same data to avoid extra API call
                     sea_eps = [e for e in eps_list if e.get("seasonNumber") == season_number]
@@ -317,17 +346,17 @@ class SearchMissingSkill(BaseSkill):
                         agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
                         label = f"{series_title} Season {season_number}"
                         agent.log("debug", self.name, f"show_batch → SeasonSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
-                        return True, label, "season"
+                        return True, label, "season", f"sea:{series_id}:{season_number}"
                     else:
                         agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                         label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
                         agent.log("debug", self.name, f"show_batch → EpisodeSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
-                        return True, label, "episode"
+                        return True, label, "episode", f"ep:{episode_id}"
             except Exception as exc:
                 agent.log("debug", self.name, f"show_batch ratio check failed, falling back to EpisodeSearch: {exc}")
                 agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                 label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
-                return True, label, "episode"
+                return True, label, "episode", f"ep:{episode_id}"
 
         elif mode == "smart" and series_id is not None and season_number is not None:
             try:
@@ -340,26 +369,26 @@ class SearchMissingSkill(BaseSkill):
                     agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
                     label = f"{series_title} Season {season_number}"
                     agent.log("debug", self.name, f"Smart: SeasonSearch (missing {missing_eps}/{total_eps} eps)")
-                    return True, label, "season"
+                    return True, label, "season", f"sea:{series_id}:{season_number}"
                 else:
                     agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                     label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
                     agent.log("debug", self.name, f"Smart: EpisodeSearch (missing {missing_eps}/{total_eps} eps)")
-                    return True, label, "episode"
+                    return True, label, "episode", f"ep:{episode_id}"
             except Exception as exc:
                 agent.log("debug", self.name, f"Smart mode episode fetch failed, falling back to EpisodeSearch: {exc}")
                 agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
                 label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d}" if series_title else ep_title
-                return True, label, "episode"
+                return True, label, "episode", f"ep:{episode_id}"
 
         elif episode_id:
             agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
             label = f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}" if series_title else ep_title
-            return True, label, "episode"
+            return True, label, "episode", f"ep:{episode_id}"
 
-        return False, "", ""
+        return False, "", "", ""
 
-    def _radarr_search(self, agent, record: dict) -> tuple[bool, str, str]:
+    def _radarr_search(self, agent, record: dict) -> tuple[bool, str, str, str]:
         movie_id = record.get("id")
         title = record.get("title", f"Movie #{movie_id}")
         year = record.get("year", "")
@@ -367,5 +396,5 @@ class SearchMissingSkill(BaseSkill):
         if movie_id:
             agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
             agent.log("debug", self.name, f"MoviesSearch: {label}")
-            return True, label, "movie"
-        return False, "", ""
+            return True, label, "movie", f"mov:{movie_id}"
+        return False, "", "", ""
