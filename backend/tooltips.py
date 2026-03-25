@@ -12,7 +12,7 @@ TOOLTIPS = {
     "search_missing_enabled": "Automatically searches for missing episodes (Sonarr) or movies (Radarr).",
     "search_upgrades_enabled": "Automatically searches for quality upgrades of existing titles (Radarr only).",
     "interval_minutes": "How often (in minutes) a search should be triggered. Recommended: 15–60 minutes.",
-    "retry_hours": "After how many hours a failed search attempt should be retried.",
+    "retry_hours": "After how many hours a searched item becomes eligible to be searched again. Set to 0 to never re-search (recommended — use the Searched cache reset to retry manually).",
     "rate_window_minutes": "Rolling time window (in minutes) for rate limiting. The rate cap applies within this window.",
     "rate_cap": "Maximum number of search actions allowed within the rate window. Prevents API overload.",
     "search_order": (

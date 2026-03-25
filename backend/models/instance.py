@@ -17,7 +17,7 @@ class InstanceBase(BaseModel):
     search_missing_enabled: bool = True
     search_upgrades_enabled: bool = False
     interval_minutes: int = 15
-    retry_hours: int = 1
+    retry_hours: int = 0
     rate_window_minutes: int = 60
     rate_cap: int = 25
     search_order: SearchOrder = "random"

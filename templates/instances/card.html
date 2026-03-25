@@ -118,7 +118,7 @@
             </div>
             <div class="stat-item">
                 <div class="stat-label">Retry</div>
-                <div class="stat-value">{{ inst.retry_hours }}h</div>
+                <div class="stat-value">{{ inst.retry_hours ~ 'h' if inst.retry_hours > 0 else 'off' }}</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Last Sync</div>

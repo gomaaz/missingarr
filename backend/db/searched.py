@@ -48,8 +48,9 @@ def add(instance_id: int, cache_key: str, title: str, item_type: str) -> None:
     with get_db() as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO searched_items (instance_id, cache_key, title, item_type)
+            INSERT INTO searched_items (instance_id, cache_key, title, item_type)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(instance_id, cache_key) DO UPDATE SET searched_at=datetime('now')
             """,
             (instance_id, cache_key, title, item_type),
         )
