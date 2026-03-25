@@ -40,7 +40,7 @@ def init_db():
                 search_upgrades_enabled  INTEGER NOT NULL DEFAULT 0,
 
                 interval_minutes         INTEGER NOT NULL DEFAULT 15,
-                retry_hours              INTEGER NOT NULL DEFAULT 168,
+                retry_hours              INTEGER NOT NULL DEFAULT 0,
 
                 rate_window_minutes      INTEGER NOT NULL DEFAULT 60,
                 rate_cap                 INTEGER NOT NULL DEFAULT 25,
@@ -126,8 +126,8 @@ def init_db():
             );
         """)
 
-        # Fix bad defaults: migrate retry_hours 0 or 1 → 168 (1 week)
-        conn.execute("UPDATE instances SET retry_hours=168 WHERE retry_hours IN (0, 1)")
+        # Reset any previously auto-migrated retry_hours back to 0 (permanent cache)
+        conn.execute("UPDATE instances SET retry_hours=0 WHERE retry_hours IN (1, 168)")
 
         # Migrations: add columns introduced after initial release
         for sql in [

@@ -114,7 +114,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.retry_hours }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="retry_hours" name="retry_hours"
-                               value="{{ instance.retry_hours if instance else 168 }}">
+                               value="{{ instance.retry_hours if instance else 0 }}">
                     </div>
                 </div>
                 <div class="form-row">

@@ -118,7 +118,7 @@ class SearchMissingSkill(BaseSkill):
             # Top-up: if not enough candidates from the first page, try more random pages
             if search_order == "random" and len(candidates) < per_run and max_page > 1:
                 tried_pages = {params["page"]}
-                for _ in range(min(3, max_page - 1)):
+                for _ in range(max_page - 1):
                     if len(candidates) >= per_run:
                         break
                     remaining = [p for p in range(1, max_page + 1) if p not in tried_pages]
