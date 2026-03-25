@@ -34,6 +34,7 @@ class SearchMissingSkill(BaseSkill):
 
             # For random order: probe for total so we can pick a random page and
             # reach items beyond the first page — true rotation across the full backlog.
+            max_page = 1
             if search_order == "random":
                 try:
                     probe = agent.http_get("/api/v3/wanted/missing", params={**params, "pageSize": 1})
@@ -61,8 +62,8 @@ class SearchMissingSkill(BaseSkill):
 
             # Filter: hours_after_release (skipped for force runs)
             hours = cfg.get("hours_after_release", 9)
-            if not force and hours > 0:
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours) if (not force and hours > 0) else None
+            if cutoff is not None:
                 filtered = []
                 for r in records:
                     date_str = r.get("airDateUtc") or r.get("physicalRelease") or r.get("inCinemas")
@@ -78,7 +79,7 @@ class SearchMissingSkill(BaseSkill):
                 records = filtered
 
             if not records:
-                agent.log("info", self.name, f"All results are too recent (hours_after_release={hours}h)")
+                agent.log("info", self.name, f"All results within hours_after_release={hours}h window")
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
@@ -113,6 +114,46 @@ class SearchMissingSkill(BaseSkill):
                     seen_keys.add(dedup_key)
                 if len(candidates) >= per_run:
                     break
+
+            # Top-up: if not enough candidates from the first page, try more random pages
+            if search_order == "random" and len(candidates) < per_run and max_page > 1:
+                tried_pages = {params["page"]}
+                for _ in range(min(3, max_page - 1)):
+                    if len(candidates) >= per_run:
+                        break
+                    remaining = [p for p in range(1, max_page + 1) if p not in tried_pages]
+                    if not remaining:
+                        break
+                    params["page"] = random.choice(remaining)
+                    tried_pages.add(params["page"])
+                    try:
+                        extra_resp = agent.http_get("/api/v3/wanted/missing", params=params)
+                        extra_records = self._apply_order(extra_resp.get("records", []), search_order, cfg["type"])
+                        for record in extra_records:
+                            if len(candidates) >= per_run:
+                                break
+                            if record.get("hasFile"):
+                                continue
+                            if cutoff is not None:
+                                date_str = record.get("airDateUtc") or record.get("physicalRelease") or record.get("inCinemas")
+                                if date_str:
+                                    try:
+                                        released = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                                        if released > cutoff:
+                                            continue
+                                    except (ValueError, TypeError):
+                                        pass
+                            check_keys = self._check_keys(cfg["type"], record, missing_mode)
+                            if not force and check_keys and db.searched.exists_any(cfg["id"], check_keys, cfg.get("retry_hours", 0)):
+                                continue
+                            dedup_key = self._cache_key(cfg["type"], record, missing_mode)
+                            if dedup_key and dedup_key in seen_keys:
+                                continue
+                            candidates.append(record)
+                            if dedup_key:
+                                seen_keys.add(dedup_key)
+                    except Exception:
+                        break
 
             wanted_count = len(candidates)
 
