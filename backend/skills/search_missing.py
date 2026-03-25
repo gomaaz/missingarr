@@ -40,7 +40,7 @@ class SearchMissingSkill(BaseSkill):
                     probe = agent.http_get("/api/v3/wanted/missing", params={**params, "pageSize": 1})
                     total_available = probe.get("totalRecords", 0)
                     if total_available > fetch_size:
-                        max_page = min(10, -(-total_available // fetch_size))  # ceil division
+                        max_page = -(-total_available // fetch_size)  # ceil division
                         if max_page >= 2:
                             params["page"] = random.randint(1, max_page)
                 except Exception:
