@@ -9,7 +9,7 @@ def exists(instance_id: int, cache_key: str, retry_hours: int = 0) -> bool:
                 """
                 SELECT 1 FROM searched_items
                 WHERE instance_id=? AND cache_key=?
-                AND searched_at > datetime('now', ? || ' hours')
+                AND searched_at > datetime('now', 'localtime', ? || ' hours')
                 """,
                 (instance_id, cache_key, f"-{retry_hours}"),
             ).fetchone()
@@ -32,7 +32,7 @@ def exists_any(instance_id: int, keys: list, retry_hours: int = 0) -> bool:
                 f"""
                 SELECT 1 FROM searched_items
                 WHERE instance_id=? AND cache_key IN ({placeholders})
-                AND searched_at > datetime('now', ? || ' hours')
+                AND searched_at > datetime('now', 'localtime', ? || ' hours')
                 """,
                 [instance_id, *keys, f"-{retry_hours}"],
             ).fetchone()
@@ -50,7 +50,7 @@ def add(instance_id: int, cache_key: str, title: str, item_type: str) -> None:
             """
             INSERT INTO searched_items (instance_id, cache_key, title, item_type)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(instance_id, cache_key) DO UPDATE SET searched_at=datetime('now')
+            ON CONFLICT(instance_id, cache_key) DO UPDATE SET searched_at=datetime('now','localtime')
             """,
             (instance_id, cache_key, title, item_type),
         )

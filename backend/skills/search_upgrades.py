@@ -1,6 +1,6 @@
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from backend.skills.base import BaseSkill
 from backend import db
 
@@ -45,7 +45,7 @@ class SearchUpgradesSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 return
 
             for item in candidates:
@@ -74,7 +74,7 @@ class SearchUpgradesSkill(BaseSkill):
             db.history.finish_run(run_id, wanted_count, triggered_count, "success")
             agent.state["last_wanted"] = wanted_count
             agent.state["last_triggered"] = triggered_count
-            agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         except Exception as exc:
             agent.log("error", self.name, f"Upgrade search failed: {exc}")

@@ -7,7 +7,7 @@ def start_run(instance_id: int, instance_name: str, skill: str) -> int:
         conn.execute(
             """
             INSERT INTO search_history (instance_id, instance_name, skill, started_at)
-            VALUES (?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, datetime('now','localtime'))
             """,
             (instance_id, instance_name, skill),
         )
@@ -28,7 +28,7 @@ def finish_run(
             UPDATE search_history SET
                 wanted_count=?, triggered_count=?,
                 status=?, error_message=?,
-                finished_at=datetime('now')
+                finished_at=datetime('now','localtime')
             WHERE id=?
             """,
             (wanted_count, triggered_count, status, error_message, run_id),

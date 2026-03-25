@@ -56,7 +56,7 @@ class SearchMissingSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 return
 
             # Filter: hours_after_release (skipped for force runs)
@@ -82,7 +82,7 @@ class SearchMissingSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 return
 
             # Apply search_order to the full pool
@@ -127,7 +127,7 @@ class SearchMissingSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "success")
                 agent.state["last_wanted"] = 0
                 agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 return
 
             # Lazy series title lookup for Sonarr — only fetch the specific series
@@ -172,7 +172,7 @@ class SearchMissingSkill(BaseSkill):
             db.history.finish_run(run_id, wanted_count, triggered_count, "success")
             agent.state["last_wanted"] = wanted_count
             agent.state["last_triggered"] = triggered_count
-            agent.state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         except Exception as exc:
             agent.log("error", self.name, f"Search failed: {exc}")

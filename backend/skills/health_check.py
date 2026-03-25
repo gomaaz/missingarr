@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
 from backend.skills.base import BaseSkill
 from backend import db
 
@@ -19,7 +19,7 @@ class HealthCheckSkill(BaseSkill):
                 self.name,
                 f"Online — {cfg['type'].upper()} v{version}",
             )
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             db.instances.update_status(cfg["id"], "online", now_str)
             agent.state["connection_status"] = "online"
             agent.state["last_seen_at"] = now_str

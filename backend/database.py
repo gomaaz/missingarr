@@ -64,8 +64,8 @@ def init_db():
                                          CHECK(connection_status IN ('unknown','online','offline','error')),
                 last_seen_at             TEXT,
 
-                created_at               TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at               TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at               TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
 
             CREATE TABLE IF NOT EXISTS search_history (
@@ -92,7 +92,7 @@ def init_db():
                 level         TEXT NOT NULL CHECK(level IN ('info','warn','error','debug')),
                 skill         TEXT,
                 message       TEXT NOT NULL,
-                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC);
@@ -113,7 +113,7 @@ def init_db():
                 cache_key   TEXT NOT NULL,
                 title       TEXT NOT NULL,
                 item_type   TEXT NOT NULL,
-                searched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                searched_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                 UNIQUE(instance_id, cache_key)
             );
 
