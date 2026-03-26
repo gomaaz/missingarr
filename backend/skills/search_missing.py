@@ -28,9 +28,10 @@ class SearchMissingSkill(BaseSkill):
                 "pageSize": fetch_size,
                 "page": 1,
                 "monitored": "true",
-                "sortKey": "airDateUtc" if cfg["type"] == "sonarr" else "physicalRelease",
-                "sortDirection": "descending",
             }
+            if cfg["type"] == "sonarr":
+                params["sortKey"] = "airDateUtc"
+                params["sortDirection"] = "descending"
 
             # For random order: probe for total so we can pick a random page and
             # reach items beyond the first page — true rotation across the full backlog.
