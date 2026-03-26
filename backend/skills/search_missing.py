@@ -29,9 +29,6 @@ class SearchMissingSkill(BaseSkill):
                 "page": 1,
                 "monitored": "true",
             }
-            if cfg["type"] == "sonarr":
-                params["sortKey"] = "airDateUtc"
-                params["sortDirection"] = "descending"
 
             # For random order: probe for total so we can pick a random page and
             # reach items beyond the first page — true rotation across the full backlog.
