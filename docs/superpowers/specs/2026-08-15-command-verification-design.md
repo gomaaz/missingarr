@@ -103,6 +103,10 @@ Erweiterung über das bestehende Migrationsmuster in `database.py:132-140`
 | `command_status` | TEXT | `submitted` → `completed` / `failed` / `expired`; `legacy` für Altzeilen |
 | `cache_key` | TEXT | zum gezielten Entsperren bei Fehlschlag |
 | `verified_at` | TEXT | Zeitpunkt der Nachprüfung, `NULL` solange offen |
+| `created_at` | TEXT | Entstehung des Items — Bezugspunkt der 24-Stunden-Grenze |
+
+Ein Item, das mangels `command_id` sofort als `expired` angelegt wird, ist zu keinem
+Zeitpunkt offen und bekommt `verified_at` deshalb schon beim Einfügen gesetzt.
 
 `search_history`:
 
@@ -164,17 +168,28 @@ registriert, Intervall 2 Minuten. Ein Durchlauf:
    | \*arr liefert | `command_status` |
    |---|---|
    | `status=completed` | `completed` |
-   | `status=failed` | `failed` |
+   | `status=failed` / `aborted` / `cancelled` | `failed` |
    | `status=queued` / `started` | bleibt `submitted` (nächster Durchlauf) |
    | HTTP 404 | `expired` |
    | Netzwerkfehler | unverändert, nächster Durchlauf |
 
-4. `verified_at` setzen. Danach für jeden Lauf, der in diesem Durchlauf ein Item
-   geändert hat und noch auf `pending` steht, das Aggregat neu berechnen (Abschnitt 5).
-   Läufe ohne geändertes Item werden nicht angefasst.
+   `aborted` und `cancelled` zählen bewusst als Fehlschlag: ein abgebrochener Befehl
+   hat nicht gesucht. Das ist derselbe belegte Sachverhalt wie `failed` und rechtfertigt
+   dieselbe Folge, die Freigabe im Cache. Der Unterschied zu `expired` bleibt gewahrt —
+   dort ist der Ausgang unbekannt, hier ist er bekannt und negativ.
 
-Ein Item, das nach **24 Stunden** noch `submitted` ist, wird auf `expired` gesetzt.
-Ohne diese Grenze sammeln sich Karteileichen, die bei jedem Durchlauf erneut abgefragt werden.
+4. `verified_at` setzen. Danach das Aggregat (Abschnitt 5) neu berechnen für
+   **alle** Läufe der Instanz, die noch auf `pending` stehen und kein `submitted`-Item
+   mehr haben. Diese Formulierung — statt „Läufe, die in diesem Durchlauf berührt
+   wurden" — schließt Läufe ein, deren Items schon beim Anlegen `expired` waren und
+   die daher nie durch die Verifikation liefen.
+
+Ein Item, das **24 Stunden nach seiner eigenen Entstehung** noch `submitted` ist, wird
+auf `expired` gesetzt. Ohne diese Grenze sammeln sich Karteileichen, die bei jedem
+Durchlauf erneut abgefragt werden. Maßgeblich ist das Alter des Items, nicht der Beginn
+seines Laufs: bei `missing_per_run=600` und `seconds_between_actions=2` liegen zwischen
+erstem und letztem Item eines Laufs über zwanzig Minuten. Dafür trägt jedes Item ein
+eigenes `created_at`.
 
 Der Skill läuft auch, wenn die Suche des Agenten deaktiviert ist — sonst blieben
 Einträge nach dem Abschalten für immer offen.

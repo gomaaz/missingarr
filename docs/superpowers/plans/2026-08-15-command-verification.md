@@ -13,10 +13,11 @@
 - Kein Build-Schritt, kein npm, keine neuen Laufzeit-Abhängigkeiten. `pytest` kommt ausschließlich in `requirements-dev.txt`, nie in `requirements.txt`.
 - Schema-Änderungen laufen über das bestehende Muster in `backend/database.py:132-140`: `ALTER TABLE` in der Liste, Ausnahme wird geschluckt. Zusätzlich in die `CREATE TABLE`-Anweisung aufnehmen, damit Neuinstallationen dasselbe Schema bekommen.
 - Maßgeblich für den Ausgang ist das Feld `status` der \*arr-Antwort, **nicht** `result`. `result` verfällt nach kurzer Zeit auf `unknown`, `status` bleibt erhalten (gemessen: nach 56 Minuten weiterhin `completed`).
-- Unbekannter Ausgang (`expired`) ist **kein** Fehlschlag. Nur bei belegtem `failed` wird der Cache-Eintrag gelöscht.
-- Alle Log-Meldungen bleiben englisch, passend zum Bestand (`agent.log("info", …)`).
-- Der Deckel liegt bei 50 nachgeprüften Befehlen je Durchlauf und Instanz.
+- Unbekannter Ausgang (`expired`) ist **kein** Fehlschlag. Nur bei belegtem `failed` wird der Cache-Eintrag gelöscht. `aborted` und `cancelled` gelten als `failed` — ein abgebrochener Befehl hat nicht gesucht.
+- Alle Log-Meldungen bleiben englisch, passend zum Bestand (`agent.log("info", …)`). Ausgenommen sind die Badge-Beschriftungen der Oberfläche, die die Spec auf Deutsch festlegt.
+- Der Deckel liegt bei **50 abgefragten** Befehlen je Durchlauf und Instanz — nicht bei 50 aufgelösten. Ein Durchlauf kann 50 Abfragen machen und null Endzustände finden, weil alle noch laufen; das Log muss beide Zahlen nennen, sonst bleibt ein Rückstau unsichtbar.
 - Bestandszeilen bekommen `command_status='legacy'` und werden nie verifiziert.
+- Die 24-Stunden-Grenze bezieht sich auf `search_history_items.created_at`, nicht auf den Beginn des Laufs.
 
 ## Dateistruktur
 
@@ -245,7 +246,7 @@ git commit -m "feat: add pure verification rules for *arr command outcomes"
 
 **Files:**
 - Modify: `backend/database.py:100-106` (CREATE TABLE), `backend/database.py:132-140` (Migrationsliste)
-- Modify: `backend/db/history.py:76-81` (`insert_item`), `backend/db/history.py:107-146` (`query_items_flat`)
+- Modify: `backend/db/history.py:18-38` (`finish_run`), `:76-81` (`insert_item`), `:107-146` (`query_items_flat`), sowie neue Funktionen am Dateiende
 - Modify: `backend/db/searched.py`
 
 **Interfaces:**
@@ -254,9 +255,12 @@ git commit -m "feat: add pure verification rules for *arr command outcomes"
   - `history.insert_item(run_id: int, title: str, arr_id: int | None, item_type: str, cache_key: str = "", command_id: int | None = None) -> None`
   - `history.get_pending_items(instance_id: int, limit: int = 50) -> list[dict]` — Schlüssel `id`, `run_id`, `command_id`, `cache_key`
   - `history.set_item_status(item_id: int, status: str) -> None`
-  - `history.expire_stale_items(instance_id: int, hours: int = 24) -> list[int]` — betroffene `run_id`
+  - `history.expire_stale_items(instance_id: int, hours: int = 24) -> int` — Anzahl der abgelaufenen Items
+  - `history.get_unresolved_run_ids(instance_id: int) -> list[int]` — `pending`-Läufe ohne offenes Item
   - `history.get_item_statuses(run_id: int) -> list[str]`
   - `history.update_run_verification(run_id: int, status: str, verified_count: int) -> None`
+  - `history.get_latest_run_verification(instance_id: int) -> dict | None` — Schlüssel `id`, `status`, `triggered_count`, `verified_count`
+  - `history.finish_run(...)` — unverändert in der Signatur, schreibt jetzt `pending` statt `success`, sobald Items vorhanden sind
   - `searched.delete(instance_id: int, cache_key: str) -> int`
 
 - [ ] **Step 1: CREATE TABLE erweitern**
@@ -273,9 +277,15 @@ In `backend/database.py`, die Anweisung `CREATE TABLE IF NOT EXISTS search_histo
                 command_id     INTEGER,
                 command_status TEXT NOT NULL DEFAULT 'legacy',
                 cache_key      TEXT NOT NULL DEFAULT '',
-                verified_at    TEXT
+                verified_at    TEXT,
+                created_at     TEXT
             );
 ```
+
+`created_at` ist bewusst ohne `DEFAULT (datetime(...))` deklariert: SQLite lehnt beim
+`ALTER TABLE ADD COLUMN` nicht-konstante Defaults ab, und die Spalte muss über beide
+Wege identisch entstehen. Sie wird beim Einfügen explizit gesetzt; Altzeilen bleiben
+`NULL` und fallen bei der Alterung auf den Laufbeginn zurück.
 
 - [ ] **Step 2: Migrationen ergänzen**
 
@@ -286,6 +296,7 @@ In `backend/database.py` die Liste in `for sql in [...]` um diese fünf Einträg
             "ALTER TABLE search_history_items ADD COLUMN command_status TEXT NOT NULL DEFAULT 'legacy'",
             "ALTER TABLE search_history_items ADD COLUMN cache_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE search_history_items ADD COLUMN verified_at TEXT",
+            "ALTER TABLE search_history_items ADD COLUMN created_at TEXT",
             "ALTER TABLE search_history ADD COLUMN verified_count INTEGER NOT NULL DEFAULT 0",
 ```
 
@@ -322,21 +333,73 @@ def insert_item(
     """Record a triggered search.
 
     Without a command id from *arr there is nothing to verify later, so the
-    row is filed as expired rather than claiming a pending verification.
+    row is filed as expired rather than claiming a pending verification — and
+    it gets its verified_at right away, because it is never open.
     """
-    status = ITEM_SUBMITTED if command_id is not None else ITEM_EXPIRED
+    if command_id is not None:
+        status, verified = ITEM_SUBMITTED, None
+    else:
+        status, verified = ITEM_EXPIRED, "now"
+
     with get_db() as conn:
         conn.execute(
             """
             INSERT INTO search_history_items
-                (run_id, title, arr_id, item_type, cache_key, command_id, command_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (run_id, title, arr_id, item_type, cache_key, command_id,
+                 command_status, created_at, verified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'),
+                    CASE WHEN ? = 'now' THEN datetime('now','localtime') ELSE NULL END)
             """,
-            (run_id, title, arr_id, item_type, cache_key, command_id, status),
+            (run_id, title, arr_id, item_type, cache_key, command_id, status, verified),
         )
 ```
 
-- [ ] **Step 4: Abfragen für die Verifikation ergänzen**
+- [ ] **Step 4: `finish_run` auf `pending` umstellen**
+
+Ohne diesen Schritt entsteht der Zustand `pending` nie und die gesamte Statuskette
+aus Abschnitt 5 der Spec bleibt wirkungslos. `finish_run` in `backend/db/history.py`
+ersetzen:
+
+```python
+def finish_run(
+    run_id: int,
+    wanted_count: int,
+    triggered_count: int,
+    status: str = "success",
+    error_message: Optional[str] = None,
+):
+    """Close a run.
+
+    A run that sent commands is not finished when the HTTP calls returned — it
+    is finished when *arr reported what became of them. Such a run is therefore
+    closed as 'pending'; verify_commands derives the final verdict. Only a run
+    that sent nothing (or that threw) gets its verdict here.
+    """
+    with get_db() as conn:
+        if status == "success":
+            has_items = conn.execute(
+                "SELECT 1 FROM search_history_items WHERE run_id=? LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if has_items:
+                status = "pending"
+
+        conn.execute(
+            """
+            UPDATE search_history SET
+                wanted_count=?, triggered_count=?,
+                status=?, error_message=?,
+                finished_at=datetime('now','localtime')
+            WHERE id=?
+            """,
+            (wanted_count, triggered_count, status, error_message, run_id),
+        )
+```
+
+Die Aufrufstellen in `search_missing.py` und `search_upgrades.py` bleiben unverändert —
+sie übergeben weiterhin `"success"`, die Entscheidung fällt hier.
+
+- [ ] **Step 5: Abfragen für die Verifikation ergänzen**
 
 An `backend/db/history.py` anhängen:
 
@@ -372,37 +435,72 @@ def set_item_status(item_id: int, status: str) -> None:
         )
 
 
-def expire_stale_items(instance_id: int, hours: int = 24) -> list[int]:
-    """Give up on items *arr never resolved. Returns the affected run ids.
+def expire_stale_items(instance_id: int, hours: int = 24) -> int:
+    """Give up on items *arr never resolved. Returns how many were expired.
 
-    Without this, an item whose command id vanished silently would be looked
-    up on every single pass, forever.
+    Ages by the item's own created_at, not by the run's start: a run with
+    missing_per_run=600 and a two-second delay spans over twenty minutes, so
+    its last items would otherwise get a shorter grace period than its first.
+    Legacy rows have no created_at and fall back to the run's start.
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE search_history_items
+            SET command_status=?, verified_at=datetime('now','localtime')
+            WHERE command_status=?
+              AND id IN (
+                  SELECT si.id
+                  FROM search_history_items si
+                  JOIN search_history h ON h.id = si.run_id
+                  WHERE h.instance_id = ?
+                    AND si.command_status = ?
+                    AND COALESCE(si.created_at, h.started_at)
+                        < datetime('now','localtime', ? || ' hours')
+              )
+            """,
+            (ITEM_EXPIRED, ITEM_SUBMITTED, instance_id, ITEM_SUBMITTED, f"-{hours}"),
+        )
+        return cursor.rowcount
+
+
+def get_unresolved_run_ids(instance_id: int) -> list[int]:
+    """Runs of this instance still marked pending that have nothing open left.
+
+    Deliberately not "runs touched in this pass": a run whose items were all
+    filed as expired on insert (no command id came back) never passes through
+    verification at all and would otherwise stay pending forever.
     """
     with get_db() as conn:
         rows = conn.execute(
             """
-            SELECT si.id, si.run_id
-            FROM search_history_items si
-            JOIN search_history h ON h.id = si.run_id
+            SELECT h.id
+            FROM search_history h
             WHERE h.instance_id = ?
-              AND si.command_status = ?
-              AND h.started_at < datetime('now','localtime', ? || ' hours')
+              AND h.status = 'pending'
+              AND NOT EXISTS (
+                  SELECT 1 FROM search_history_items si
+                  WHERE si.run_id = h.id AND si.command_status = ?
+              )
             """,
-            (instance_id, ITEM_SUBMITTED, f"-{hours}"),
+            (instance_id, ITEM_SUBMITTED),
         ).fetchall()
-        if not rows:
-            return []
-        item_ids = [r["id"] for r in rows]
-        placeholders = ",".join("?" * len(item_ids))
-        conn.execute(
-            f"""
-            UPDATE search_history_items
-            SET command_status=?, verified_at=datetime('now','localtime')
-            WHERE id IN ({placeholders})
+        return [r["id"] for r in rows]
+
+
+def get_latest_run_verification(instance_id: int) -> Optional[dict]:
+    """The instance's youngest run with its sent and confirmed counts."""
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT id, status, triggered_count, verified_count
+            FROM search_history
+            WHERE instance_id=? AND skill != 'health_check'
+            ORDER BY id DESC LIMIT 1
             """,
-            [ITEM_EXPIRED, *item_ids],
-        )
-        return sorted({r["run_id"] for r in rows})
+            (instance_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_item_statuses(run_id: int) -> list[str]:
@@ -415,19 +513,21 @@ def get_item_statuses(run_id: int) -> list[str]:
 
 
 def update_run_verification(run_id: int, status: str, verified_count: int) -> None:
-    """Write the derived verdict — but never overwrite a run that errored out.
+    """Write the derived verdict — only for a run that is still pending.
 
-    A run that threw has a failure of its own; the outcome of the commands it
-    managed to send before dying does not change that.
+    Guarding on status='pending' does two things: a run that threw keeps its
+    'error' (the outcome of the commands it managed to send before dying does
+    not change that), and a run already settled as success/partial/failed
+    cannot be silently rewritten later.
     """
     with get_db() as conn:
         conn.execute(
-            "UPDATE search_history SET status=?, verified_count=? WHERE id=? AND status!='error'",
+            "UPDATE search_history SET status=?, verified_count=? WHERE id=? AND status='pending'",
             (status, verified_count, run_id),
         )
 ```
 
-- [ ] **Step 5: Item-Status in die Flachliste aufnehmen**
+- [ ] **Step 6: Item-Status in die Flachliste aufnehmen**
 
 In `backend/db/history.py`, in `query_items_flat`, die SELECT-Liste ersetzen. Vorher:
 
@@ -461,7 +561,7 @@ Nachher:
 
 Der Rest der Abfrage (`FROM` bis `LIMIT`) bleibt unverändert.
 
-- [ ] **Step 6: `delete` in searched.py ergänzen**
+- [ ] **Step 7: `delete` in searched.py ergänzen**
 
 An `backend/db/searched.py` anhängen:
 
@@ -481,7 +581,7 @@ def delete(instance_id: int, cache_key: str) -> int:
         return cursor.rowcount
 ```
 
-- [ ] **Step 7: Migration gegen eine Kopie der echten Datenbank prüfen**
+- [ ] **Step 8: Migration gegen eine Kopie der echten Datenbank prüfen**
 
 ```bash
 cp /root/docker/missingarr/data/missingarr.db /tmp/mig-test.db
@@ -499,7 +599,7 @@ print('verified_count vorhanden:', 'verified_count' in [r[1] for r in c.execute(
 
 Expected: alle vier Spalten vorhanden, **12357** legacy-Zeilen, `verified_count vorhanden: True`
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add backend/database.py backend/db/history.py backend/db/searched.py
@@ -823,8 +923,8 @@ git commit -m "fix: record command id for upgrade searches too"
 - Create: `backend/skills/verify_commands.py`
 
 **Interfaces:**
-- Consumes: `map_command_status`, `aggregate_run_status`, Item-Konstanten (Task 1); `history.get_pending_items`, `history.set_item_status`, `history.expire_stale_items`, `history.get_item_statuses`, `history.update_run_verification`, `searched.delete` (Task 2)
-- Produces: `BaseAgent.http_get_raw(path: str) -> tuple[int, dict | None]`; `VerifyCommandsSkill` mit `name = "verify_commands"`; setzt `agent.state["last_verified"]`
+- Consumes: `map_command_status`, `aggregate_run_status`, Item-Konstanten (Task 1); `history.get_pending_items`, `history.set_item_status`, `history.expire_stale_items`, `history.get_unresolved_run_ids`, `history.get_item_statuses`, `history.update_run_verification`, `history.get_latest_run_verification`, `searched.delete` (Task 2)
+- Produces: `BaseAgent.http_get_raw(path: str) -> tuple[int, dict | None]`; `VerifyCommandsSkill` mit `name = "verify_commands"`; setzt `agent.state["last_verified"]` auf den `verified_count` des jüngsten Laufs
 
 - [ ] **Step 1: `http_get_raw` ergänzen**
 
@@ -889,17 +989,16 @@ class VerifyCommandsSkill(BaseSkill):
     def execute(self, agent, force: bool = False) -> None:
         instance_id = agent.config["id"]
 
-        touched_runs = set(db.history.expire_stale_items(instance_id, self.STALE_HOURS))
-        if touched_runs:
+        expired = db.history.expire_stale_items(instance_id, self.STALE_HOURS)
+        if expired:
             agent.log(
                 "warn",
                 self.name,
-                f"Gave up on commands still unresolved after {self.STALE_HOURS}h",
+                f"Gave up on {expired} command(s) still unresolved after {self.STALE_HOURS}h",
             )
 
         pending = db.history.get_pending_items(instance_id, self.MAX_PER_RUN)
-        checked = 0
-        confirmed = 0
+        resolved = 0
 
         for item in pending:
             http_status, payload = agent.http_get_raw(f"/api/v3/command/{item['command_id']}")
@@ -908,10 +1007,7 @@ class VerifyCommandsSkill(BaseSkill):
                 continue  # still running, or *arr unreachable — try next pass
 
             db.history.set_item_status(item["id"], status)
-            touched_runs.add(item["run_id"])
-            checked += 1
-            if status == ITEM_COMPLETED:
-                confirmed += 1
+            resolved += 1
 
             if status == ITEM_FAILED and item["cache_key"]:
                 removed = db.searched.delete(instance_id, item["cache_key"])
@@ -923,7 +1019,10 @@ class VerifyCommandsSkill(BaseSkill):
                         f"released '{item['cache_key']}' for another attempt",
                     )
 
-        for run_id in touched_runs:
+        # Settle every run that has nothing open left — not just the ones touched
+        # above. A run whose items were all filed as expired on insert (no command
+        # id came back) never passes through the loop and would stay pending.
+        for run_id in db.history.get_unresolved_run_ids(instance_id):
             statuses = db.history.get_item_statuses(run_id)
             db.history.update_run_verification(
                 run_id,
@@ -931,12 +1030,23 @@ class VerifyCommandsSkill(BaseSkill):
                 statuses.count(ITEM_COMPLETED),
             )
 
-        if checked:
-            agent.log("info", self.name, f"Verified {checked} command(s), {confirmed} confirmed")
-            agent.state["last_verified"] = confirmed
+        # The card shows the youngest run, so read it back rather than counting
+        # this pass: one pass may resolve items from several runs, or none.
+        latest = db.history.get_latest_run_verification(instance_id)
+        if latest:
+            agent.state["last_verified"] = latest["verified_count"]
+
+        if pending:
+            # Both numbers, always: 50 queried with 0 resolved is a backlog, and
+            # logging only the resolved count would hide it.
+            agent.log(
+                "info",
+                self.name,
+                f"Queried {len(pending)} command(s), {resolved} resolved",
+            )
 ```
 
-**Hinweis zu `last_verified`:** Der Wert ist die Zahl der in *diesem* Durchlauf bestätigten Befehle, nicht die des letzten Laufs. Für die Kachel „bestätigt / abgeschickt" ist das die passende Aussage, solange die Verifikation dem Lauf unmittelbar folgt. Task 9 setzt darauf auf.
+**Zu `last_verified`:** Der Wert ist der `verified_count` des jüngsten Laufs der Instanz, gelesen aus der Datenbank — nicht die Zahl der in diesem Durchlauf aufgelösten Befehle. Ein Durchlauf kann Items aus mehreren Läufen oder gar keine auflösen; nur der Rückgriff auf den jüngsten Lauf passt zu der Zahl `last_triggered`, neben der die Kachel ihn zeigt.
 
 - [ ] **Step 3: Übersetzbarkeit prüfen**
 
@@ -1137,9 +1247,37 @@ Nach `<th>Status</th>` einfügen:
                     <th>Verified</th>
 ```
 
-- [ ] **Step 2: Lauf-Status-Badge um die neuen Werte erweitern**
+- [ ] **Step 2: Beschriftungen im Alpine-Zustand ergänzen**
 
-Den `:class`-Block des Status-Badges ersetzen:
+Die Spec legt deutsche Texte fest, die Rohwerte aus der Datenbank sind englisch. Die Abbildung gehört an genau eine Stelle. Im `x-data`-Objekt von `templates/history.html` — direkt nach der Methode `fmtTime(s) { … }`, mit Komma davor — einfügen:
+
+```javascript
+    runLabel(s) {
+        return {
+            success: 'bestätigt',
+            pending: 'offen',
+            partial: 'teilweise',
+            failed: 'gescheitert',
+            unverified: 'nicht prüfbar',
+            error: 'Fehler',
+            running: 'läuft'
+        }[s] || s;
+    },
+    itemLabel(s) {
+        return {
+            completed: 'durchgelaufen',
+            failed: 'gescheitert',
+            submitted: 'offen',
+            expired: 'nicht prüfbar'
+        }[s] || s;
+    }
+```
+
+Unbekannte Werte fallen auf den Rohwert zurück, statt leer zu bleiben — ein neuer Status wäre sonst unsichtbar.
+
+- [ ] **Step 3: Lauf-Status-Badge um die neuen Werte erweitern**
+
+Den `:class`-Block des Status-Badges ersetzen — `x-text` liest jetzt die Beschriftung:
 
 ```html
                             <span class="badge"
@@ -1151,18 +1289,18 @@ Den `:class`-Block des Status-Badges ersetzen:
                                     'badge-unknown': row.status === 'unverified',
                                     'badge-running': row.status === 'running'
                                 }"
-                                x-text="row.status">
+                                x-text="runLabel(row.status)">
                             </span>
 ```
 
-- [ ] **Step 3: Zelle für den Item-Ausgang ergänzen**
+- [ ] **Step 4: Zelle für den Item-Ausgang ergänzen**
 
 Direkt nach der `<td>` mit dem Status-Badge einfügen:
 
 ```html
                         <td>
                             <template x-if="row.command_status === 'legacy'">
-                                <span style="color:var(--text-muted);">—</span>
+                                <span style="color:var(--text-muted);" title="Vor der Einführung der Belegpflicht angelegt">—</span>
                             </template>
                             <template x-if="row.command_status !== 'legacy'">
                                 <span class="badge"
@@ -1172,19 +1310,20 @@ Direkt nach der `<td>` mit dem Status-Badge einfügen:
                                         'badge-scheduled': row.command_status === 'submitted',
                                         'badge-unknown': row.command_status === 'expired'
                                     }"
-                                    x-text="row.command_status">
+                                    :title="row.command_id ? 'Befehl #' + row.command_id : ''"
+                                    x-text="itemLabel(row.command_status)">
                                 </span>
                             </template>
                         </td>
 ```
 
-Altzeilen zeigen einen Strich statt eines Zustands — sie tragen keinen Beleg, also behauptet die Oberfläche für sie nichts.
+Altzeilen zeigen einen Strich statt eines Zustands — sie tragen keinen Beleg, also behauptet die Oberfläche für sie nichts. Bei den übrigen steht die Command-ID im Tooltip, damit sie ohne Umweg über die Datenbank in \*arr nachschlagbar ist.
 
-- [ ] **Step 4: Im Browser prüfen**
+- [ ] **Step 5: Im Browser prüfen**
 
 `/history` öffnen. Erwartung: Altzeilen mit `—` in der Spalte *Verified*, nach dem nächsten Suchlauf neue Zeilen erst mit `submitted`, binnen zwei Minuten auf `completed` wechselnd. Der Lauf-Status geht von `pending` auf `success`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add templates/history.html
@@ -1313,22 +1452,102 @@ Erwartung, jeweils gegen den Mitschnitt geprüft:
 3. `command_status` steht binnen zwei Minuten auf `completed`.
 4. Der Lauf steht auf `success` mit `verified_count == triggered_count`.
 
-- [ ] **Step 4: Gegenprobe für den Fehlerfall**
+- [ ] **Step 4: Fehlerpfad und Grenzfälle gegen eine Kopie der Datenbank belegen**
 
-Belegen, dass ein gescheiterter Befehl den Cache freigibt — ohne auf einen echten Fehlschlag zu warten:
+Ein echtes `failed` von \*arr lässt sich nicht auf Zuruf erzeugen, und die Produktionsdaten sollen dabei unangetastet bleiben. Deshalb gegen eine **Kopie** mit einem gestellten Agenten, der `http_get_raw` fest beantwortet:
+
+```bash
+cp /root/docker/missingarr/data/missingarr.db /tmp/verify-test.db
+docker cp /tmp/verify-test.db missingarr:/tmp/verify-test.db
+docker exec -w /app -e PYTHONPATH=/app -e DATABASE_URL=/tmp/verify-test.db missingarr python - <<'PY'
+from backend.database import init_db
+init_db()
+from backend import db
+from backend.skills.verify_commands import VerifyCommandsSkill
+
+INSTANCE = 2  # sonarr
+
+class FakeAgent:
+    """Answers every command lookup with one canned reply."""
+    def __init__(self, reply):
+        self.config = db.instances.get_by_id(INSTANCE)
+        self.state = {}
+        self.reply = reply
+    def http_get_raw(self, path):
+        return self.reply
+    def log(self, level, skill, message):
+        print(f"  LOG[{level}] {message}")
+
+def scenario(name, reply, command_id=999000001):
+    run_id = db.history.start_run(INSTANCE, "test", "search_missing")
+    db.history.insert_item(run_id, "Testtitel", 4711, "episode",
+                           cache_key="ep:999999", command_id=command_id)
+    db.history.finish_run(run_id, 1, 1, "success")
+    db.searched.add(INSTANCE, "ep:999999", "Testtitel", "episode")
+
+    run = [r for r in db.history.query(instance_id=INSTANCE, limit=1)][0]
+    print(f"{name}: Lauf nach finish_run = {run['status']}")
+    assert run["status"] == "pending", "finish_run muss pending schreiben"
+
+    VerifyCommandsSkill().execute(FakeAgent(reply))
+
+    run = [r for r in db.history.query(instance_id=INSTANCE, limit=1)][0]
+    cached = db.searched.exists(INSTANCE, "ep:999999")
+    print(f"{name}: Lauf = {run['status']}, verified={run['verified_count']}, Cache = {cached}")
+    db.searched.delete(INSTANCE, "ep:999999")
+    return run, cached
+
+# 1. *arr meldet failed -> Lauf failed, Cache freigegeben
+run, cached = scenario("failed ", (200, {"status": "failed"}))
+assert run["status"] == "failed" and cached is False
+
+# 2. *arr kennt den Befehl nicht -> Lauf unverified, Cache BLEIBT
+run, cached = scenario("expired", (404, None))
+assert run["status"] == "unverified" and cached is True
+
+# 3. *arr meldet completed -> Lauf success, Cache bleibt
+run, cached = scenario("ok     ", (200, {"status": "completed"}))
+assert run["status"] == "success" and run["verified_count"] == 1 and cached is True
+
+# 4. Antwort ohne id -> sofort expired, Lauf wird trotzdem aufgeloest
+run_id = db.history.start_run(INSTANCE, "test", "search_missing")
+db.history.insert_item(run_id, "Ohne ID", 4712, "episode", cache_key="ep:999998", command_id=None)
+db.history.finish_run(run_id, 1, 1, "success")
+VerifyCommandsSkill().execute(FakeAgent((200, {"status": "completed"})))
+run = [r for r in db.history.query(instance_id=INSTANCE, limit=1)][0]
+print(f"ohne id: Lauf = {run['status']}")
+assert run["status"] == "unverified", "Lauf ohne Command-ID darf nicht pending bleiben"
+
+print("alle vier Faelle bestanden")
+PY
+```
+
+Expected: vier Zeilen mit den erwarteten Zuständen, dann `alle vier Faelle bestanden`. Fall 2 ist die eigentliche Trennlinie — unbekannter Ausgang darf den Cache **nicht** freigeben. Fall 4 deckt die Zeilen ab, die nie durch die Verifikationsschleife laufen.
+
+Aufräumen: `docker exec missingarr rm -f /tmp/verify-test.db && rm -f /tmp/verify-test.db`
+
+- [ ] **Step 5: Rückstau bei Radarr prüfen**
+
+Radarr läuft mit `missing_per_run=600` bei praktisch unbegrenztem `rate_cap`. Ein Lauf mit vielen Treffern kann also mehr offene Befehle erzeugen, als ein 50er-Durchlauf alle zwei Minuten abarbeitet — 600 Items bräuchten zwölf Durchläufe, also 24 Minuten. Das ist unkritisch, solange der Rückstau zwischen zwei Läufen (30 Minuten) abgebaut wird. Nachmessen statt annehmen:
 
 ```bash
 docker exec -w /app -e PYTHONPATH=/app missingarr python -c "
-from backend import db
-from backend.verification import ITEM_FAILED
-items = db.history.get_pending_items(2, 1) or None
-print('offene Items:', items)
+import sqlite3
+c = sqlite3.connect('/data/missingarr.db'); c.row_factory = sqlite3.Row
+for r in c.execute('''
+  SELECT h.instance_name, COUNT(*) AS offen,
+         MIN(si.created_at) AS aeltestes
+  FROM search_history_items si JOIN search_history h ON h.id = si.run_id
+  WHERE si.command_status = 'submitted'
+  GROUP BY h.instance_name'''):
+    print(f\"{r['instance_name']}: {r['offen']} offen, aeltestes von {r['aeltestes']}\")
+print('(keine Ausgabe = kein Rueckstau)')
 "
 ```
 
-Ist kein offenes Item vorhanden, stattdessen ein bereits verifiziertes Item künstlich auf `submitted` mit einer nicht existierenden `command_id` setzen und einen Verifikationsdurchlauf abwarten. Erwartung: Status wird `expired` (nicht `failed`), der Cache-Eintrag bleibt **erhalten** — unbekannter Ausgang ist kein Fehlschlag.
+Über mindestens eine Stunde mehrfach ausführen. Erwartung: die Zahl geht zwischen den Läufen auf 0 zurück und das älteste offene Item ist nie älter als etwa 30 Minuten. Bleibt ein wachsender Sockel stehen, ist `MAX_PER_RUN` in `verify_commands.py` anzuheben oder das Intervall zu verkürzen — beides ist eine Konstante, kein Umbau.
 
-- [ ] **Step 5: Version anheben und committen**
+- [ ] **Step 6: Version anheben und committen**
 
 `VERSION` auf `0.7.0` setzen (neue Spalten, neuer Skill, geänderte Statusbedeutung — kein reiner Patch).
 
@@ -1347,12 +1566,12 @@ git commit -m "chore: bump version to 0.7.0"
 | 2. Rückgabewert des Trigger-Pfads | Task 3, Steps 1–5; Task 4 |
 | 3. Verifikation als eigener Skill | Task 5, Step 2; Task 7 |
 | 4. Selbstheilung bei Fehlschlag | Task 2, Step 6; Task 5, Step 2 |
-| 5. Lauf-Status folgt der Verifikation | Task 1 (`aggregate_run_status`); Task 2, Step 4 |
+| 5. Lauf-Status folgt der Verifikation | Task 2, Step 4 (`finish_run` → `pending`); Task 1 (`aggregate_run_status`); Task 5 (Auflösung über `get_unresolved_run_ids`) |
 | 6. Sperre auf Skill-Ebene | Task 6 |
 | 7. Anzeige — History | Task 8 |
-| 7. Anzeige — Dashboard | Task 9 |
-| Testbarkeit | Task 1; Task 10 |
+| 7. Anzeige — Dashboard | Task 9 (Zahl aus `get_latest_run_verification`) |
+| Testbarkeit | Task 1; Task 10, Steps 4–5 |
 
 **Offen und bewusst nicht umgesetzt:** Die Reparatur der 7.447 falschen `arr_id` in Altzeilen — laut Spec ein Nicht-Ziel. Die Zeilen tragen `command_status='legacy'` und werden in der Oberfläche als nicht prüfbar ausgewiesen.
 
-**Nicht durch Tests abgedeckt:** Der Skill selbst, die Datenbankzugriffe und die Oberfläche. Das Projekt hat keine Testinfrastruktur für HTTP oder SQLite, und diese Änderung ist nicht der Ort, eine einzuführen. Abgedeckt sind die beiden Entscheidungsregeln, in denen die eigentliche Wahrheitsfrage steckt; alles andere wird in Task 10 gegen die laufende Instanz abgenommen.
+**Nicht durch pytest abgedeckt:** Die Datenbankzugriffe und die Oberfläche. Das Projekt hat keine Testinfrastruktur für SQLite oder HTTP, und diese Änderung ist nicht der Ort, eine einzuführen. Abgedeckt sind die beiden Entscheidungsregeln, in denen die eigentliche Wahrheitsfrage steckt (Task 1). Der Skill selbst wird in Task 10, Step 4 über einen gestellten Agenten gegen eine Datenbankkopie geprüft — inklusive des Fehlerpfads, der sich mit echten \*arr-Antworten nicht herbeiführen lässt.
