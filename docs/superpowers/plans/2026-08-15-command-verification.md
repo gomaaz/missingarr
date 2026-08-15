@@ -12,6 +12,7 @@
 
 - Kein Build-Schritt, kein npm, keine neuen Laufzeit-Abhängigkeiten. `pytest` kommt ausschließlich in `requirements-dev.txt`, nie in `requirements.txt`.
 - Schema-Änderungen laufen über das bestehende Muster in `backend/database.py:132-140`: `ALTER TABLE` in der Liste, Ausnahme wird geschluckt. Zusätzlich in die `CREATE TABLE`-Anweisung aufnehmen, damit Neuinstallationen dasselbe Schema bekommen.
+- Eine Ausnahme davon ist die `CHECK`-Beschränkung auf `search_history.status`: SQLite kann sie nicht per `ALTER TABLE` ändern, die Tabelle muss neu gebaut werden. Dabei müssen die Fremdschlüssel abgeschaltet sein, sonst löscht die `ON DELETE CASCADE` von `search_history_items` beim `DROP TABLE` die gesamte Item-Historie.
 - Maßgeblich für den Ausgang ist das Feld `status` der \*arr-Antwort, **nicht** `result`. `result` verfällt nach kurzer Zeit auf `unknown`, `status` bleibt erhalten (gemessen: nach 56 Minuten weiterhin `completed`).
 - Unbekannter Ausgang (`expired`) ist **kein** Fehlschlag. Nur bei belegtem `failed` wird der Cache-Eintrag gelöscht. `aborted` und `cancelled` gelten als `failed` — ein abgebrochener Befehl hat nicht gesucht.
 - Alle Log-Meldungen bleiben englisch, passend zum Bestand (`agent.log("info", …)`). Ausgenommen sind die Badge-Beschriftungen der Oberfläche, die die Spec auf Deutsch festlegt.
@@ -311,6 +312,79 @@ Direkt nach der `for`-Schleife den Index anlegen:
         )
 ```
 
+**Zusätzlich nötig — `CHECK`-Beschränkung auf `search_history.status` erweitern.**
+Die Spalte ist auf `('running','success','error')` eingeschränkt; `pending`, `partial`,
+`failed` und `unverified` schlagen sonst mit `IntegrityError` fehl. SQLite kann eine
+`CHECK`-Beschränkung nicht ändern, die Tabelle muss neu gebaut werden.
+
+Die `CREATE TABLE`-Anweisung für `search_history` erhält:
+
+```sql
+                status          TEXT NOT NULL DEFAULT 'running'
+                                CHECK(status IN ('running','success','error',
+                                                 'pending','partial','failed','unverified')),
+```
+
+Für Bestandsdatenbanken eine eigene Funktion in `backend/database.py`, aufgerufen am
+Ende von `init_db()` **außerhalb** des `with get_db()`-Blocks:
+
+```python
+def _widen_history_status_check() -> None:
+    """Allow the verification statuses on search_history.status.
+
+    SQLite cannot alter a CHECK constraint, so the table has to be rebuilt.
+    Foreign keys must be off while that happens: search_history_items
+    references search_history with ON DELETE CASCADE, and with foreign_keys=ON
+    the DROP TABLE would cascade and take every history item with it.
+
+    PRAGMA foreign_keys is a no-op inside a transaction, hence the dedicated
+    connection rather than the shared get_db() context manager.
+    """
+    conn = sqlite3.connect(settings.database_url, check_same_thread=False)
+    try:
+        current = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='search_history'"
+        ).fetchone()
+        if not current or "'pending'" in current[0]:
+            return  # fresh database, or already widened
+
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
+        conn.executescript("""
+            CREATE TABLE search_history_rebuilt (
+                ... vollständiges neues Schema inklusive verified_count ...
+            );
+
+            INSERT INTO search_history_rebuilt
+                (id, instance_id, instance_name, skill, wanted_count, triggered_count,
+                 started_at, finished_at, status, error_message, verified_count)
+            SELECT id, instance_id, instance_name, skill, wanted_count, triggered_count,
+                   started_at, finished_at, status, error_message, COALESCE(verified_count, 0)
+            FROM search_history;
+
+            DROP TABLE search_history;
+            ALTER TABLE search_history_rebuilt RENAME TO search_history;
+
+            CREATE INDEX IF NOT EXISTS idx_history_instance ON search_history(instance_id);
+            CREATE INDEX IF NOT EXISTS idx_history_started  ON search_history(started_at DESC);
+        """)
+
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            conn.rollback()
+            raise RuntimeError(f"history rebuild left {len(violations)} broken references")
+
+        conn.commit()
+        logger.info("Widened search_history.status to allow verification states")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.close()
+```
+
+Die Erkennung über `"'pending'" in current[0]` macht den Aufruf idempotent: eine frisch
+angelegte oder bereits umgebaute Tabelle wird übersprungen. `backend/database.py` braucht
+dafür `import logging` und einen Modul-Logger.
+
 - [ ] **Step 3: `insert_item` erweitern**
 
 In `backend/db/history.py` oben ergänzen:
@@ -597,7 +671,33 @@ print('verified_count vorhanden:', 'verified_count' in [r[1] for r in c.execute(
 "
 ```
 
-Expected: alle vier Spalten vorhanden, **12357** legacy-Zeilen, `verified_count vorhanden: True`
+Expected: alle fünf Spalten vorhanden, sämtliche Bestandszeilen auf `legacy`, `verified_count vorhanden: True`
+
+Wegen des Tabellenumbaus zusätzlich prüfen, dass **nichts verloren geht** — die Zeilenzahlen vorher und nachher vergleichen:
+
+```bash
+for phase in VORHER NACHHER; do
+  [ "$phase" = "NACHHER" ] && DATABASE_URL=/tmp/mig-test.db python -c "from backend.database import init_db; init_db()"
+  python -c "
+import sqlite3
+c = sqlite3.connect('/tmp/mig-test.db')
+n = c.execute('select (select count(*) from search_history),(select count(*) from search_history_items),(select count(*) from searched_items)').fetchone()
+print('$phase runs=%d items=%d searched=%d' % n)
+"
+done
+python -c "
+import sqlite3
+c = sqlite3.connect('/tmp/mig-test.db')
+print('CHECK erlaubt pending:', \"'pending'\" in c.execute(\"select sql from sqlite_master where name='search_history'\").fetchone()[0])
+print('Indizes:', sorted(r[0] for r in c.execute(\"select name from sqlite_master where type='index' and tbl_name='search_history' and name not like 'sqlite_%'\")))
+print('FK-Verletzungen:', c.execute('pragma foreign_key_check').fetchall() or 'keine')
+print('id-Sequenz:', c.execute(\"select seq from sqlite_sequence where name='search_history'\").fetchone())
+"
+```
+
+Expected: identische Zeilenzahlen vor und nach der Migration, `CHECK erlaubt pending: True`, beide Indizes wieder da, keine FK-Verletzungen, `sqlite_sequence` auf der höchsten Lauf-ID. Weicht die Item-Zahl ab, hat die `ON DELETE CASCADE` zugeschlagen — dann ist `PRAGMA foreign_keys=OFF` nicht wirksam geworden.
+
+`init_db()` anschließend ein zweites Mal aufrufen: die Zahlen müssen unverändert bleiben und `search_history_rebuilt` darf nicht existieren.
 
 - [ ] **Step 9: Commit**
 

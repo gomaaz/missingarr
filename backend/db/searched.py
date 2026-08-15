@@ -108,6 +108,21 @@ def count(instance_id: Optional[int] = None) -> dict:
         return [dict(r) for r in rows]
 
 
+def delete(instance_id: int, cache_key: str) -> int:
+    """Release a cached key so the item becomes searchable again.
+
+    Called when *arr reported the command as failed. With retry_hours=0 the
+    cache has no time window, so without this the title would stay blocked
+    forever despite never having been searched.
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM searched_items WHERE instance_id=? AND cache_key=?",
+            (instance_id, cache_key),
+        )
+        return cursor.rowcount
+
+
 def clear(instance_id: Optional[int] = None) -> int:
     with get_db() as conn:
         if instance_id is not None:

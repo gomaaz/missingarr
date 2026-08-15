@@ -1,6 +1,9 @@
+import logging
 import sqlite3
 from contextlib import contextmanager
 from backend.config import settings
+
+logger = logging.getLogger("missingarr.database")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -78,7 +81,8 @@ def init_db():
                 started_at      TEXT NOT NULL,
                 finished_at     TEXT,
                 status          TEXT NOT NULL DEFAULT 'running'
-                                CHECK(status IN ('running','success','error')),
+                                CHECK(status IN ('running','success','error',
+                                                 'pending','partial','failed','unverified')),
                 error_message   TEXT
             );
 
@@ -98,11 +102,16 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC);
 
             CREATE TABLE IF NOT EXISTS search_history_items (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id      INTEGER NOT NULL REFERENCES search_history(id) ON DELETE CASCADE,
-                title       TEXT NOT NULL,
-                arr_id      INTEGER,
-                item_type   TEXT NOT NULL CHECK(item_type IN ('movie','episode','season','series'))
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id         INTEGER NOT NULL REFERENCES search_history(id) ON DELETE CASCADE,
+                title          TEXT NOT NULL,
+                arr_id         INTEGER,
+                item_type      TEXT NOT NULL CHECK(item_type IN ('movie','episode','season','series')),
+                command_id     INTEGER,
+                command_status TEXT NOT NULL DEFAULT 'legacy',
+                cache_key      TEXT NOT NULL DEFAULT '',
+                verified_at    TEXT,
+                created_at     TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_history_items_run ON search_history_items(run_id);
@@ -134,11 +143,92 @@ def init_db():
             "ALTER TABLE search_history_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
             "ALTER TABLE searched_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
             "ALTER TABLE searched_items ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+            # Command verification. The 'legacy' default settles existing rows in
+            # one go: they carry no command id and can never be verified, so they
+            # must not enter the verification loop.
+            "ALTER TABLE search_history_items ADD COLUMN command_id INTEGER",
+            "ALTER TABLE search_history_items ADD COLUMN command_status TEXT NOT NULL DEFAULT 'legacy'",
+            "ALTER TABLE search_history_items ADD COLUMN cache_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE search_history_items ADD COLUMN verified_at TEXT",
+            "ALTER TABLE search_history_items ADD COLUMN created_at TEXT",
+            "ALTER TABLE search_history ADD COLUMN verified_count INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(sql)
             except Exception:
                 pass  # column already exists
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_items_pending "
+            "ON search_history_items(command_status)"
+        )
+
+    # Needs its own connection with foreign keys off — see the docstring.
+    _widen_history_status_check()
+
+
+def _widen_history_status_check() -> None:
+    """Allow the verification statuses on search_history.status.
+
+    SQLite cannot alter a CHECK constraint, so the table has to be rebuilt.
+    Foreign keys must be off while that happens: search_history_items
+    references search_history with ON DELETE CASCADE, and with foreign_keys=ON
+    the DROP TABLE would cascade and take every history item with it.
+
+    PRAGMA foreign_keys is a no-op inside a transaction, hence the dedicated
+    connection rather than the shared get_db() context manager.
+    """
+    conn = sqlite3.connect(settings.database_url, check_same_thread=False)
+    try:
+        current = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='search_history'"
+        ).fetchone()
+        if not current or "'pending'" in current[0]:
+            return  # fresh database, or already widened
+
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
+        conn.executescript("""
+            CREATE TABLE search_history_rebuilt (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id     INTEGER REFERENCES instances(id) ON DELETE CASCADE,
+                instance_name   TEXT NOT NULL,
+                skill           TEXT NOT NULL CHECK(skill IN ('search_missing','search_upgrades')),
+                wanted_count    INTEGER NOT NULL DEFAULT 0,
+                triggered_count INTEGER NOT NULL DEFAULT 0,
+                started_at      TEXT NOT NULL,
+                finished_at     TEXT,
+                status          TEXT NOT NULL DEFAULT 'running'
+                                CHECK(status IN ('running','success','error',
+                                                 'pending','partial','failed','unverified')),
+                error_message   TEXT,
+                verified_count  INTEGER NOT NULL DEFAULT 0
+            );
+
+            INSERT INTO search_history_rebuilt
+                (id, instance_id, instance_name, skill, wanted_count, triggered_count,
+                 started_at, finished_at, status, error_message, verified_count)
+            SELECT id, instance_id, instance_name, skill, wanted_count, triggered_count,
+                   started_at, finished_at, status, error_message, COALESCE(verified_count, 0)
+            FROM search_history;
+
+            DROP TABLE search_history;
+            ALTER TABLE search_history_rebuilt RENAME TO search_history;
+
+            CREATE INDEX IF NOT EXISTS idx_history_instance ON search_history(instance_id);
+            CREATE INDEX IF NOT EXISTS idx_history_started  ON search_history(started_at DESC);
+        """)
+
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            conn.rollback()
+            raise RuntimeError(f"history rebuild left {len(violations)} broken references")
+
+        conn.commit()
+        logger.info("Widened search_history.status to allow verification states")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.close()
 
 
 _cached_secret_key: str | None = None
