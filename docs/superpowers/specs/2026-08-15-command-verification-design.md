@@ -201,8 +201,13 @@ die Wiederholung würde sonst bei jeder Netzwerkstörung anspringen.
 | `error` | Der Lauf selbst warf eine Ausnahme (unverändert) |
 | `success` | Alle Items `completed` — oder der Lauf hat gar keine Items |
 | `pending` | Mindestens ein Item noch `submitted` |
-| `partial` | Kein Item mehr offen, mindestens eines `completed`, mindestens eines nicht |
-| `failed` | Kein Item mehr offen, keines `completed` |
+| `partial` | Nichts mehr offen, mindestens eines `completed`, mindestens eines nicht |
+| `failed` | Nichts mehr offen, keines `completed`, mindestens eines `failed` |
+| `unverified` | Nichts mehr offen, keines `completed`, keines `failed` — also nur `expired` |
+
+`unverified` ist bewusst von `failed` getrennt. Ein Befehl, dessen Ausgang \*arr nicht
+mehr kennt, ist kein belegter Fehlschlag. Beides in einen Topf zu werfen hieße, eine
+Behauptung durch eine andere zu ersetzen — genau der Fehler, den diese Änderung behebt.
 
 `finish_run()` schreibt `pending`, sobald Items vorhanden sind, sonst direkt `success`.
 `verify_commands` rechnet das Aggregat nach jedem Durchlauf neu und setzt
@@ -237,6 +242,7 @@ damit die Dashboard-Anzeige nicht flackert.
 | `pending` | `badge-scheduled` | offen |
 | `partial` | `badge-error` | teilweise |
 | `failed` | `badge-offline` | gescheitert |
+| `unverified` | `badge-unknown` | nicht prüfbar |
 | `error` | `badge-offline` | Fehler |
 
 Je Item zusätzlich der eigene Zustand. Altzeilen (`legacy`) zeigen einen neutralen
