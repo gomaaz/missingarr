@@ -23,6 +23,12 @@ class BaseAgent(ABC):
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
+        # One lock per skill. state["status"] is a display value shared by the
+        # whole agent and must not double as a mutex — doing so let a running
+        # search block the health check every single hour.
+        self._skill_locks: dict[str, threading.Lock] = {}
+        self._skill_locks_guard = threading.Lock()
+
         # Rate-limit tracking: timestamps of recent actions
         self._action_timestamps: deque = deque()
 
@@ -121,6 +127,18 @@ class BaseAgent(ABC):
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
         )
 
+        # Verification every 2 minutes. Runs regardless of the search-enabled
+        # flags: entries submitted before a skill was switched off would stay
+        # unresolved forever otherwise.
+        self._scheduler.add_job(
+            self._run_skill,
+            "interval",
+            minutes=2,
+            args=["verify_commands"],
+            id=f"verify_{cfg['id']}",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+        )
+
         self._scheduler.start()
         self.state["status"] = "scheduled"
 
@@ -154,28 +172,35 @@ class BaseAgent(ABC):
             self.state["status"] = "quiet"
             return
 
-        # Guard against concurrent runs of the same skill.
-        # Force triggers wait up to 90 s for any active run to finish first;
-        # non-force triggers are dropped immediately if a run is active.
-        wait_until = time.monotonic() + (90 if force else 0)
-        while True:
-            with self._lock:
-                if self.state.get("status") != "running":
-                    self.state["status"] = "running"
-                    break
-            if time.monotonic() >= wait_until:
-                self.log("warn", skill_name, "Already running — skipping duplicate trigger")
-                return
+        # Guard against concurrent runs of the same skill. Force triggers wait
+        # up to 90 s for an active run of that skill to finish; scheduled
+        # triggers are dropped immediately.
+        lock = self._skill_lock(skill_name)
+        deadline = time.monotonic() + (90 if force else 0)
+        acquired = lock.acquire(blocking=False)
+        while not acquired and time.monotonic() < deadline:
             time.sleep(1)
+            acquired = lock.acquire(blocking=False)
+        if not acquired:
+            self.log("warn", skill_name, "Already running — skipping duplicate trigger")
+            return
+
+        # Only the search skills drive the dashboard status; health_check and
+        # verify_commands run alongside them and must not make the card flicker.
+        drives_display = skill_name in ("search_missing", "search_upgrades")
 
         try:
+            if drives_display:
+                self.state["status"] = "running"
             skill.execute(self, force=force)
         except Exception as exc:
             self.log("error", skill_name, f"Unhandled exception: {exc}")
         finally:
-            self.state["status"] = "scheduled"
-            # Update next_run_at from scheduler
-            self._update_next_run()
+            if drives_display:
+                self.state["status"] = "scheduled"
+                # Update next_run_at from scheduler
+                self._update_next_run()
+            lock.release()
 
     def trigger_now(self, skill_name: str, force: bool = True):
         """Manual trigger — runs in a separate thread to not block the caller."""
@@ -191,6 +216,10 @@ class BaseAgent(ABC):
             daemon=True,
         )
         t.start()
+
+    def _skill_lock(self, skill_name: str) -> threading.Lock:
+        with self._skill_locks_guard:
+            return self._skill_locks.setdefault(skill_name, threading.Lock())
 
     def _get_skill(self, name: str) -> Optional[BaseSkill]:
         for s in self._skills:
@@ -299,3 +328,28 @@ class BaseAgent(ABC):
         )
         resp.raise_for_status()
         return resp.json()
+
+    def http_get_raw(self, path: str) -> tuple[int, dict | None]:
+        """GET that reports the status code instead of raising on 4xx/5xx.
+
+        Verification needs to tell "*arr does not know this command" (404, a
+        real answer) apart from "*arr is unreachable" (retry later), which
+        raise_for_status collapses into one exception. Returns status 0 for
+        network-level failures.
+        """
+        url = self.config["url"].rstrip("/") + path
+        try:
+            resp = requests.get(
+                url,
+                headers={"X-Api-Key": self.config["api_key"]},
+                timeout=10,
+            )
+        except requests.exceptions.RequestException:
+            return 0, None
+
+        if resp.status_code != 200:
+            return resp.status_code, None
+        try:
+            return 200, resp.json()
+        except ValueError:
+            return 200, None
