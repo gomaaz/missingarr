@@ -55,7 +55,7 @@ Die reine Logik liegt bewusst in `backend/verification.py` statt im Skill: sie i
 - Consumes: nichts
 - Produces: `map_command_status(http_status: int, payload: dict | None) -> str`, `aggregate_run_status(item_statuses: list[str]) -> str`, sowie die Konstanten `ITEM_SUBMITTED`, `ITEM_COMPLETED`, `ITEM_FAILED`, `ITEM_EXPIRED`, `ITEM_LEGACY`, `RUN_SUCCESS`, `RUN_PENDING`, `RUN_PARTIAL`, `RUN_FAILED`, `RUN_UNVERIFIED` — alle mit ihren String-Werten identisch zum Konstantennamen in Kleinschreibung (`ITEM_SUBMITTED == "submitted"`).
 
-- [ ] **Step 1: Dev-Abhängigkeit anlegen**
+- [x] **Step 1: Dev-Abhängigkeit anlegen**
 
 `requirements-dev.txt`:
 
@@ -66,7 +66,7 @@ pytest>=8.0.0
 
 Installieren: `pip install -r requirements-dev.txt`
 
-- [ ] **Step 2: Den fehlschlagenden Test schreiben**
+- [x] **Step 2: Den fehlschlagenden Test schreiben**
 
 `tests/__init__.py` bleibt leer. `tests/test_verification.py`:
 
@@ -152,12 +152,12 @@ class TestAggregateRunStatus:
         assert aggregate_run_status([ITEM_LEGACY, ITEM_FAILED]) == RUN_FAILED
 ```
 
-- [ ] **Step 3: Test laufen lassen, Fehlschlag bestätigen**
+- [x] **Step 3: Test laufen lassen, Fehlschlag bestätigen**
 
 Run: `python -m pytest tests/test_verification.py -v`
 Expected: FAIL mit `ModuleNotFoundError: No module named 'backend.verification'`
 
-- [ ] **Step 4: Implementierung schreiben**
+- [x] **Step 4: Implementierung schreiben**
 
 `backend/verification.py`:
 
@@ -229,12 +229,12 @@ def aggregate_run_status(item_statuses: list[str]) -> str:
     return RUN_UNVERIFIED
 ```
 
-- [ ] **Step 5: Tests laufen lassen, Erfolg bestätigen**
+- [x] **Step 5: Tests laufen lassen, Erfolg bestätigen**
 
 Run: `python -m pytest tests/test_verification.py -v`
 Expected: PASS, 17 Tests
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/verification.py tests/ requirements-dev.txt
@@ -264,7 +264,7 @@ git commit -m "feat: add pure verification rules for *arr command outcomes"
   - `history.finish_run(...)` — unverändert in der Signatur, schreibt jetzt `pending` statt `success`, sobald Items vorhanden sind
   - `searched.delete(instance_id: int, cache_key: str) -> int`
 
-- [ ] **Step 1: CREATE TABLE erweitern**
+- [x] **Step 1: CREATE TABLE erweitern**
 
 In `backend/database.py`, die Anweisung `CREATE TABLE IF NOT EXISTS search_history_items` ersetzen durch:
 
@@ -288,7 +288,7 @@ In `backend/database.py`, die Anweisung `CREATE TABLE IF NOT EXISTS search_histo
 Wege identisch entstehen. Sie wird beim Einfügen explizit gesetzt; Altzeilen bleiben
 `NULL` und fallen bei der Alterung auf den Laufbeginn zurück.
 
-- [ ] **Step 2: Migrationen ergänzen**
+- [x] **Step 2: Migrationen ergänzen**
 
 In `backend/database.py` die Liste in `for sql in [...]` um diese fünf Einträge erweitern (bestehende Einträge stehen lassen):
 
@@ -385,7 +385,7 @@ Die Erkennung über `"'pending'" in current[0]` macht den Aufruf idempotent: ein
 angelegte oder bereits umgebaute Tabelle wird übersprungen. `backend/database.py` braucht
 dafür `import logging` und einen Modul-Logger.
 
-- [ ] **Step 3: `insert_item` erweitern**
+- [x] **Step 3: `insert_item` erweitern**
 
 In `backend/db/history.py` oben ergänzen:
 
@@ -428,7 +428,7 @@ def insert_item(
         )
 ```
 
-- [ ] **Step 4: `finish_run` auf `pending` umstellen**
+- [x] **Step 4: `finish_run` auf `pending` umstellen**
 
 Ohne diesen Schritt entsteht der Zustand `pending` nie und die gesamte Statuskette
 aus Abschnitt 5 der Spec bleibt wirkungslos. `finish_run` in `backend/db/history.py`
@@ -473,7 +473,7 @@ def finish_run(
 Die Aufrufstellen in `search_missing.py` und `search_upgrades.py` bleiben unverändert —
 sie übergeben weiterhin `"success"`, die Entscheidung fällt hier.
 
-- [ ] **Step 5: Abfragen für die Verifikation ergänzen**
+- [x] **Step 5: Abfragen für die Verifikation ergänzen**
 
 An `backend/db/history.py` anhängen:
 
@@ -601,7 +601,7 @@ def update_run_verification(run_id: int, status: str, verified_count: int) -> No
         )
 ```
 
-- [ ] **Step 6: Item-Status in die Flachliste aufnehmen**
+- [x] **Step 6: Item-Status in die Flachliste aufnehmen**
 
 In `backend/db/history.py`, in `query_items_flat`, die SELECT-Liste ersetzen. Vorher:
 
@@ -635,7 +635,7 @@ Nachher:
 
 Der Rest der Abfrage (`FROM` bis `LIMIT`) bleibt unverändert.
 
-- [ ] **Step 7: `delete` in searched.py ergänzen**
+- [x] **Step 7: `delete` in searched.py ergänzen**
 
 An `backend/db/searched.py` anhängen:
 
@@ -655,7 +655,7 @@ def delete(instance_id: int, cache_key: str) -> int:
         return cursor.rowcount
 ```
 
-- [ ] **Step 8: Migration gegen eine Kopie der echten Datenbank prüfen**
+- [x] **Step 8: Migration gegen eine Kopie der echten Datenbank prüfen**
 
 ```bash
 cp /root/docker/missingarr/data/missingarr.db /tmp/mig-test.db
@@ -699,7 +699,7 @@ Expected: identische Zeilenzahlen vor und nach der Migration, `CHECK erlaubt pen
 
 `init_db()` anschließend ein zweites Mal aufrufen: die Zahlen müssen unverändert bleiben und `search_history_rebuilt` darf nicht existieren.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add backend/database.py backend/db/history.py backend/db/searched.py
@@ -718,7 +718,7 @@ git commit -m "feat: store command id and outcome per history item"
 - Consumes: `history.insert_item(...)` mit `cache_key` und `command_id` (Task 2)
 - Produces: `SearchResult` aus `backend.skills.base` mit den Feldern `ok: bool`, `title: str`, `item_type: str`, `cache_key: str`, `arr_id: int | None`, `command_id: int | None`
 
-- [ ] **Step 1: Wertobjekt anlegen**
+- [x] **Step 1: Wertobjekt anlegen**
 
 In `backend/skills/base.py` oben ergänzen:
 
@@ -747,7 +747,7 @@ class SearchResult:
     command_id: int | None = None
 ```
 
-- [ ] **Step 2: Aufrufstelle umstellen**
+- [x] **Step 2: Aufrufstelle umstellen**
 
 In `backend/skills/search_missing.py` den Import erweitern:
 
@@ -774,7 +774,7 @@ Die Schleife `for record in candidates:` — der Block ab `success, title, item_
                         db.searched.add(cfg["id"], result.cache_key, result.title, result.item_type)
 ```
 
-- [ ] **Step 3: `_trigger_search` umstellen**
+- [x] **Step 3: `_trigger_search` umstellen**
 
 ```python
     def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str, series_lookup: dict | None = None) -> SearchResult:
@@ -788,7 +788,7 @@ Die Schleife `for record in candidates:` — der Block ab `success, title, item_
             return SearchResult(False)
 ```
 
-- [ ] **Step 4: `_radarr_search` umstellen**
+- [x] **Step 4: `_radarr_search` umstellen**
 
 ```python
     def _radarr_search(self, agent, record: dict) -> SearchResult:
@@ -803,7 +803,7 @@ Die Schleife `for record in candidates:` — der Block ab `success, title, item_
         return SearchResult(False)
 ```
 
-- [ ] **Step 5: `_sonarr_search` umstellen**
+- [x] **Step 5: `_sonarr_search` umstellen**
 
 Alle sechs Rückgabestellen. Signatur: `def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict | None = None) -> SearchResult:`
 
@@ -901,7 +901,7 @@ Damit werden die Zweige zu:
 
 **Achtung:** Die `_fire_*`-Helfer werfen bei HTTP-Fehlern weiter — das ist gewollt, `_trigger_search` fängt sie und liefert `SearchResult(False)`. Damit bleibt das bisherige Verhalten erhalten, dass abgelehnte Befehle keinen Eintrag erzeugen.
 
-- [ ] **Step 6: Übersetzbarkeit prüfen**
+- [x] **Step 6: Übersetzbarkeit prüfen**
 
 Run: `python -c "import backend.skills.search_missing"`
 Expected: keine Ausgabe
@@ -909,7 +909,7 @@ Expected: keine Ausgabe
 Run: `grep -n "success, title, item_type, stored_key" backend/skills/search_missing.py`
 Expected: keine Treffer
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/skills/base.py backend/skills/search_missing.py
@@ -927,7 +927,7 @@ git commit -m "fix: record the entity id actually searched, plus the *arr comman
 - Consumes: `SearchResult` (Task 3), `history.insert_item(...)` (Task 2)
 - Produces: nichts Neues
 
-- [ ] **Step 1: `_trigger_upgrade` auf `SearchResult` umstellen**
+- [x] **Step 1: `_trigger_upgrade` auf `SearchResult` umstellen**
 
 Import erweitern: `from backend.skills.base import BaseSkill, SearchResult`
 
@@ -957,7 +957,7 @@ Import erweitern: `from backend.skills.base import BaseSkill, SearchResult`
 
 Der `cache_key` kommt jetzt aus dem Ergebnis statt aus einem separaten Aufruf von `_cache_key` — die Schlüsselbildung ist damit an genau einer Stelle und kann nicht mehr vom tatsächlich gefeuerten Befehl abweichen. `_cache_key` wird nach dieser Änderung nicht mehr benötigt und ist zu entfernen, sofern kein anderer Aufruf mehr darauf zeigt (`grep -n "_cache_key" backend/skills/search_upgrades.py`).
 
-- [ ] **Step 2: Aufrufstelle anpassen**
+- [x] **Step 2: Aufrufstelle anpassen**
 
 Der Block liegt bereits in einem `try`, das Ausnahmen als „nicht ausgelöst" behandelt — dieser Rahmen bleibt. Zu ersetzen ist der Inhalt der Schleife `for item in candidates:` ab `item_id = item["id"]`. Vorher:
 
@@ -1002,12 +1002,12 @@ Nachher:
 
 `label` bleibt als lokale Variable erhalten, weil die `except`-Meldung sie braucht — `result` existiert dort nicht. `item_id` und `cache_key` entfallen, beides kommt jetzt aus `result`.
 
-- [ ] **Step 3: Übersetzbarkeit prüfen**
+- [x] **Step 3: Übersetzbarkeit prüfen**
 
 Run: `python -c "import backend.skills.search_upgrades"`
 Expected: keine Ausgabe
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/skills/search_upgrades.py
@@ -1026,7 +1026,7 @@ git commit -m "fix: record command id for upgrade searches too"
 - Consumes: `map_command_status`, `aggregate_run_status`, Item-Konstanten (Task 1); `history.get_pending_items`, `history.set_item_status`, `history.expire_stale_items`, `history.get_unresolved_run_ids`, `history.get_item_statuses`, `history.update_run_verification`, `history.get_latest_run_verification`, `searched.delete` (Task 2)
 - Produces: `BaseAgent.http_get_raw(path: str) -> tuple[int, dict | None]`; `VerifyCommandsSkill` mit `name = "verify_commands"`; setzt `agent.state["last_verified"]` auf den `verified_count` des jüngsten Laufs
 
-- [ ] **Step 1: `http_get_raw` ergänzen**
+- [x] **Step 1: `http_get_raw` ergänzen**
 
 In `backend/agents/base.py` direkt nach `http_post` einfügen:
 
@@ -1057,7 +1057,7 @@ In `backend/agents/base.py` direkt nach `http_post` einfügen:
             return 200, None
 ```
 
-- [ ] **Step 2: Skill schreiben**
+- [x] **Step 2: Skill schreiben**
 
 `backend/skills/verify_commands.py`:
 
@@ -1148,12 +1148,12 @@ class VerifyCommandsSkill(BaseSkill):
 
 **Zu `last_verified`:** Der Wert ist der `verified_count` des jüngsten Laufs der Instanz, gelesen aus der Datenbank — nicht die Zahl der in diesem Durchlauf aufgelösten Befehle. Ein Durchlauf kann Items aus mehreren Läufen oder gar keine auflösen; nur der Rückgriff auf den jüngsten Lauf passt zu der Zahl `last_triggered`, neben der die Kachel ihn zeigt.
 
-- [ ] **Step 3: Übersetzbarkeit prüfen**
+- [x] **Step 3: Übersetzbarkeit prüfen**
 
 Run: `python -c "import backend.skills.verify_commands; import backend.agents.base"`
 Expected: keine Ausgabe
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/agents/base.py backend/skills/verify_commands.py
@@ -1173,7 +1173,7 @@ git commit -m "feat: add verify_commands skill resolving *arr command outcomes"
 
 Die bestehende Sperre nutzt `self.state["status"]`, das sich alle Skills eines Agenten teilen. Nachweisbare Folge im Bestand: 166 Meldungen `Already running — skipping duplicate trigger` für den `health_check`, jeweils zehn Sekunden nach Beginn eines Suchlaufs. Ohne diese Änderung träfe es `verify_commands` genauso.
 
-- [ ] **Step 1: Sperren-Verwaltung ergänzen**
+- [x] **Step 1: Sperren-Verwaltung ergänzen**
 
 In `__init__` nach `self._lock = threading.Lock()` einfügen:
 
@@ -1193,7 +1193,7 @@ Als Methode ergänzen:
             return self._skill_locks.setdefault(skill_name, threading.Lock())
 ```
 
-- [ ] **Step 2: `_run_skill` umbauen**
+- [x] **Step 2: `_run_skill` umbauen**
 
 Den Block ab dem Kommentar `# Guard against concurrent runs of the same skill.` bis zum Ende der Methode ersetzen durch:
 
@@ -1230,7 +1230,7 @@ Den Block ab dem Kommentar `# Guard against concurrent runs of the same skill.` 
 
 `self._lock` bleibt unverändert — es schützt weiterhin `_action_timestamps` für die Ratenbegrenzung.
 
-- [ ] **Step 3: Verhalten prüfen**
+- [x] **Step 3: Verhalten prüfen**
 
 ```bash
 python - <<'PY'
@@ -1261,7 +1261,7 @@ PY
 
 Expected: `health_check RAN` erscheint, danach `LOG: Already running — skipping duplicate trigger` für den zweiten `search_missing`. Vor dieser Änderung wäre der `health_check` übersprungen worden.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/agents/base.py
@@ -1280,7 +1280,7 @@ git commit -m "fix: lock per skill so health checks and verification are not blo
 - Consumes: `VerifyCommandsSkill` (Task 5)
 - Produces: Scheduler-Job `verify_{instance_id}`, Intervall 2 Minuten
 
-- [ ] **Step 1: In beiden Agenten registrieren**
+- [x] **Step 1: In beiden Agenten registrieren**
 
 In `backend/agents/sonarr.py` und `backend/agents/radarr.py` jeweils:
 
@@ -1294,7 +1294,7 @@ und die Rückgabe von `build_skills` erweitern:
         return [SearchMissingSkill(), SearchUpgradesSkill(), HealthCheckSkill(), VerifyCommandsSkill()]
 ```
 
-- [ ] **Step 2: Job einplanen**
+- [x] **Step 2: Job einplanen**
 
 In `backend/agents/base.py._run`, direkt nach dem `health_`-Job:
 
@@ -1312,7 +1312,7 @@ In `backend/agents/base.py._run`, direkt nach dem `health_`-Job:
         )
 ```
 
-- [ ] **Step 3: Anwendung starten und Log beobachten**
+- [x] **Step 3: Anwendung starten und Log beobachten**
 
 ```bash
 docker compose -f docker-compose.yml up -d --build
@@ -1321,7 +1321,7 @@ docker logs -f missingarr 2>&1 | grep -i "verify"
 
 Expected: innerhalb von zwei Minuten Einträge zum `verify_commands`-Job, keine Ausnahmen.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/agents/sonarr.py backend/agents/radarr.py backend/agents/base.py
@@ -1339,7 +1339,7 @@ git commit -m "feat: schedule command verification every two minutes"
 - Consumes: `command_status` aus `/api/history/items` (Task 2, Step 5)
 - Produces: nichts
 
-- [ ] **Step 1: Spalte im Tabellenkopf ergänzen**
+- [x] **Step 1: Spalte im Tabellenkopf ergänzen**
 
 Nach `<th>Status</th>` einfügen:
 
@@ -1347,7 +1347,7 @@ Nach `<th>Status</th>` einfügen:
                     <th>Verified</th>
 ```
 
-- [ ] **Step 2: Beschriftungen im Alpine-Zustand ergänzen**
+- [x] **Step 2: Beschriftungen im Alpine-Zustand ergänzen**
 
 Die Spec legt deutsche Texte fest, die Rohwerte aus der Datenbank sind englisch. Die Abbildung gehört an genau eine Stelle. Im `x-data`-Objekt von `templates/history.html` — direkt nach der Methode `fmtTime(s) { … }`, mit Komma davor — einfügen:
 
@@ -1375,7 +1375,7 @@ Die Spec legt deutsche Texte fest, die Rohwerte aus der Datenbank sind englisch.
 
 Unbekannte Werte fallen auf den Rohwert zurück, statt leer zu bleiben — ein neuer Status wäre sonst unsichtbar.
 
-- [ ] **Step 3: Lauf-Status-Badge um die neuen Werte erweitern**
+- [x] **Step 3: Lauf-Status-Badge um die neuen Werte erweitern**
 
 Den `:class`-Block des Status-Badges ersetzen — `x-text` liest jetzt die Beschriftung:
 
@@ -1393,7 +1393,7 @@ Den `:class`-Block des Status-Badges ersetzen — `x-text` liest jetzt die Besch
                             </span>
 ```
 
-- [ ] **Step 4: Zelle für den Item-Ausgang ergänzen**
+- [x] **Step 4: Zelle für den Item-Ausgang ergänzen**
 
 Direkt nach der `<td>` mit dem Status-Badge einfügen:
 
@@ -1419,11 +1419,11 @@ Direkt nach der `<td>` mit dem Status-Badge einfügen:
 
 Altzeilen zeigen einen Strich statt eines Zustands — sie tragen keinen Beleg, also behauptet die Oberfläche für sie nichts. Bei den übrigen steht die Command-ID im Tooltip, damit sie ohne Umweg über die Datenbank in \*arr nachschlagbar ist.
 
-- [ ] **Step 5: Im Browser prüfen**
+- [x] **Step 5: Im Browser prüfen**
 
 `/history` öffnen. Erwartung: Altzeilen mit `—` in der Spalte *Verified*, nach dem nächsten Suchlauf neue Zeilen erst mit `submitted`, binnen zwei Minuten auf `completed` wechselnd. Der Lauf-Status geht von `pending` auf `success`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add templates/history.html
@@ -1442,7 +1442,7 @@ git commit -m "feat: show the verified outcome per history item"
 - Consumes: `state["last_verified"]` (Task 5)
 - Produces: nichts
 
-- [ ] **Step 1: Kachel anpassen**
+- [x] **Step 1: Kachel anpassen**
 
 Den Block `Triggered (last)` ersetzen:
 
@@ -1457,7 +1457,7 @@ Den Block `Triggered (last)` ersetzen:
             </div>
 ```
 
-- [ ] **Step 2: Live-Aktualisierung ergänzen**
+- [x] **Step 2: Live-Aktualisierung ergänzen**
 
 In `static/js/app.js` bei den `data-stat`-Zweigen ergänzen:
 
@@ -1465,11 +1465,11 @@ In `static/js/app.js` bei den `data-stat`-Zweigen ergänzen:
             else if (key === 'last_verified') el.textContent = state.last_verified ?? '-';
 ```
 
-- [ ] **Step 3: Im Browser prüfen**
+- [x] **Step 3: Im Browser prüfen**
 
 Dashboard öffnen, Force-Run auslösen. Erwartung: unmittelbar `0 / 4`, binnen zwei Minuten `4 / 4`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add templates/instances/card.html static/js/app.js
@@ -1482,12 +1482,12 @@ git commit -m "feat: dashboard distinguishes confirmed from sent searches"
 
 **Files:** keine Änderungen — reine Verifikation
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 Run: `python -m pytest tests/ -v`
 Expected: alle grün
 
-- [ ] **Step 2: Mitschnitt während eines echten Laufs**
+- [x] **Step 2: Mitschnitt während eines echten Laufs**
 
 Dasselbe Verfahren, mit dem die Befunde belegt wurden. `/tmp/watch.py` im Container:
 
@@ -1528,7 +1528,7 @@ docker cp /tmp/watch.py missingarr:/tmp/watch.py
 docker exec -w /app -e PYTHONPATH=/app missingarr python /tmp/watch.py
 ```
 
-- [ ] **Step 3: Beide Seiten abgleichen**
+- [x] **Step 3: Beide Seiten abgleichen**
 
 ```bash
 docker exec -w /app -e PYTHONPATH=/app missingarr python -c "
@@ -1552,7 +1552,7 @@ Erwartung, jeweils gegen den Mitschnitt geprüft:
 3. `command_status` steht binnen zwei Minuten auf `completed`.
 4. Der Lauf steht auf `success` mit `verified_count == triggered_count`.
 
-- [ ] **Step 4: Fehlerpfad und Grenzfälle gegen eine Kopie der Datenbank belegen**
+- [x] **Step 4: Fehlerpfad und Grenzfälle gegen eine Kopie der Datenbank belegen**
 
 Ein echtes `failed` von \*arr lässt sich nicht auf Zuruf erzeugen, und die Produktionsdaten sollen dabei unangetastet bleiben. Deshalb gegen eine **Kopie** mit einem gestellten Agenten, der `http_get_raw` fest beantwortet:
 
@@ -1626,7 +1626,7 @@ Expected: vier Zeilen mit den erwarteten Zuständen, dann `alle vier Faelle best
 
 Aufräumen: `docker exec missingarr rm -f /tmp/verify-test.db && rm -f /tmp/verify-test.db`
 
-- [ ] **Step 5: Rückstau bei Radarr prüfen**
+- [x] **Step 5: Rückstau bei Radarr prüfen**
 
 Radarr läuft mit `missing_per_run=600` bei praktisch unbegrenztem `rate_cap`. Ein Lauf mit vielen Treffern kann also mehr offene Befehle erzeugen, als ein 50er-Durchlauf alle zwei Minuten abarbeitet — 600 Items bräuchten zwölf Durchläufe, also 24 Minuten. Das ist unkritisch, solange der Rückstau zwischen zwei Läufen (30 Minuten) abgebaut wird. Nachmessen statt annehmen:
 
@@ -1647,7 +1647,7 @@ print('(keine Ausgabe = kein Rueckstau)')
 
 Über mindestens eine Stunde mehrfach ausführen. Erwartung: die Zahl geht zwischen den Läufen auf 0 zurück und das älteste offene Item ist nie älter als etwa 30 Minuten. Bleibt ein wachsender Sockel stehen, ist `MAX_PER_RUN` in `verify_commands.py` anzuheben oder das Intervall zu verkürzen — beides ist eine Konstante, kein Umbau.
 
-- [ ] **Step 6: Version anheben und committen**
+- [x] **Step 6: Version anheben und committen**
 
 `VERSION` auf `0.7.0` setzen (neue Spalten, neuer Skill, geänderte Statusbedeutung — kein reiner Patch).
 
@@ -1655,6 +1655,29 @@ print('(keine Ausgabe = kein Rueckstau)')
 git add VERSION
 git commit -m "chore: bump version to 0.7.0"
 ```
+
+---
+
+## Abnahmevermerk (16.08.2026)
+
+Task 10 gegen die laufende Instanz durchlaufen. Ergebnisse:
+
+| Step | Ergebnis |
+|---|---|
+| 1 Tests | 17 grün. `pytest` liegt weder global noch im Container, sondern in `.venv` — Aufruf über `.venv/bin/python -m pytest tests/ -v`. |
+| 2 Mitschnitt | Sonarr-Lauf um 21:27 eingefangen: cmd#3593275–3593278, darunter ein `SeasonSearch` mit `ids=17081`. |
+| 3 Abgleich | Alle vier Erwartungen erfüllt. `arr_id=17081` bei `item_type='season'` — die Serien-ID, nicht die Episoden-ID. Befund B1 geschlossen. Später zusätzlich `movie` (Radarr-Lauf #9838, 2/2) und `series` belegt. |
+| 4 Fehlerpfad | Alle vier Fälle bestanden, Produktionsdaten unangetastet. |
+| 5 Rückstau | 13 Messungen über eine Stunde, durchgehend kein Rückstau. Radarr triggert derzeit 0 Items, der 600er-Fall tritt live nicht auf; simuliert gegen eine Kopie: 12 Durchläufe = 24 min < 30 min Laufintervall, Lauf löst als `success` 600/600 auf. Bei durchweg noch laufenden Befehlen bleibt der Rückstau stehen und ist im Log sichtbar („Queried 50, 0 resolved"). |
+| 6 Version | `VERSION` stand mit f271e6a bereits auf 0.7.0, separater Commit entfiel. |
+
+Abweichungen vom Plantext:
+
+- **`docker exec` braucht `-i`.** Ohne das erreicht ein Heredoc den Container nie; das Skript in Step 4 beendete sich still mit Exit 0 und ohne Ausgabe. Die Skripte wurden stattdessen als Datei hineinkopiert.
+- **Das Prüfskript in Step 4 las den falschen Lauf.** Es holte „den neuesten Lauf" über `db.history.query(limit=1)`; alle vier Szenarien starten in derselben Sekunde, also kam der Lauf des vorigen Falls zurück. Geprüft wird jetzt über die konkrete `run_id`.
+- Daraus folgte ein eigener Befund: `query()`, `get_last_for_instance()` und `query_items_flat()` sortierten ohne Tiebreaker nach dem sekundengenauen `started_at`. Behoben in af777b3.
+
+Offen, bewusst nicht in diesem Branch: `activity.py:63` und `searched.py:85` sortieren ebenso ohne Tiebreaker. Das Aktivitätslog ist davon stärker betroffen als die Historie je war — bis zu sechs Einträge teilen sich eine Sekunde.
 
 ---
 
