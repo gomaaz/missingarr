@@ -1,7 +1,7 @@
 import random
 import time
 from datetime import datetime
-from backend.skills.base import BaseSkill
+from backend.skills.base import BaseSkill, SearchResult
 from backend import db
 
 
@@ -53,17 +53,22 @@ class SearchUpgradesSkill(BaseSkill):
                     agent.log("warn", self.name, "Rate cap reached — stopping run")
                     break
 
-                item_id = item["id"]
                 label = item["label"]
-                cache_key = self._cache_key(arr_type, item)
 
                 try:
-                    item_type = self._trigger_upgrade(agent, arr_type, item)
+                    result = self._trigger_upgrade(agent, arr_type, item)
                     triggered_count += 1
                     agent.record_action()
-                    db.history.insert_item(run_id, label, item_id, item_type)
-                    db.searched.add(cfg["id"], cache_key, label, item_type)
-                    agent.log("debug", self.name, f"Upgrade search: {label}")
+                    db.history.insert_item(
+                        run_id,
+                        result.title,
+                        result.arr_id,
+                        result.item_type,
+                        cache_key=result.cache_key,
+                        command_id=result.command_id,
+                    )
+                    db.searched.add(cfg["id"], result.cache_key, result.title, result.item_type)
+                    agent.log("debug", self.name, f"Upgrade search: {result.title}")
                 except Exception as exc:
                     agent.log("warn", self.name, f"Failed to trigger upgrade for {label}: {exc}")
 
@@ -90,21 +95,35 @@ class SearchUpgradesSkill(BaseSkill):
             return f"upg:sea:{series_id}:{season_number}"
         return f"upg:{item['id']}"
 
-    def _trigger_upgrade(self, agent, arr_type: str, item: dict) -> str:
+    def _trigger_upgrade(self, agent, arr_type: str, item: dict) -> SearchResult:
+        """Fire the upgrade search and report what was actually addressed.
+
+        Reuses _cache_key rather than spelling the keys out again: the pre-filter
+        in execute() decides with that same function, and two copies of the rule
+        would eventually disagree — filtering an item under one key while storing
+        it under another.
+        """
+        label = item.get("label") or item.get("title") or f"#{item['id']}"
+        cache_key = self._cache_key(arr_type, item)
+
         if arr_type == "radarr":
-            agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [item["id"]]})
-            return "movie"
-        else:
-            # Sonarr: prefer SeasonSearch if season info available, else EpisodeSearch
-            series_id = item.get("series_id")
-            season_number = item.get("season_number")
-            episode_id = item.get("id")
-            if series_id is not None and season_number is not None:
-                agent.http_post("/api/v3/command", {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number})
-                return "season"
-            else:
-                agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-                return "episode"
+            movie_id = item["id"]
+            resp = agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
+            return SearchResult(True, label, "movie", cache_key, movie_id, resp.get("id"))
+
+        # Sonarr: prefer SeasonSearch if season info available, else EpisodeSearch
+        series_id = item.get("series_id")
+        season_number = item.get("season_number")
+        episode_id = item["id"]
+        if series_id is not None and season_number is not None:
+            resp = agent.http_post(
+                "/api/v3/command",
+                {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number},
+            )
+            return SearchResult(True, label, "season", cache_key, series_id, resp.get("id"))
+
+        resp = agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+        return SearchResult(True, label, "episode", cache_key, episode_id, resp.get("id"))
 
     def _collect_candidates(self, agent, arr_type: str, source: str, per_run: int) -> list[dict]:
         items = []
