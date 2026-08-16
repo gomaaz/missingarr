@@ -82,7 +82,7 @@ def query(
             FROM searched_items s
             LEFT JOIN instances i ON i.id = s.instance_id
             {where}
-            ORDER BY s.searched_at DESC LIMIT ? OFFSET ?
+            ORDER BY s.searched_at DESC, s.id DESC LIMIT ? OFFSET ?
             """,
             params,
         ).fetchall()

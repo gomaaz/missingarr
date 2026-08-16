@@ -29,7 +29,7 @@ def _trim(conn: sqlite3.Connection):
         conn.execute(
             """
             DELETE FROM activity_log WHERE id IN (
-                SELECT id FROM activity_log ORDER BY created_at ASC LIMIT ?
+                SELECT id FROM activity_log ORDER BY created_at ASC, id ASC LIMIT ?
             )
             """,
             (excess,),
@@ -60,7 +60,8 @@ def query(
 
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT * FROM activity_log {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM activity_log {where} "
+            f"ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
