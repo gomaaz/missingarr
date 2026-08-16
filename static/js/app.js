@@ -218,6 +218,7 @@ function updateCardState(instanceId, responseText) {
             const key = el.dataset.stat;
             if (key === 'last_wanted') el.textContent = state.last_wanted ?? '-';
             else if (key === 'last_triggered') el.textContent = state.last_triggered ?? '-';
+            else if (key === 'last_verified') el.textContent = state.last_verified ?? '-';
             else if (key === 'last_sync') el.textContent = state.last_sync || '-';
         });
     } catch (_) {}

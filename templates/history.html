@@ -35,6 +35,25 @@
     fmtTime(s) {
         if (!s) return '—';
         return s.replace('T', ' ').substring(0, 16);
+    },
+    runLabel(s) {
+        return {
+            success: 'bestätigt',
+            pending: 'offen',
+            partial: 'teilweise',
+            failed: 'gescheitert',
+            unverified: 'nicht prüfbar',
+            error: 'Fehler',
+            running: 'läuft'
+        }[s] || s;
+    },
+    itemLabel(s) {
+        return {
+            completed: 'durchgelaufen',
+            failed: 'gescheitert',
+            submitted: 'offen',
+            expired: 'nicht prüfbar'
+        }[s] || s;
     }
 }">
 
@@ -89,6 +108,7 @@
                     <th>*arr</th>
                     <th>Skill</th>
                     <th>Status</th>
+                    <th>Verified</th>
                 </tr>
             </thead>
             <tbody>
@@ -125,11 +145,32 @@
                             <span class="badge"
                                 :class="{
                                     'badge-online': row.status === 'success',
-                                    'badge-offline': row.status === 'error',
+                                    'badge-offline': row.status === 'error' || row.status === 'failed',
+                                    'badge-error': row.status === 'partial',
+                                    'badge-scheduled': row.status === 'pending',
+                                    'badge-unknown': row.status === 'unverified',
                                     'badge-running': row.status === 'running'
                                 }"
-                                x-text="row.status">
+                                x-text="runLabel(row.status)">
                             </span>
+                        </td>
+                        <td>
+                            <template x-if="row.command_status === 'legacy'">
+                                <span style="color:var(--text-muted);"
+                                      title="Vor der Einführung der Belegpflicht angelegt">—</span>
+                            </template>
+                            <template x-if="row.command_status !== 'legacy'">
+                                <span class="badge"
+                                    :class="{
+                                        'badge-online': row.command_status === 'completed',
+                                        'badge-offline': row.command_status === 'failed',
+                                        'badge-scheduled': row.command_status === 'submitted',
+                                        'badge-unknown': row.command_status === 'expired'
+                                    }"
+                                    :title="row.command_id ? 'Befehl #' + row.command_id : ''"
+                                    x-text="itemLabel(row.command_status)">
+                                </span>
+                            </template>
                         </td>
                     </tr>
                 </template>

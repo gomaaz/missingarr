@@ -38,6 +38,7 @@ class BaseAgent(ABC):
             "next_run_at": None,
             "last_wanted": 0,
             "last_triggered": 0,
+            "last_verified": 0,
             "last_sync": None,
             "connection_status": config.get("connection_status", "unknown"),
             "last_seen_at": config.get("last_seen_at"),

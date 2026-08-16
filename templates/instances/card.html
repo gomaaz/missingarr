@@ -109,8 +109,12 @@
                 <div class="stat-value" data-stat="last_wanted">{{ state.get('last_wanted', 0) if state else 0 }}</div>
             </div>
             <div class="stat-item">
-                <div class="stat-label">Triggered (last)</div>
-                <div class="stat-value" data-stat="last_triggered">{{ state.get('last_triggered', 0) if state else 0 }}</div>
+                <div class="stat-label">Confirmed / Sent</div>
+                <div class="stat-value">
+                    <span data-stat="last_verified">{{ state.get('last_verified', 0) if state else 0 }}</span>
+                    <span style="color:var(--text-muted);font-weight:400;"> / </span>
+                    <span data-stat="last_triggered">{{ state.get('last_triggered', 0) if state else 0 }}</span>
+                </div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">Interval</div>
