@@ -72,7 +72,8 @@ def query(
 
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT * FROM search_history {where} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM search_history {where} "
+            f"ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
@@ -84,7 +85,7 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
             """
             SELECT * FROM search_history
             WHERE instance_id=?
-            ORDER BY started_at DESC LIMIT 3
+            ORDER BY started_at DESC, id DESC LIMIT 3
             """,
             (instance_id,),
         ).fetchall()
@@ -183,7 +184,7 @@ def query_items_flat(
             JOIN search_history h ON h.id = si.run_id
             LEFT JOIN instances inst ON inst.id = h.instance_id
             {where}
-            ORDER BY h.started_at DESC, si.id
+            ORDER BY h.started_at DESC, h.id DESC, si.id
             LIMIT ? OFFSET ?
             """,
             params,
