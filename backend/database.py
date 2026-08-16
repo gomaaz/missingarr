@@ -186,9 +186,17 @@ def _widen_history_status_check() -> None:
         if not current or "'pending'" in current[0]:
             return  # fresh database, or already widened
 
+        before = conn.execute("SELECT COUNT(*) FROM search_history").fetchone()[0]
         conn.execute("PRAGMA foreign_keys=OFF")
+        # isolation_level=None hands transaction control to us. The rebuild must
+        # be one atomic step: sqlite3.executescript() COMMITS any open
+        # transaction before it runs, so using it here would drop and rename the
+        # table outside the transaction — a crash between the two would leave no
+        # search_history at all.
+        conn.isolation_level = None
         conn.execute("BEGIN")
-        conn.executescript("""
+        for statement in [
+            """
             CREATE TABLE search_history_rebuilt (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 instance_id     INTEGER REFERENCES instances(id) ON DELETE CASCADE,
@@ -203,29 +211,41 @@ def _widen_history_status_check() -> None:
                                                  'pending','partial','failed','unverified')),
                 error_message   TEXT,
                 verified_count  INTEGER NOT NULL DEFAULT 0
-            );
-
+            )
+            """,
+            """
             INSERT INTO search_history_rebuilt
                 (id, instance_id, instance_name, skill, wanted_count, triggered_count,
                  started_at, finished_at, status, error_message, verified_count)
             SELECT id, instance_id, instance_name, skill, wanted_count, triggered_count,
                    started_at, finished_at, status, error_message, COALESCE(verified_count, 0)
-            FROM search_history;
+            FROM search_history
+            """,
+            "DROP TABLE search_history",
+            "ALTER TABLE search_history_rebuilt RENAME TO search_history",
+            "CREATE INDEX IF NOT EXISTS idx_history_instance ON search_history(instance_id)",
+            "CREATE INDEX IF NOT EXISTS idx_history_started  ON search_history(started_at DESC)",
+        ]:
+            conn.execute(statement)
 
-            DROP TABLE search_history;
-            ALTER TABLE search_history_rebuilt RENAME TO search_history;
-
-            CREATE INDEX IF NOT EXISTS idx_history_instance ON search_history(instance_id);
-            CREATE INDEX IF NOT EXISTS idx_history_started  ON search_history(started_at DESC);
-        """)
+        moved = conn.execute("SELECT COUNT(*) FROM search_history").fetchone()[0]
+        if moved != before:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"history rebuild would lose rows: {before} before, {moved} after")
 
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
-            conn.rollback()
+            conn.execute("ROLLBACK")
             raise RuntimeError(f"history rebuild left {len(violations)} broken references")
 
-        conn.commit()
-        logger.info("Widened search_history.status to allow verification states")
+        conn.execute("COMMIT")
+        logger.info("Widened search_history.status (%d runs preserved)", moved)
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass  # nothing open to roll back
+        raise
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.close()
