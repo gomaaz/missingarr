@@ -8,13 +8,29 @@ the next time they are saved.
 """
 import logging
 from cryptography.fernet import Fernet
-from backend.database import get_db
+from backend.database import get_db, get_or_create_secret_key
 
 logger = logging.getLogger("missingarr.crypto")
 
 _ENC_PREFIX = "enc:"
 _KEY_SETTING = "encryption_key"
 _fernet: Fernet | None = None
+_session_secret: str | None = None
+
+
+def get_session_secret() -> str:
+    """Key that signs session cookies and remember-me tokens."""
+    global _session_secret
+    if _session_secret is None:
+        _session_secret = get_or_create_secret_key()
+    return _session_secret
+
+
+def _reset_cache() -> None:
+    """Tests switch databases; forget the cached keys."""
+    global _fernet, _session_secret
+    _fernet = None
+    _session_secret = None
 
 
 def _get_fernet() -> Fernet:

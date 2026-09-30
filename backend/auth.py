@@ -13,6 +13,7 @@ from passlib.context import CryptContext
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from backend.config import settings
 
@@ -85,6 +86,37 @@ def verify_password(plain: str) -> bool:
 
 def is_authenticated(request: Request) -> bool:
     return request.session.get("user") == settings.auth_username
+
+
+class LazySessionMiddleware(SessionMiddleware):
+    """SessionMiddleware that reads its signing key and cookie flags on the
+    first HTTP request instead of at import time.
+
+    The key lives in the database (or is derived from SECRET_KEY), and
+    importing backend.main must not open a database: tests and tools import it
+    without the real data directory. Lifespan messages pass straight through,
+    so the key is only read after the lifespan has run init_db().
+    """
+
+    def __init__(self, app, secret_provider, **options):
+        self.app = app
+        self._secret_provider = secret_provider
+        self._options = options
+        self._ready = False
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        if not self._ready:
+            SessionMiddleware.__init__(
+                self, self.app,
+                secret_key=self._secret_provider(),
+                https_only=settings.cookie_secure,
+                **self._options,
+            )
+            self._ready = True
+        await SessionMiddleware.__call__(self, scope, receive, send)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

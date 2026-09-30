@@ -6,16 +6,16 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.sessions import SessionMiddleware
 
 from backend.config import settings
-from backend.database import init_db, get_or_create_secret_key
+from backend.database import init_db
+from backend.crypto import get_session_secret
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
 from backend.auth import (
-    AuthMiddleware, verify_password, auth_enabled, init_auth,
+    AuthMiddleware, LazySessionMiddleware, verify_password, auth_enabled, init_auth,
     create_remember_token, _REMEMBER_COOKIE, _REMEMBER_MAX_AGE,
 )
 
@@ -52,10 +52,6 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
-# Init DB early so we can read the persisted secret key before middleware is wired.
-init_db()
-_session_secret = get_or_create_secret_key()
-
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
@@ -65,10 +61,15 @@ app = FastAPI(
 )
 
 # Middleware order: last added = outermost = runs first.
-# SessionMiddleware must wrap AuthMiddleware so session is available when auth checks it.
-# Uses a DB-persisted secret key so sessions survive Docker restarts.
+# Session must wrap Auth so the session is available when Auth checks it.
+# The session key is read on the first request, after the lifespan ran init_db().
 app.add_middleware(AuthMiddleware)
-app.add_middleware(SessionMiddleware, secret_key=_session_secret, session_cookie="ma_session", https_only=False)
+app.add_middleware(
+    LazySessionMiddleware,
+    secret_provider=get_session_secret,
+    session_cookie="ma_session",
+    same_site="lax",
+)
 
 # Static files & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
