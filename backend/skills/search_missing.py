@@ -13,8 +13,9 @@ from backend.skills.base import (
 WANTED_PATH = "/api/v3/wanted/missing"
 
 # newest_first / oldest_first / smart read the whole list and sort it here.
-# *arr's sortKey is deliberately not used: it drops records without the sort
-# field (specials, films without a physical date — see 8a1a912, c68178e).
+# *arr's server-side sorting (the sort key parameter) is deliberately not used:
+# it drops records without the sort field (specials, films without a physical
+# date — see 8a1a912, c68178e).
 ORDERED_PAGE_SIZE = 1000
 ORDERED_MAX_PAGES = 100
 
