@@ -252,7 +252,7 @@ class BaseAgent(ABC):
         if fresh:
             self.config = fresh
 
-        # Check skill-level enable flags — config already refreshed above
+        # Skill-level enable flags — config already refreshed above.
         # Every early exit of a search job recomputes next_run_at; otherwise the
         # card counted down to 00m 00s after a skipped run and stayed there
         # until the next real run (A13).
