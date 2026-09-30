@@ -61,11 +61,23 @@ def script_attributes(text):
 
 
 def test_hostile_names_never_reach_script_attributes(client):
-    make_instance(name=HOSTILE)
-    for path in ("/", "/instances", "/history", "/logs"):
+    inst = make_instance(name=HOSTILE)
+    db.activity.insert(inst["id"], HOSTILE, "info", "stored line", "system")
+    for path in ("/", "/instances", "/history", "/logs", "/searched", "/help", "/instances/new",
+                 f"/instances/{inst['id']}/edit", f"/instances/{inst['id']}/card"):
         page = client.get(path).text
         for tag, name, value in script_attributes(page):
             assert "alert(" not in value, (path, tag, name, value)
+
+
+def test_hostile_names_stay_inert_in_the_logs_seed(client):
+    inst = make_instance(name=HOSTILE)
+    db.activity.insert(inst["id"], HOSTILE + "</script><script>alert(3)</script>", "info", "x", "system")
+    page = client.get("/logs").text
+    start = page.index('id="logs-seed">') + len('id="logs-seed">')
+    raw = page[start:page.index("</script>", start)]
+    assert "<" not in raw
+    assert json.loads(raw)[0]["instance_name"].endswith("<script>alert(3)</script>")
 
 
 def test_delete_button_reads_the_name_from_data_attributes(client):
