@@ -13,9 +13,23 @@ class LogBroadcaster:
     def __init__(self):
         self._queues: list[asyncio.Queue] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._shutdown: Optional[asyncio.Event] = None
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
+        # A fresh event per loop: asyncio.Event binds to the loop that first waits on it.
+        self._shutdown = asyncio.Event()
+
+    @property
+    def shutdown_event(self) -> Optional[asyncio.Event]:
+        return self._shutdown
+
+    def request_shutdown(self) -> None:
+        """Thread- and signal-safe: wakes every open stream so it can end."""
+        loop, event = self._loop, self._shutdown
+        if loop is None or event is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(event.set)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=500)

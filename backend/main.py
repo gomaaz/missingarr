@@ -1,20 +1,25 @@
 import asyncio
 import logging
 import math
+import signal
+import threading
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from backend import db
 from backend.config import settings
 from backend.database import init_db
 from backend.crypto import get_session_secret, init_crypto
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
+from backend.api.instances import public_instance
+from backend.models.instance import FIELD_BOUNDS
 from backend.tooltips import TOOLTIPS
 from backend.auth import (
     AuthMiddleware, CSRFMiddleware, LazySessionMiddleware, REMEMBER_COOKIE, REMEMBER_MAX_AGE,
@@ -29,22 +34,47 @@ logging.basicConfig(
 logger = logging.getLogger("missingarr")
 
 
+def install_shutdown_signal_hook(broadcaster) -> None:
+    """Wake open log streams as soon as SIGTERM/SIGINT arrives (C-L7).
+
+    uvicorn waits for running responses before it runs the lifespan shutdown,
+    and a log stream never ends by itself, so a single open browser tab kept
+    the process alive until Docker's SIGKILL. The previous handler (uvicorn's)
+    still runs afterwards.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return  # signal handlers can only be set from the main thread (e.g. not under TestClient)
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous = signal.getsignal(signum)
+
+        def handler(received, frame, previous=previous):
+            broadcaster.request_shutdown()
+            if callable(previous):
+                previous(received, frame)
+            elif previous == signal.SIG_DFL:
+                signal.signal(received, signal.SIG_DFL)
+                signal.raise_signal(received)
+
+        signal.signal(signum, handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info(f"Starting {settings.app_name} v{settings.version}")
     init_auth()
     init_db()
+    # Runs a killed process left on 'running' (B-L1).
+    interrupted = db.history.close_interrupted_runs()
+    if interrupted:
+        logger.warning("Closed %d search run(s) interrupted by the last shutdown", interrupted)
     # Raises when the database needs SECRET_KEY and it is missing or wrong;
     # the start stops with that message in the log.
     init_crypto()
 
-    # Wire broadcaster to current event loop
-    loop = asyncio.get_event_loop()
-    broadcaster.set_loop(loop)
+    broadcaster.set_loop(asyncio.get_running_loop())
+    install_shutdown_signal_hook(broadcaster)
     app.state.broadcaster = broadcaster
 
-    # Start orchestrator
     orchestrator = Orchestrator(broadcaster=broadcaster)
     app.state.orchestrator = orchestrator
     orchestrator.start_all()
@@ -52,8 +82,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     logger.info("Shutting down orchestrator...")
+    broadcaster.request_shutdown()
     orchestrator.stop_all()
     logger.info("Shutdown complete")
 
@@ -106,110 +136,80 @@ app.include_router(searched.router, prefix="/api")
 
 # ─── UI routes ─────────────────────────────────────────────────────────────────
 
+# Every instance handed to a template goes through public_instance(): pages
+# never contain the API key (C1).
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    from backend import db
-    all_instances = db.instances.get_all()
     orchestrator = request.app.state.orchestrator
     cards = []
-    for inst in all_instances:
-        state = orchestrator.get_agent_state(inst["id"]) or {}
-        recent = db.history.get_last_for_instance(inst["id"])
-        cards.append({"instance": inst, "state": state, "recent": recent})
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        template_ctx(request, cards=cards),
-    )
+    for inst in db.instances.get_all():
+        cards.append({
+            "instance": public_instance(inst),
+            "state": orchestrator.get_agent_state(inst["id"]) or {},
+            "recent": db.history.get_last_for_instance(inst["id"]),
+        })
+    return templates.TemplateResponse(request, "dashboard.html", template_ctx(request, cards=cards))
 
 
 @app.get("/instances", response_class=HTMLResponse)
 async def instances_list(request: Request):
-    from backend import db
-    all_instances = db.instances.get_all()
-    return templates.TemplateResponse(
-        request,
-        "instances/list.html",
-        template_ctx(request, instances=all_instances),
-    )
+    instances = [public_instance(i) for i in db.instances.get_all()]
+    return templates.TemplateResponse(request, "instances/list.html", template_ctx(request, instances=instances))
 
 
 @app.get("/instances/new", response_class=HTMLResponse)
 async def instance_new(request: Request):
     return templates.TemplateResponse(
-        request,
-        "instances/form.html",
-        template_ctx(request, instance=None, action="/api/instances", method="POST"),
+        request, "instances/form.html",
+        template_ctx(request, instance=None, action="/api/instances", method="POST", bounds=FIELD_BOUNDS),
     )
 
 
 @app.get("/instances/{instance_id}/card", response_class=HTMLResponse)
 async def instance_card(instance_id: int, request: Request):
-    from backend import db
     inst = db.instances.get_by_id(instance_id)
     if not inst:
-        from fastapi import HTTPException
         raise HTTPException(404)
-    orchestrator = request.app.state.orchestrator
-    state = orchestrator.get_agent_state(instance_id) or {}
+    state = request.app.state.orchestrator.get_agent_state(instance_id) or {}
     recent = db.history.get_last_for_instance(instance_id)
     return templates.TemplateResponse(
-        request,
-        "instances/card.html",
-        template_ctx(request, inst=inst, state=state, recent=recent, conn=inst["connection_status"]),
+        request, "instances/card.html",
+        template_ctx(request, inst=public_instance(inst), state=state, recent=recent,
+                     conn=inst["connection_status"]),
     )
 
 
 @app.get("/instances/{instance_id}/edit", response_class=HTMLResponse)
 async def instance_edit(instance_id: int, request: Request):
-    from backend import db
     inst = db.instances.get_by_id(instance_id)
     if not inst:
         return RedirectResponse("/instances")
     return templates.TemplateResponse(
-        request,
-        "instances/form.html",
-        template_ctx(
-            request,
-            instance=inst,
-            action=f"/api/instances/{instance_id}",
-            method="PUT",
-        ),
+        request, "instances/form.html",
+        template_ctx(request, instance=public_instance(inst), action=f"/api/instances/{instance_id}",
+                     method="PUT", bounds=FIELD_BOUNDS),
     )
 
 
 @app.get("/history", response_class=HTMLResponse)
 async def history_page(request: Request):
-    from backend import db
-    all_instances = db.instances.get_all()
-    return templates.TemplateResponse(
-        request,
-        "history.html",
-        template_ctx(request, instances=all_instances),
-    )
+    instances = [public_instance(i) for i in db.instances.get_all()]
+    return templates.TemplateResponse(request, "history.html", template_ctx(request, instances=instances))
 
 
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request):
-    from backend import db
     recent = db.activity.query(limit=100, include_debug=False)
-    all_instances = db.instances.get_all()
-    return templates.TemplateResponse(
-        request,
-        "logs.html",
-        template_ctx(request, recent=recent, instances=all_instances),
-    )
+    instances = [public_instance(i) for i in db.instances.get_all()]
+    return templates.TemplateResponse(request, "logs.html", template_ctx(request, recent=recent, instances=instances))
 
 
 @app.get("/searched", response_class=HTMLResponse)
 async def searched_page(request: Request):
-    from backend import db
-    all_instances = db.instances.get_all()
-    counts = db.searched.count()
+    instances = [public_instance(i) for i in db.instances.get_all()]
     return templates.TemplateResponse(
-        request,
-        "searched.html",
-        template_ctx(request, instances=all_instances, counts=counts),
+        request, "searched.html", template_ctx(request, instances=instances, counts=db.searched.count()),
     )
 
 
