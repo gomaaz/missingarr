@@ -6,6 +6,7 @@ from backend import db
 from backend.agents.base import BaseAgent, InstanceRuntime, TRIGGER_STARTED, wait_runtime_idle
 from backend.agents.sonarr import SonarrAgent
 from backend.agents.radarr import RadarrAgent
+from backend.skills.verify_commands import VerifyCommandsSkill
 
 logger = logging.getLogger("missingarr.orchestrator")
 
@@ -25,6 +26,9 @@ class Orchestrator:
         # objects that come and go on save, disable/enable and force runs (A-L4).
         self._runtimes: dict[int, InstanceRuntime] = {}
         self._runtimes_lock = threading.Lock()
+        # App-wide retention pass for every instance, started by start_all.
+        self._housekeeping_stop = threading.Event()
+        self._housekeeping_thread: Optional[threading.Thread] = None
 
     def _runtime(self, instance_id: int) -> InstanceRuntime:
         with self._runtimes_lock:
@@ -45,13 +49,54 @@ class Orchestrator:
         instances = db.instances.get_all(include_disabled=False)
         for inst in instances:
             self.start_agent(inst["id"])
+        if self._housekeeping_thread is None or not self._housekeeping_thread.is_alive():
+            self._housekeeping_stop.clear()
+            self._housekeeping_thread = threading.Thread(
+                target=self._housekeeping_loop, name="housekeeping", daemon=True,
+            )
+            self._housekeeping_thread.start()
 
     def stop_all(self):
+        self._housekeeping_stop.set()
         # Includes instances that only have a throwaway force run going.
         with self._lock:
             agent_ids = set(self._agents) | set(self._adhoc)
         for agent_id in agent_ids:
             self.stop_agent(agent_id)
+        if self._housekeeping_thread is not None:
+            self._housekeeping_thread.join(timeout=5)
+
+    def _housekeeping_loop(self) -> None:
+        # Right at start, then at the skill's interval until stop_all.
+        while not self._housekeeping_stop.is_set():
+            self.housekeeping()
+            self._housekeeping_stop.wait(VerifyCommandsSkill.HOUSEKEEPING_INTERVAL_SECONDS)
+
+    def housekeeping(self) -> None:
+        """Retention (B6/B7) for every instance, disabled ones included.
+
+        verify_commands does it only where an agent runs, and an instance that
+        stays disabled has none: its old runs and expired cache rows were never
+        removed. The agents made here are never started and only lend their
+        log(); housekeeping reads and deletes rows and sends nothing to *arr.
+        The throttle is the skill's, so an instance whose agent did it within
+        the hour is skipped.
+        """
+        try:
+            instances = db.instances.get_all()
+        except Exception as exc:
+            logger.warning("Housekeeping could not read the instances: %s", exc)
+            return
+        skill = VerifyCommandsSkill()
+        for config in instances:
+            if self._housekeeping_stop.is_set():
+                return
+            try:
+                agent = self._agent_class(config.get("type", "sonarr"))(config, self.broadcaster)
+            except ValueError as exc:
+                logger.warning("Housekeeping skipped instance %s: %s", config.get("id"), exc)
+                continue
+            skill.housekeeping(agent)
 
     def start_agent(self, instance_id: int):
         config = db.instances.get_by_id(instance_id)

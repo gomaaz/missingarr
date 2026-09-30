@@ -189,7 +189,13 @@ TRIGGER_NOT_FOUND = "not_found"
 
 class Orchestrator:
     def start_all(self) -> None
+        # Nachbesserung: startet zusätzlich den Thread "housekeeping" (sofort, dann alle
+        # VerifyCommandsSkill.HOUSEKEEPING_INTERVAL_SECONDS)
     def stop_all(self) -> None
+        # Nachbesserung: stoppt auch den Hauspflege-Thread (join bis 5 s)
+    def housekeeping(self) -> None
+        # Nachbesserung: Hauspflege für jede Instanz, auch abgeschaltete; nur DB, nie *arr;
+        # nicht gestartete Agenten liefern nur log(), Drossel wie im Skill
     def start_agent(self, instance_id: int) -> None
     def stop_agent(self, instance_id: int, abort_running: bool = True, wait_seconds: float = 0.0) -> None
     def reload_agent(self, instance_id: int) -> None          # stoppt ohne Abbruch, startet neu
@@ -284,7 +290,7 @@ Zeilenformat von `query_items_flat` (auch Body von `GET /api/history/items`): `i
 
 `backend/verification.py` (P3b): `map_command_status(200, {"status": "orphaned"}) == "failed"`.
 
-`backend/skills/verify_commands.py` (P3b, Welle 2): setzt nach jedem Durchlauf `agent.state["last_verified"]` **und** `agent.state["last_triggered"]` aus `get_latest_run_verification`. Hauspflege höchstens einmal pro Stunde und Instanz (`VerifyCommandsSkill._last_housekeeping: dict[int, float]`, Klassenattribut).
+`backend/skills/verify_commands.py` (P3b, Welle 2): setzt nach jedem Durchlauf `agent.state["last_verified"]` **und** `agent.state["last_triggered"]` aus `get_latest_run_verification`. Hauspflege höchstens einmal pro Stunde und Instanz (`VerifyCommandsSkill._last_housekeeping: dict[int, float]`, Klassenattribut). Nachbesserung: Die Methode heißt `housekeeping(agent)` (öffentlich), Prüfen und Setzen der Drossel laufen unter `_housekeeping_guard` (Klassenattribut, `threading.Lock`). `Orchestrator.housekeeping()` ruft sie für jede Instanz auf, auch für abgeschaltete, die keinen Agenten und damit keinen `verify_commands`-Lauf haben; wer in der Stunde zuerst kommt, räumt auf.
 
 HTTP (P3):
 
@@ -10311,7 +10317,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 3. **Abmelden nur per Knopf.** `GET /logout` antwortet `405`; Lesezeichen auf `/logout` funktionieren nicht mehr.
 4. **Rechte von `/data`.** Beim ersten Start übergibt der Container den Datenordner des Live-Stacks an `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), nimmt Gruppe und Anderen alle Rechte (Ordner `700`, Dateien `600`, auch `missingarr.db.bak-20260817-000513`) und läuft danach ohne root. **Auf dem Server ist UID/GID 1000 ein vorhandener Login-Benutzer** (`getent passwd 1000`, geprüft 30.09.2026); mit dem Standard könnte dieser Benutzer die DB samt Fernet-Schlüssel lesen und schreiben (heute nur lesen, `root:root 644`, `/root` hat `755`). Deshalb im Live-Stack vor dem Update `PUID=568` und `PGID=568` setzen (auf dem Host frei, geprüft 30.09.2026) — Änderung am Live-Stack, nur mit Daniels Freigabe beim Deployment. Danach lesen nur root und 568 die Daten.
 5. **`SECRET_KEY`.** Ist im Live-Stack **kein** Wert gesetzt: keine Änderung. Ist dort ein Wert gesetzt (der alte Compose-Kommentar lud dazu ein), werden beim ersten Start alle API-Schlüssel umgeschlüsselt, die alten Schlüssel aus der DB gelöscht, und ab dann startet missingarr nur noch mit genau diesem Wert. Vorher `data/` sichern. Sicherungskopien in `data/` (z. B. `missingarr.db.bak-…`) enthalten danach weiter die alten Schlüssel samt Fernet-Schlüssel: löschen oder wie ein Geheimnis aufbewahren. Geht der Wert verloren: Rettungsweg in „Risiken“ (Schlüssel leeren, neu eingeben).
-6. **Erstes Aufräumen.** Etwa 30 s nach dem Start löscht die Hauspflege abgeschlossene Läufe älter als 365 Tage (`HISTORY_RETENTION_DAYS`), danach stündlich. Bei `retry_hours=0` (live) bleibt der Cache unangetastet.
+6. **Erstes Aufräumen.** Direkt nach dem Start löscht die Hauspflege abgeschlossene Läufe älter als 365 Tage (`HISTORY_RETENTION_DAYS`), danach stündlich, für jede Instanz, auch abgeschaltete. Bei `retry_hours=0` (live) bleibt der Cache unangetastet.
 7. **Hängende Läufe werden geschlossen.** Läufe, die seit einem früheren Neustart auf „läuft“ stehen, werden beim Start auf „offen“ (mit Items) bzw. „Fehler: Interrupted by restart“ gesetzt.
 8. **API-Schlüssel nicht mehr lesbar.** `GET /api/instances` liefert `"api_key": "********"` und `api_key_set`. Speichern mit leerem oder maskiertem Schlüssel behält den gespeicherten; wer die URL ändert, muss den Schlüssel neu eingeben (sonst `400`).
 9. **`trigger` sagt „läuft schon“.** Läuft der Skill bereits, antwortet `POST /api/instances/<id>/trigger` mit `409` statt `200` (auch bei `force=false`; früher wurde der Aufruf mit `200` angenommen und still verworfen). Force wartet nicht mehr bis zu 90 s. Der dokumentierte curl-Ablauf bleibt sonst gleich; mit `curl -f` endet ein 409 mit Exit-Code 22.

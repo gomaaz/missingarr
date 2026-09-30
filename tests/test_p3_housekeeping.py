@@ -1,7 +1,12 @@
+import threading
+import time
+
 import pytest
+import requests
 
 from backend import database, db
 from backend.agents.base import BaseAgent
+from backend.agents.orchestrator import Orchestrator
 from backend.config import settings
 from backend.db import history
 from backend.skills.verify_commands import VerifyCommandsSkill
@@ -124,3 +129,66 @@ def test_housekeeping_failure_is_logged_not_raised(db_path, monkeypatch):
     monkeypatch.setattr(db.searched, "purge_expired", broken)
     run_housekeeping(inst)
     assert "Housekeeping failed: disk full" in activity_messages()
+
+
+# A disabled instance has no agent and so never runs verify_commands; the
+# orchestrator does its housekeeping instead, from the database alone.
+
+def refuse_arr(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("housekeeping must not contact *arr")
+
+    monkeypatch.setattr(requests, "get", refuse)
+    monkeypatch.setattr(requests, "post", refuse)
+
+
+def cache_rows():
+    return sql("SELECT COUNT(*) FROM searched_items")[0][0]
+
+
+def wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not reached in time")
+
+
+def test_orchestrator_housekeeps_disabled_instances_without_asking_arr(db_path, monkeypatch):
+    refuse_arr(monkeypatch)
+    monkeypatch.setattr(settings, "history_retention_days", 365)
+    inst = make_instance(enabled=False, retry_hours=24)
+    old_cache(inst["id"], "ep:old", 30)
+    old_run(inst, "success", 400)
+
+    Orchestrator().housekeeping()
+
+    assert cache_rows() == 0
+    assert history.query(limit=10) == []
+    assert any(m.startswith("Housekeeping: removed 1 run(s) older than 365 days and 1 expired cache entry")
+               for m in activity_messages())
+
+
+def test_orchestrator_housekeeping_shares_the_skill_throttle(db_path):
+    inst = make_instance(retry_hours=24)
+    run_housekeeping(inst)  # the agent's verify pass did it a moment ago
+    old_cache(inst["id"], "ep:old", 30)
+    Orchestrator().housekeeping()
+    assert cache_rows() == 1
+
+
+def test_housekeeping_runs_at_start_then_periodically_and_stops_with_the_app(db_path, monkeypatch):
+    refuse_arr(monkeypatch)
+    monkeypatch.setattr(VerifyCommandsSkill, "HOUSEKEEPING_INTERVAL_SECONDS", 0.05)
+    inst = make_instance(enabled=False, retry_hours=24)
+    old_cache(inst["id"], "ep:first", 30)
+    orch = Orchestrator()
+    orch.start_all()
+    try:
+        wait_until(lambda: cache_rows() == 0)
+        old_cache(inst["id"], "ep:second", 30)
+        wait_until(lambda: cache_rows() == 0)
+    finally:
+        orch.stop_all()
+    assert not any(t.name == "housekeeping" and t.is_alive() for t in threading.enumerate())

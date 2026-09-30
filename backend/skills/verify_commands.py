@@ -1,3 +1,4 @@
+import threading
 import time
 
 from backend.skills.base import BaseSkill
@@ -28,6 +29,9 @@ class VerifyCommandsSkill(BaseSkill):
     # Per instance id, shared by every skill object: a reload creates new
     # skills, and the throttle must survive that.
     _last_housekeeping: dict[int, float] = {}
+    # The agent and the orchestrator's app-wide pass may reach one instance at
+    # the same moment; only one of them may pass the throttle.
+    _housekeeping_guard = threading.Lock()
 
     def execute(self, agent, force: bool = False) -> None:
         instance_id = agent.config["id"]
@@ -93,7 +97,7 @@ class VerifyCommandsSkill(BaseSkill):
             agent.state["last_verified"] = latest["verified_count"]
             agent.state["last_triggered"] = latest["triggered_count"]
 
-        self._housekeeping(agent)
+        self.housekeeping(agent)
 
         if queried:
             # Both numbers, always: 50 queried with 0 resolved is a backlog, and
@@ -105,15 +109,20 @@ class VerifyCommandsSkill(BaseSkill):
                 f"Queried {queried} command(s), {resolved} resolved",
             )
 
-    def _housekeeping(self, agent) -> None:
+    def housekeeping(self, agent) -> None:
         """Hourly per instance: drop finished runs past HISTORY_RETENTION_DAYS
-        (B7) and cache rows outside the retry window (B6)."""
+        (B7) and cache rows outside the retry window (B6).
+
+        Database only, never *arr. The orchestrator also calls it for every
+        instance, disabled ones included: those have no agent running this
+        skill. Whichever caller comes first in the hour does the work."""
         instance_id = agent.config["id"]
-        now = time.monotonic()
-        last = self._last_housekeeping.get(instance_id)
-        if last is not None and now - last < self.HOUSEKEEPING_INTERVAL_SECONDS:
-            return
-        self._last_housekeeping[instance_id] = now
+        with self._housekeeping_guard:
+            now = time.monotonic()
+            last = self._last_housekeeping.get(instance_id)
+            if last is not None and now - last < self.HOUSEKEEPING_INTERVAL_SECONDS:
+                return
+            self._last_housekeeping[instance_id] = now
 
         try:
             retry_hours = int(agent.config.get("retry_hours") or 0)
