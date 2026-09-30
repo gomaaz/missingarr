@@ -7,7 +7,7 @@ from backend.skills.verify_commands import VerifyCommandsSkill
 
 class SonarrAgent(BaseAgent):
     def build_skills(self):
-        # Always register all skills so force triggers work regardless of
-        # which scheduled jobs are enabled. Scheduler jobs are separately
-        # gated on the _enabled flags inside _run().
+        # Always register all skills: force triggers need them, and the
+        # scheduler registers a job for every skill and gates it on the
+        # enable flags in _run_skill.
         return [SearchMissingSkill(), SearchUpgradesSkill(), HealthCheckSkill(), VerifyCommandsSkill()]

@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -11,16 +12,25 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from backend import db
 from backend.skills.base import BaseSkill
 
+logger = logging.getLogger("missingarr.agent")
+
+MIN_INTERVAL_MINUTES = 1
+MAX_INTERVAL_MINUTES = 10080
+UPGRADE_INTERVAL_FACTOR = 4
+
 
 class BaseAgent(ABC):
     HEALTH_CHECK_INTERVAL_MINUTES = 5
+    SEARCH_JOBS = (("missing", "search_missing_enabled"), ("upgrades", "search_upgrades_enabled"))
 
     def __init__(self, config: dict, broadcaster=None):
         self.config = config
         self.broadcaster = broadcaster
         self._scheduler: Optional[BackgroundScheduler] = None
         self._stop_event = threading.Event()
+        self._abort_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._scheduler_failed = False
         self._lock = threading.Lock()
 
         # One lock per skill. state["status"] is a display value shared by the
@@ -33,8 +43,10 @@ class BaseAgent(ABC):
         self._action_timestamps: deque = deque()
 
         # Live state exposed to dashboard
+        # "starting" until _run has really started the scheduler: the card must
+        # not claim "scheduled" for an agent whose scheduler never ran (A1).
         self.state = {
-            "status": "scheduled",   # scheduled | running | off | quiet
+            "status": "starting",   # starting | scheduled | running | off | quiet | error
             "next_run_at": None,
             "last_wanted": 0,
             "last_triggered": 0,
@@ -52,6 +64,7 @@ class BaseAgent(ABC):
 
     def start(self):
         self._stop_event.clear()
+        self._abort_event.clear()
         self._skills = self.build_skills()
         self._thread = threading.Thread(
             target=self._run,
@@ -59,7 +72,7 @@ class BaseAgent(ABC):
             daemon=True,
         )
         self._thread.start()
-        self.log("info", "system", f"Agent started — {self.config['type'].upper()} '{self.config['name']}'")
+        # "Agent started" is logged by _run once the scheduler really runs (A1).
 
     def stop(self):
         self._stop_event.set()
@@ -77,76 +90,97 @@ class BaseAgent(ABC):
         self.state["connection_status"] = new_config.get("connection_status", "unknown")
         self.start()
 
-    def _run(self):
-        self._scheduler = BackgroundScheduler(
+    def _interval_minutes(self) -> int:
+        raw = self.config.get("interval_minutes", 15)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 15
+        clamped = min(max(value, MIN_INTERVAL_MINUTES), MAX_INTERVAL_MINUTES)
+        if clamped != value:
+            self.log(
+                "warn", "system",
+                f"interval_minutes={raw} is outside {MIN_INTERVAL_MINUTES}..{MAX_INTERVAL_MINUTES} "
+                f"— using {clamped}",
+            )
+        return clamped
+
+    def _build_scheduler(self) -> BackgroundScheduler:
+        scheduler = BackgroundScheduler(
             timezone="UTC",
             job_defaults={"misfire_grace_time": 60, "coalesce": True},
         )
+        instance_id = self.config["id"]
+        interval = self._interval_minutes()
+        upgrade_interval = interval * UPGRADE_INTERVAL_FACTOR
+        now = datetime.now(timezone.utc)
 
-        cfg = self.config
-        interval = cfg.get("interval_minutes", 15)
-
-        # Register missing search job
-        if cfg.get("search_missing_enabled") and self._get_skill("search_missing"):
-            self._scheduler.add_job(
-                self._run_skill,
-                "interval",
-                minutes=interval,
-                args=["search_missing"],
-                id=f"missing_{cfg['id']}",
-                next_run_time=None,  # don't run immediately
-            )
-            # Schedule first run after interval
-            first_run = datetime.now(timezone.utc) + timedelta(minutes=interval)
-            self.state["next_run_at"] = first_run.isoformat()
-            self._scheduler.reschedule_job(
-                f"missing_{cfg['id']}",
-                trigger="interval",
-                minutes=interval,
-                start_date=first_run,
-            )
-
-        # Register upgrades job (separate interval)
-        if cfg.get("search_upgrades_enabled") and self._get_skill("search_upgrades"):
-            upgrade_interval = cfg.get("interval_minutes", 15) * 4  # upgrades less frequent
-            self._scheduler.add_job(
-                self._run_skill,
-                "interval",
-                minutes=upgrade_interval,
-                args=["search_upgrades"],
-                id=f"upgrades_{cfg['id']}",
-                next_run_time=datetime.now(timezone.utc) + timedelta(minutes=upgrade_interval),
-            )
-
-        # Health check every 5 minutes
-        self._scheduler.add_job(
-            self._run_skill,
-            "interval",
-            minutes=self.HEALTH_CHECK_INTERVAL_MINUTES,
-            args=["health_check"],
-            id=f"health_{cfg['id']}",
-            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+        # Both search jobs are always registered and _run_skill gates them on
+        # the enable flag it re-reads from the database. Registering only the
+        # enabled ones meant a skill switched on from the card never ran (A2).
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=interval,
+            start_date=now + timedelta(minutes=interval),
+            args=["search_missing"], id=f"missing_{instance_id}",
         )
-
-        # Verification every 2 minutes. Runs regardless of the search-enabled
-        # flags: entries submitted before a skill was switched off would stay
-        # unresolved forever otherwise.
-        self._scheduler.add_job(
-            self._run_skill,
-            "interval",
-            minutes=2,
-            args=["verify_commands"],
-            id=f"verify_{cfg['id']}",
-            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=upgrade_interval,
+            start_date=now + timedelta(minutes=upgrade_interval),
+            args=["search_upgrades"], id=f"upgrades_{instance_id}",
         )
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=self.HEALTH_CHECK_INTERVAL_MINUTES,
+            args=["health_check"], id=f"health_{instance_id}",
+            next_run_time=now + timedelta(seconds=10),
+        )
+        # Verification runs regardless of the search flags: entries submitted
+        # before a skill was switched off would stay unresolved otherwise.
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=2,
+            args=["verify_commands"], id=f"verify_{instance_id}",
+            next_run_time=now + timedelta(seconds=30),
+        )
+        return scheduler
 
-        self._scheduler.start()
+    def _run(self):
+        scheduler = None
+        try:
+            scheduler = self._build_scheduler()
+            scheduler.start()
+        except Exception as exc:
+            logger.exception("Scheduler for instance %s failed to start", self.config.get("id"))
+            self._scheduler_failed = True
+            # Log first, then publish the status: whoever sees "error" must find the reason.
+            self.log("error", "system", f"Scheduler failed to start — no searches will run: {exc}")
+            self.state["next_run_at"] = None
+            self.state["status"] = "error"
+            if scheduler is not None and scheduler.running:
+                scheduler.shutdown(wait=False)
+            return
+
+        self._scheduler = scheduler
+        self._update_next_run()
         self.state["status"] = "scheduled"
+        self.log("info", "system",
+                 f"Agent started — {self.config['type'].upper()} '{self.config['name']}'")
 
-        # Block until stop_event is set
         self._stop_event.wait()
-        if self._scheduler.running:
-            self._scheduler.shutdown(wait=False)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+    def _load_fresh_config(self) -> dict | None:
+        try:
+            return db.instances.get_by_id(self.config["id"])
+        except Exception as exc:
+            logger.warning("Could not reload config of instance %s: %s", self.config.get("id"), exc)
+            return None
+
+    def refresh_config(self) -> None:
+        """Pick up changed flags without restarting — a running search keeps going."""
+        fresh = self._load_fresh_config()
+        if fresh:
+            self.config = fresh
+        self._update_next_run()
 
     def _run_skill(self, skill_name: str, force: bool = False):
         skill = self._get_skill(skill_name)
@@ -155,7 +189,7 @@ class BaseAgent(ABC):
 
         # Refresh config from DB so search preferences changed in the UI
         # are picked up immediately without requiring an agent restart.
-        fresh = db.instances.get_by_id(self.config["id"])
+        fresh = self._load_fresh_config()
         if fresh:
             self.config = fresh
 
@@ -198,8 +232,7 @@ class BaseAgent(ABC):
             self.log("error", skill_name, f"Unhandled exception: {exc}")
         finally:
             if drives_display:
-                self.state["status"] = "scheduled"
-                # Update next_run_at from scheduler
+                self.state["status"] = "error" if self._scheduler_failed else "scheduled"
                 self._update_next_run()
             lock.release()
 
@@ -278,12 +311,18 @@ class BaseAgent(ABC):
             return len(self._action_timestamps)
 
     def _update_next_run(self):
-        if not self._scheduler:
+        """next_run_at = the earliest run of the search jobs that are switched on (A13)."""
+        scheduler = self._scheduler
+        if scheduler is None:
             return
-        job_id = f"missing_{self.config['id']}"
-        job = self._scheduler.get_job(job_id)
-        if job and job.next_run_time:
-            self.state["next_run_at"] = job.next_run_time.isoformat()
+        times = []
+        for prefix, flag in self.SEARCH_JOBS:
+            if not self.config.get(flag):
+                continue
+            job = scheduler.get_job(f"{prefix}_{self.config['id']}")
+            if job is not None and job.next_run_time is not None:
+                times.append(job.next_run_time)
+        self.state["next_run_at"] = min(times).isoformat() if times else None
 
     def log(self, level: str, skill: str, message: str):
         cfg = self.config
