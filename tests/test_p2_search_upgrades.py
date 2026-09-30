@@ -183,6 +183,31 @@ def test_failed_upgrade_post_is_recorded_and_the_run_is_an_error(db_path):
     assert cache_keys() == []
 
 
+def test_unstored_upgrade_is_not_sent_again_while_it_waits(db_path, monkeypatch):
+    inst = make_instance(name="Radarr", type="radarr", search_upgrades_enabled=True,
+                         upgrades_per_run=1)
+    monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
+    movies = [{"id": i, "title": f"M{i}", "year": 2020, "hasFile": True, "monitored": True}
+              for i in (1, 2)]
+    agent = agent_for(inst, movies=movies)
+    store = history.record_submission
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_submission", broken)
+    run_upgrades(agent)
+    assert last_run()["status"] == "error"
+    run_upgrades(agent)
+    assert agent.posts == [{"name": "MoviesSearch", "movieIds": [1]},
+                           {"name": "MoviesSearch", "movieIds": [2]}]
+
+    monkeypatch.setattr(db.history, "record_submission", store)
+    run_upgrades(agent)
+    assert len(agent.posts) == 2
+    assert cache_keys() == ["upg:1", "upg:2"]
+
+
 def test_zero_per_run_does_nothing(db_path):
     inst = make_instance(search_upgrades_enabled=False, upgrades_per_run=0)
     agent = agent_for(inst, cutoff=[cutoff_episode(1)])

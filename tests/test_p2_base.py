@@ -8,7 +8,8 @@ from backend.agents.base import BaseAgent
 from backend.config import settings
 from backend.db import history
 from backend.skills.base import (
-    SearchResult, SubmitOutcome, finish_search_run, parse_arr_date, release_date, submit_candidates,
+    SearchResult, SubmitOutcome, finish_search_run, parse_arr_date, release_date,
+    store_unsaved_submissions, submit_candidates,
 )
 
 WANTED = "/api/v3/wanted/missing"
@@ -209,6 +210,58 @@ def test_store_failure_after_a_sent_command_still_counts_it(db_path, monkeypatch
     assert agent.get_rate_used() == 1
     logged = [r["message"] for r in db.activity.query(include_debug=True, limit=20)]
     assert any("Command 501" in m and "could not be stored" in m for m in logged)
+
+
+def test_store_failure_stops_the_run_as_an_error(db_path, monkeypatch):
+    # After a sent command could not be stored nothing more is sent: every
+    # further command would be just as untracked (B2 follow-up).
+    inst = make_instance()
+    agent = agent_for(inst)
+    run = history.start_run(inst["id"], inst["name"], "search_missing")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_submission", broken)
+    fired = []
+
+    def fire(candidate):
+        fired.append(candidate)
+        return ok(candidate)
+
+    outcome = submit_candidates("search_missing", agent, run, [1, 2, 3], fire, 0)
+    assert fired == [1]
+    assert outcome.triggered == 1
+    assert "Command 501" in outcome.store_error
+    status = finish_search_run("search_missing", agent, run, 3, outcome)
+    assert status == "error"
+    assert "could not be stored" in last_run()["error_message"]
+
+
+def test_unstored_submission_of_a_deleted_run_is_filed_under_the_current_run(db_path, monkeypatch):
+    # The run the command belonged to may be gone by the time the database
+    # works again (history cleared); the entry must not stay queued for good.
+    inst = make_instance()
+    agent = agent_for(inst)
+    first = history.start_run(inst["id"], inst["name"], "search_missing")
+    store = history.record_submission
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_submission", broken)
+    submit_candidates("search_missing", agent, first, [1], fire_with([ok(1)]), 0)
+    monkeypatch.setattr(db.history, "record_submission", store)
+    history.finish_run(first, 1, 1, "error", "stored nothing")
+    history.clear()
+
+    second = history.start_run(inst["id"], inst["name"], "search_missing")
+    store_unsaved_submissions("search_missing", agent, second)
+    assert history.get_item_statuses(second) == ["submitted"]
+    assert cache_keys() == ["ep:1"]
+    third = history.start_run(inst["id"], inst["name"], "search_missing")
+    store_unsaved_submissions("search_missing", agent, third)
+    assert history.get_item_statuses(third) == []
 
 
 def test_run_status_rules(db_path):

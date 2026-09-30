@@ -7,7 +7,7 @@ from backend import db
 from backend.database import ANCESTOR_RULE_SINCE_SETTING
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, parse_arr_date,
-    release_date, submit_candidates,
+    release_date, store_unsaved_submissions, submit_candidates, unsaved_cache_keys,
 )
 
 WANTED_PATH = "/api/v3/wanted/missing"
@@ -59,6 +59,7 @@ class SearchMissingSkill(BaseSkill):
         outcome = SubmitOutcome()
 
         try:
+            store_unsaved_submissions(self.name, agent, run_id)
             per_run = int(cfg.get("missing_per_run", 5) or 0)
             if per_run <= 0:
                 agent.log("info", self.name, "Missing per run is 0 — nothing to do")
@@ -138,7 +139,7 @@ class SearchMissingSkill(BaseSkill):
             stats.pages += 1
             records = list(resp.get("records") or [])
             random.shuffle(records)
-            self._take_eligible(cfg, records, mode, cutoff, force, per_run, candidates, seen, stats)
+            self._take_eligible(agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats)
         return candidates, stats
 
     def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force):
@@ -171,13 +172,14 @@ class SearchMissingSkill(BaseSkill):
 
         ordered = self._apply_order(records, order, cfg["type"])
         candidates: list = []
-        self._take_eligible(cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats)
+        self._take_eligible(agent, cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats)
         return candidates, stats
 
-    def _take_eligible(self, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats):
+    def _take_eligible(self, agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats):
         """Append records, in the given order, that are missing, released and
         not in the cache, until per_run candidates exist. The cache is asked
-        once per chunk, not once per record (A-L3)."""
+        once per chunk, not once per record (A-L3). Commands still waiting to
+        be stored count as cached."""
         arr_type = cfg["type"]
         retry_hours = int(cfg.get("retry_hours", 0) or 0)
         # For season/series keys: a search inside the release window proves
@@ -200,9 +202,12 @@ class SearchMissingSkill(BaseSkill):
                         continue
                 pool.append(record)
 
-            hits = {} if force else db.searched.lookup_many(
-                cfg["id"], [key for r in pool for key in self._check_keys(arr_type, r)], retry_hours
-            )
+            hits = {} if force else {
+                **db.searched.lookup_many(
+                    cfg["id"], [key for r in pool for key in self._check_keys(arr_type, r)], retry_hours
+                ),
+                **unsaved_cache_keys(agent),
+            }
             for record in pool:
                 if len(candidates) >= per_run:
                     return

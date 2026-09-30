@@ -40,12 +40,19 @@ class InstanceRuntime:
     One lock per skill. state["status"] is a display value shared by the
     whole agent and must not double as a mutex — doing so let a running
     search block the health check every single hour.
+
+    unsaved_submissions holds commands *arr accepted whose history item and
+    cache entry could not be written (skills.base.store_unsaved_submissions).
+    It lives in memory only: a restart of the process loses it, and those
+    titles can then be searched once more. That is accepted on purpose.
     """
 
     rate_lock: threading.Lock = field(default_factory=threading.Lock)
     action_timestamps: deque = field(default_factory=deque)
     skill_locks: dict = field(default_factory=dict)
     skill_locks_guard: threading.Lock = field(default_factory=threading.Lock)
+    unsaved_lock: threading.Lock = field(default_factory=threading.Lock)
+    unsaved_submissions: list = field(default_factory=list)
 
     def skill_lock(self, skill_name: str) -> threading.Lock:
         with self.skill_locks_guard:

@@ -241,6 +241,40 @@ def test_response_without_command_id_is_not_cached(db_path):
     assert episode_ids(second) == [1]
 
 
+def test_unstored_submission_is_not_sent_again_and_stored_later(db_path, monkeypatch):
+    # *arr accepted the command but the database refused it. The run stops
+    # there as an error; later runs of the same instance do not send the
+    # title again and store it as soon as the database works again.
+    inst = make_instance(search_order="oldest_first", missing_per_run=2)
+    agent = agent_for(inst, missing=backlog(4))
+    store = history.record_submission
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_submission", broken)
+    run_missing(agent)
+    first = last_run()
+    assert episode_ids(agent) == [4]
+    assert first["status"] == "error"
+    assert "could not be stored" in first["error_message"]
+
+    run_missing(agent)
+    second = last_run()
+    assert episode_ids(agent) == [4, 3]
+    assert second["status"] == "error"
+
+    monkeypatch.setattr(db.history, "record_submission", store)
+    run_missing(agent)
+    assert episode_ids(agent) == [4, 3, 2, 1]
+    assert cache_keys() == ["ep:1", "ep:2", "ep:3", "ep:4"]
+    stored = history.get_items_for_run(first["id"])
+    assert [(i["cache_key"], i["command_id"], i["command_status"]) for i in stored] == [
+        ("ep:4", 1001, "submitted")
+    ]
+    assert [i["cache_key"] for i in history.get_items_for_run(second["id"])] == ["ep:3"]
+
+
 def test_rate_cap_is_respected_and_failed_posts_give_their_slot_back(db_path):
     inst = make_instance(search_order="oldest_first", missing_per_run=3, rate_cap=1)
     agent = agent_for(inst, missing=backlog(3), fail_posts={1})

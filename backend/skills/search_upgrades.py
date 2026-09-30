@@ -2,7 +2,10 @@ import math
 import random
 
 from backend import db
-from backend.skills.base import BaseSkill, SearchResult, SubmitOutcome, finish_search_run, submit_candidates
+from backend.skills.base import (
+    BaseSkill, SearchResult, SubmitOutcome, finish_search_run, store_unsaved_submissions,
+    submit_candidates, unsaved_cache_keys,
+)
 
 CUTOFF_PATH = "/api/v3/wanted/cutoff"
 MOVIES_PATH = "/api/v3/movie"
@@ -30,6 +33,7 @@ class SearchUpgradesSkill(BaseSkill):
         outcome = SubmitOutcome()
 
         try:
+            store_unsaved_submissions(self.name, agent, run_id)
             per_run = int(cfg.get("upgrades_per_run", 1) or 0)
             if per_run <= 0:
                 agent.log("info", self.name, "Upgrades per run is 0 — nothing to do")
@@ -142,11 +146,15 @@ class SearchUpgradesSkill(BaseSkill):
         random.shuffle(found)
         return found[:per_run], failures, notes, len(sources)
 
-    def _keep_uncached(self, cfg, items, force, found, seen, limit) -> None:
+    def _keep_uncached(self, agent, cfg, items, force, found, seen, limit) -> None:
+        """Commands still waiting to be stored count as cached."""
         keyed = [(self._cache_key(cfg["type"], item), item) for item in items]
-        hits = {} if force else db.searched.lookup_many(
-            cfg["id"], [key for key, _ in keyed], int(cfg.get("retry_hours", 0) or 0)
-        )
+        hits = {} if force else {
+            **db.searched.lookup_many(
+                cfg["id"], [key for key, _ in keyed], int(cfg.get("retry_hours", 0) or 0)
+            ),
+            **unsaved_cache_keys(agent),
+        }
         for key, item in keyed:
             if len(found) >= limit:
                 return
@@ -180,7 +188,7 @@ class SearchUpgradesSkill(BaseSkill):
             items = [self._cutoff_item(arr_type, r) for r in resp.get("records") or []]
             items = [item for item in items if item is not None]
             random.shuffle(items)
-            self._keep_uncached(cfg, items, force, found, seen, limit)
+            self._keep_uncached(agent, cfg, items, force, found, seen, limit)
 
     @staticmethod
     def _cutoff_item(arr_type: str, record: dict):
@@ -218,4 +226,4 @@ class SearchUpgradesSkill(BaseSkill):
             title = movie.get("title") or f"Movie #{movie['id']}"
             items.append({"id": movie["id"], "label": f"{title} ({year})" if year else title})
         random.shuffle(items)
-        self._keep_uncached(cfg, items, force, found, seen, limit)
+        self._keep_uncached(agent, cfg, items, force, found, seen, limit)
