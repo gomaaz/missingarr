@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Live läuft 0.7.0 = `main` (1c05737). Gearbeitet wird auf Branch `fix/codex-review`. Am Ende steht Version `0.8.0` in `VERSION`.
-- Die Live-Datenbanken `/root/docker/missingarr/data` und `/root/missingarr/data` werden **nie** geöffnet, gelesen oder kopiert. Der laufende Container wird nicht angesprochen (kein `exec`, kein `stop`, kein Request an Port 8000).
+- Die Live-Datenbanken im Datenordner des Live-Stacks auf dem Server und in `/root/missingarr/data` werden **nie** geöffnet, gelesen oder kopiert. Der laufende Container wird nicht angesprochen (kein `exec`, kein `stop`, kein Request an Port 8000).
 - Jeder Test benutzt eine eigene SQLite-Datei unter `tmp_path`. Kein Test darf `backend.main` auf Modulebene importieren; der Import passiert erst in einer Fixture, nachdem `settings.database_url` auf `tmp_path` umgebogen ist (Grund: bis P4 fertig ist, öffnet `import backend.main` die Datenbank aus `settings.database_url`, und der Standardwert zeigt auf `./data/missingarr.db`).
 - In Tests nie `monkeypatch.undo()` aufrufen: das setzt auch `settings.database_url` auf `./data/missingarr.db` zurück, und die nächste Abfrage im selben Test träfe die echte Entwicklungs-DB. Einzelne Attribute werden mit einem zweiten `monkeypatch.setattr(…, original)` zurückgesetzt.
 - Tests nur in neuen Dateien `tests/test_<paket>_*.py` (z. B. `tests/test_p3_history.py`), jede Datei mit eigenen Fixtures. Keine `conftest.py`. Die vorhandenen Dateien `tests/test_database_regressions.py` und `tests/test_verification.py` bleiben unverändert und grün.
@@ -20,7 +20,7 @@
   `git -C /root/missingarr worktree add /root/missingarr-wt/<p> -b fix/codex-review-<p> fix/codex-review`
   Im Worktree gilt: jedes `cd /root/missingarr` in den Tasks heißt `cd /root/missingarr-wt/<p>`, und jedes `.venv/bin/…` heißt `/root/missingarr/.venv/bin/…` (eine gemeinsame `.venv`, nur Task 0 und Task Z installieren etwas hinein). Die Gesamtsuite im Worktree sieht nur die eigenen Änderungen auf dem Stand des Wellenbeginns und bleibt deshalb aussagekräftig. Commits nur im eigenen Worktree.
 - **Wellen-Abnahme.** Am Ende einer Welle im Haupt-Arbeitsbaum `/root/missingarr` (Zweig `fix/codex-review`) die Paketzweige nacheinander mergen (`git merge --no-ff fix/codex-review-<p>`; wegen der Dateizuständigkeit ohne Konflikte), dann die Gesamtsuite. Erst wenn sie grün ist: `git worktree remove /root/missingarr-wt/<p>` und `git branch -d fix/codex-review-<p>` je Paket. Welle 3 (nur P5), Task 0 und Task Z laufen direkt im Haupt-Arbeitsbaum.
-- **Scratchpad.** Befehle, die Wegwerf-Dateien brauchen, setzen am Anfang jedes Codeblocks selbst `SCRATCH=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad` und prüfen `test -d "$SCRATCH"` (Umgebungsvariablen überleben zwischen zwei Bash-Aufrufen nicht; ein leeres `$SCRATCH` hieße Ordner unter `/` anlegen und dort löschen). Wer den Plan in einer anderen Sitzung ausführt, ersetzt den Pfad in allen Blöcken durch das eigene Scratchpad.
+- **Scratchpad.** Befehle, die Wegwerf-Dateien brauchen, setzen am Anfang jedes Codeblocks selbst `SCRATCH=<scratchpad>` und prüfen `test -d "$SCRATCH"` (Umgebungsvariablen überleben zwischen zwei Bash-Aufrufen nicht; ein leeres `$SCRATCH` hieße Ordner unter `/` anlegen und dort löschen). Wer den Plan ausführt, ersetzt `<scratchpad>` in allen Blöcken durch den absoluten Pfad des eigenen Scratchpads.
 - Dateien schreiben nur mit dem Write- bzw. Edit-Werkzeug, nie per Heredoc (`cat <<EOF`).
 - Diese Live-Werte müssen nach dem Update ohne Änderung gültig sein und genauso wirken: Sonarr `interval_minutes=60`, `missing_mode=episode`, `missing_per_run=4`, `rate_cap=300`, `rate_window_minutes=60`, Upgrades aus, `retry_hours=0`. Radarr `interval_minutes=30`, `missing_per_run=600`, `rate_cap=999999999`, Upgrades aus, `retry_hours=0`. Unbekannte Felder können jeden bisher speicherbaren Wert haben, auch `0` bei `*_per_run` eines abgeschalteten Skills.
 - Diese dokumentierte Nutzung muss weiter funktionieren: `POST /login` mit curl (Formular, ohne `Origin`), Cookie weiterreichen, dann `POST /api/instances/<id>/trigger?skill=search_missing&force=false` ohne `Origin`-Header. Antwort bei Erfolg unverändert `200 {"status": "triggered", "skill": "search_missing"}`.
@@ -101,7 +101,7 @@ Duplikate sind zusammengeführt: **C-L1 = A2**, **C-L4 = A1**, **C-L2 = A-L1** (
 | C6 | P4, P3 | `auth.py`, `main.py`, `config.py` | Remember-Token `v2.<ausgestellt>.<version>.<sig>`, 30 Tage serverseitig, `token_version` in `app_settings` (Logout widerruft alle Tokens und Sitzungen), Passwort-Fingerabdruck in der Signatur. `COOKIE_SECURE` (Standard aus). | P4.4 |
 | C7 | P4 | `auth.py`, `main.py` | `LoginThrottle` pro IP im Speicher: ab 5 Fehlversuchen Sperre 30 s, verdoppelt bis 15 min, Antwort 429 + `Retry-After`. Jeder Fehlversuch wird mit IP geloggt. | P4.4 |
 | C8 | P6, P5 | `static/vendor/*`, `scripts/vendor_assets.py`, `requirements.lock`, `Dockerfile`, Workflow, `templates/base.html` | Alpine/HTMX lokal, geprüft gegen npm-`integrity`; `requirements.lock` mit Hashes und `--require-hashes`; Basisimage per Digest; Actions per Commit-SHA. | P6.1–P6.3, P5.1 |
-| C9 | P6 | `docker-entrypoint.sh`, `Dockerfile` | Entrypoint chownt `/data` nur bei Bedarf auf `PUID:PGID` (Standard 1000, Symlinks übersprungen), nimmt Gruppe/Anderen die Rechte (`go-rwx`, auch Sicherungskopien), `umask 077`, startet per `setpriv` ohne root. Live-Stack: `PUID/PGID=568`, weil 1000 auf hetzner2 `codeuser` ist. | P6.3, Task Z |
+| C9 | P6 | `docker-entrypoint.sh`, `Dockerfile` | Entrypoint chownt `/data` nur bei Bedarf auf `PUID:PGID` (Standard 1000, Symlinks übersprungen), nimmt Gruppe/Anderen die Rechte (`go-rwx`, auch Sicherungskopien), `umask 077`, startet per `setpriv` ohne root. Live-Stack: `PUID/PGID=568`, weil 1000 auf dem Server ein vorhandener Login-Benutzer ist. | P6.3, Task Z |
 | C10 | P4 | `main.py` | `safe_next()` lässt nur lokale Pfade durch, sonst `/`. | P4.4 |
 | C11 | P5, P1 | `templates/logs.html`, `static/js/app.js`, `agents/base.py` | Logs-Seite füllt den Store aus `recent` vor; Instanzfilter nutzt `instances`. Live-Einträge tragen jetzt `created_at`. | P5.2, P1.3 |
 | C12 | P5 | `static/js/app.js` | `onerror` handelt nur bei `readyState === CLOSED` der aktuellen Quelle, höchstens ein Timer, vor dem Neuverbinden Sitzung prüfen. | P5.1 |
@@ -400,7 +400,7 @@ Template-Kontext aus `main.py` (alle Seiten zusätzlich `request`, `app_name`, `
 
 ### P6 liefert (Welle 1)
 
-Container: `ENTRYPOINT /usr/local/bin/docker-entrypoint.sh`. Läuft als root, bringt `/data` (bzw. `DATA_DIR`) auf `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), entzieht Gruppe und Anderen alle Rechte (`go-rwx`, nur wo nötig), setzt `umask 077` und startet dann den Befehl per `setpriv --reuid --regid --clear-groups`. `PUID=0` = weiter als root ohne chown. Standard `1000:1000`; auf hetzner2 ist 1000 der Login-Benutzer `codeuser`, der Live-Stack bekommt deshalb `PUID=568`/`PGID=568` (siehe Release-Notiz Punkt 4). uvicorn mit `--timeout-graceful-shutdown 5`. Statische Bibliotheken unter `/static/vendor/alpinejs-3.14.1.min.js` und `/static/vendor/htmx-2.0.4.min.js`.
+Container: `ENTRYPOINT /usr/local/bin/docker-entrypoint.sh`. Läuft als root, bringt `/data` (bzw. `DATA_DIR`) auf `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), entzieht Gruppe und Anderen alle Rechte (`go-rwx`, nur wo nötig), setzt `umask 077` und startet dann den Befehl per `setpriv --reuid --regid --clear-groups`. `PUID=0` = weiter als root ohne chown. Standard `1000:1000`; auf dem Server ist 1000 ein vorhandener Login-Benutzer, der Live-Stack bekommt deshalb `PUID=568`/`PGID=568` (siehe Release-Notiz Punkt 4). uvicorn mit `--timeout-graceful-shutdown 5`. Statische Bibliotheken unter `/static/vendor/alpinejs-3.14.1.min.js` und `/static/vendor/htmx-2.0.4.min.js`.
 
 ---
 
@@ -4190,7 +4190,7 @@ cryptography>=42.0.0
 Run:
 
 ```bash
-SCRATCH=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad
+SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
 cd /root/missingarr
 python3 -m venv "$SCRATCH/lockvenv"
@@ -4206,7 +4206,7 @@ Expected: `requirements.lock` entsteht, die Hash-Zahl ist deutlich größer als 
 
 - [ ] **Step 5: Tests grün, Installation mit Hashprüfung trocken probieren**
 
-Run: `SCRATCH=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad && test -d "$SCRATCH" && cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider && "$SCRATCH/lockvenv/bin/pip" install --dry-run --quiet --require-hashes -r requirements.lock`
+Run: `SCRATCH=<scratchpad> && test -d "$SCRATCH" && cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider && "$SCRATCH/lockvenv/bin/pip" install --dry-run --quiet --require-hashes -r requirements.lock`
 Expected: PASS, der Trockenlauf endet ohne Hash-Fehler.
 
 - [ ] **Step 6: Commit**
@@ -10193,7 +10193,7 @@ Expected: alle Tests grün (22 alte + alle neuen), kein `ModuleNotFoundError: pa
 Run:
 
 ```bash
-SCRATCH=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad
+SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
 PROBE="$SCRATCH/probe"
 rm -rf "$PROBE" && mkdir -p "$PROBE"
@@ -10227,12 +10227,12 @@ Expected der Reihe nach: `302`; JSON mit `"api_key":"********"`; `{"status":"tri
 
 - [ ] **Step 4: Probe-Container: ohne root, private Daten, Stopp mit offenem Stream (nicht der Live-Container)**
 
-Hier, am fertigen Branch, steht der Container-Lauf, den P6.3 bewusst ausgelassen hat (in Welle 1 fehlte `passlib` im Image, `auth.py` brauchte es noch). Geprüft wird mit `PUID/PGID=568` wie für den Live-Stack vorgesehen, dazu eine alte Sicherungskopie mit `644` und ein root-eigener Datenordner wie auf hetzner2.
+Hier, am fertigen Branch, steht der Container-Lauf, den P6.3 bewusst ausgelassen hat (in Welle 1 fehlte `passlib` im Image, `auth.py` brauchte es noch). Geprüft wird mit `PUID/PGID=568` wie für den Live-Stack vorgesehen, dazu eine alte Sicherungskopie mit `644` und ein root-eigener Datenordner wie auf dem Server.
 
 Run:
 
 ```bash
-SCRATCH=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad
+SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
 cd /root/missingarr
 docker build -t missingarr:codex-review-test .
@@ -10265,7 +10265,7 @@ Checkliste, jeweils ohne Fehler in der Browser-Konsole:
 6. Progressed: „Show items“ zeigt den Namen in der Überschrift; „Reset“ leert Tabelle und Zähler; keine Konsolenfehler.
 7. Formular: Intervall 0 → Browser lehnt ab; URL ändern ohne Schlüssel → Toast; Test Connection.
 8. Abmelden über den Knopf → Login-Seite; zurück-Navigation zeigt keine Daten (401/Redirect).
-Den Probelauf dafür mit dem Block aus Step 3 bis einschließlich `timeout 30 …/api/health` neu starten (Anmeldung dann im Browser). Danach beenden, im selben Bash-Aufruf mit gesetztem Pfad: `PROBE=/tmp/claude-0/-root/b5f0b5e7-3436-4d16-9f25-cd6f007f969c/scratchpad/probe; kill -TERM "$(cat "$PROBE/pid")"`.
+Den Probelauf dafür mit dem Block aus Step 3 bis einschließlich `timeout 30 …/api/health` neu starten (Anmeldung dann im Browser). Danach beenden, im selben Bash-Aufruf mit gesetztem Pfad: `PROBE=<scratchpad>/probe; kill -TERM "$(cat "$PROBE/pid")"`.
 
 - [ ] **Step 6: Commit und Push des Branches (kein Tag, kein Merge)**
 
@@ -10288,7 +10288,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 1. **Einmal neu anmelden.** Das Remember-Cookie hat ein neues Format (v2), alte Cookies und Sitzungen gelten nicht mehr. Das gilt auch für Skripte, die ein altes Session-Cookie aufbewahren.
 2. **Abmelden meldet überall ab.** `POST /logout` widerruft alle Sitzungen und Remember-Cookies aller Geräte und Skripte. Auch ein Wechsel von `AUTH_PASSWORD` meldet alle ab.
 3. **Abmelden nur per Knopf.** `GET /logout` antwortet `405`; Lesezeichen auf `/logout` funktionieren nicht mehr.
-4. **Rechte von `/data`.** Beim ersten Start übergibt der Container `/root/docker/missingarr/data` an `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), nimmt Gruppe und Anderen alle Rechte (Ordner `700`, Dateien `600`, auch `missingarr.db.bak-20260817-000513`) und läuft danach ohne root. **Auf hetzner2 ist UID/GID 1000 der Login-Benutzer `codeuser`** (`getent passwd 1000`, geprüft 30.09.2026); mit dem Standard könnte `codeuser` die DB samt Fernet-Schlüssel lesen und schreiben (heute nur lesen, `root:root 644`, `/root` hat `755`). Deshalb im Live-Stack vor dem Update `PUID=568` und `PGID=568` setzen (auf dem Host frei, geprüft 30.09.2026) — Änderung am Live-Stack, nur mit Daniels Freigabe beim Deployment. Danach lesen nur root und 568 die Daten.
+4. **Rechte von `/data`.** Beim ersten Start übergibt der Container den Datenordner des Live-Stacks an `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), nimmt Gruppe und Anderen alle Rechte (Ordner `700`, Dateien `600`, auch `missingarr.db.bak-20260817-000513`) und läuft danach ohne root. **Auf dem Server ist UID/GID 1000 ein vorhandener Login-Benutzer** (`getent passwd 1000`, geprüft 30.09.2026); mit dem Standard könnte dieser Benutzer die DB samt Fernet-Schlüssel lesen und schreiben (heute nur lesen, `root:root 644`, `/root` hat `755`). Deshalb im Live-Stack vor dem Update `PUID=568` und `PGID=568` setzen (auf dem Host frei, geprüft 30.09.2026) — Änderung am Live-Stack, nur mit Daniels Freigabe beim Deployment. Danach lesen nur root und 568 die Daten.
 5. **`SECRET_KEY`.** Ist im Live-Stack **kein** Wert gesetzt: keine Änderung. Ist dort ein Wert gesetzt (der alte Compose-Kommentar lud dazu ein), werden beim ersten Start alle API-Schlüssel umgeschlüsselt, die alten Schlüssel aus der DB gelöscht, und ab dann startet missingarr nur noch mit genau diesem Wert. Vorher `data/` sichern. Sicherungskopien in `data/` (z. B. `missingarr.db.bak-…`) enthalten danach weiter die alten Schlüssel samt Fernet-Schlüssel: löschen oder wie ein Geheimnis aufbewahren. Geht der Wert verloren: Rettungsweg in „Risiken“ (Schlüssel leeren, neu eingeben).
 6. **Erstes Aufräumen.** Etwa 30 s nach dem Start löscht die Hauspflege abgeschlossene Läufe älter als 365 Tage (`HISTORY_RETENTION_DAYS`), danach stündlich. Bei `retry_hours=0` (live) bleibt der Cache unangetastet.
 7. **Hängende Läufe werden geschlossen.** Läufe, die seit einem früheren Neustart auf „läuft“ stehen, werden beim Start auf „offen“ (mit Items) bzw. „Fehler: Interrupted by restart“ gesetzt.
@@ -10328,7 +10328,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 | Login-Sperre hinter Proxy | alle Clients teilen eine Adresse, 5 Fehlversuche sperren alle bis 15 min | Tailnet-Zugang, README nennt `FORWARDED_ALLOW_IPS` |
 | `LazySessionMiddleware` ruft `SessionMiddleware.__init__` später auf | ein Starlette-Update könnte das brechen | Test `test_login_works_with_the_lazily_read_session_key`; Versionen stehen in `requirements.lock` |
 | `token_version` im Speicher | mehrere Worker sähen verschiedene Stände | Dockerfile erzwingt `--workers 1` (Agenten brauchen das ohnehin) |
-| chown von `/data` auf `PUID:PGID` | Standard 1000 = `codeuser` auf hetzner2 bekäme Lese- und Schreibzugriff auf DB und Fernet-Schlüssel; Host-Werkzeuge, die als anderer Benutzer lesen, brauchen root | Live-Stack mit `PUID/PGID=568` (Release-Notiz 4, offene Frage 6); `go-rwx` auch auf Sicherungskopien; Symlinks übersprungen; `PUID=0` als Ausweg; Task Z Step 4 prüft 568/700/600 am Probe-Container |
+| chown von `/data` auf `PUID:PGID` | Standard 1000 = ein vorhandener Login-Benutzer auf dem Server bekäme Lese- und Schreibzugriff auf DB und Fernet-Schlüssel; Host-Werkzeuge, die als anderer Benutzer lesen, brauchen root | Live-Stack mit `PUID/PGID=568` (Release-Notiz 4, offene Frage 6); `go-rwx` auch auf Sicherungskopien; Symlinks übersprungen; `PUID=0` als Ausweg; Task Z Step 4 prüft 568/700/600 am Probe-Container |
 | Vorfahren-Regel gegen den Live-Stand | ohne Marker sperrten die alten `ser:`/`sea:`-Zeilen (Seriensuchen 2026, Folgen älter) im Live-Modus `episode` wieder den Großteil des Rückstands — genau das, was die Umstellung am 30.09.2026 behoben hat | Marker `ancestor_rule_since` (P3.1), `_blocked` ignoriert ältere Vorfahren-Schlüssel (P2.2), Regressionstest in P2.3; Entscheidung vor P2.2 bei Daniel (offene Frage 7) |
 | Staffelsuche kurz nach Ausstrahlung | eine SeasonSearch wenige Stunden nach der Folge sperrte sie bei `retry_hours=0` für immer | Vorfahren-Schlüssel zählen erst ab Ausstrahlung + `hours_after_release` (P2.2, Test in P2.3) |
 | Cache-Regel mit alten Zeitstempeln | Zeilen vor 1c1dc83 (März 2026) stehen in UTC statt Ortszeit | Abweichung 1–2 h, nur für Vorfahren-Schlüssel relevant; durch den Marker betrifft es nur noch Zeilen ab 0.8.0 (Ortszeit); hingenommen |
@@ -10337,7 +10337,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 | Hash-gepinnte Abhängigkeiten, SHA-gepinnte Actions | Updates kommen nicht mehr von selbst | README beschreibt das Erneuern (pip-compile, `scripts/vendor_assets.py`, Digest-Befehl in P6.3) |
 | `409` bei `force=false` | Skripte mit `curl -f` melden einen Fehler, wenn gerade ein Lauf läuft | Release-Notiz Punkt 9, offene Frage 5 |
 | Tests unter root | Entrypoint-Tests brauchen root und `setpriv` | werden sonst übersprungen, nicht rot |
-| Release-Kette im Test braucht Git-Tags | in einem flachen Checkout (CI) fehlen `v0.5.2`…`v0.7.0` | Test überspringt sich dann; auf hetzner2 sind alle Tags da |
+| Release-Kette im Test braucht Git-Tags | in einem flachen Checkout (CI) fehlen `v0.5.2`…`v0.7.0` | Test überspringt sich dann; auf dem Server sind alle Tags da |
 
 ## Bewusst nicht gemacht
 
@@ -10362,7 +10362,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 3. Welche `search_order` nutzen Live-Sonarr und Live-Radarr? Bei `newest_first`/`oldest_first`/`smart` steigt die Zahl der GETs pro Lauf (Punkt 15).
 4. Leiten die Live-URLs irgendwo um (z. B. http → https, fehlender Basispfad)?
 5. Stört `409` bei `force=false` ein Vault-Skript mit `curl -f`?
-6. `PUID`/`PGID` für den Live-Stack: 1000 ist auf hetzner2 `codeuser` (Login-Benutzer), das wäre ein Rückschritt. Vorschlag: `PUID=568`, `PGID=568` (frei, geprüft 30.09.2026), beim Deployment in der Stack-Definition setzen. Einverstanden, oder soll ein anderer (System-)Benutzer die Daten besitzen?
+6. `PUID`/`PGID` für den Live-Stack: 1000 ist auf dem Server ein vorhandener Login-Benutzer, das wäre ein Rückschritt. Vorschlag: `PUID=568`, `PGID=568` (frei, geprüft 30.09.2026), beim Deployment in der Stack-Definition setzen. Einverstanden, oder soll ein anderer (System-)Benutzer die Daten besitzen?
 7. **Vor P2.2:** Alte `ser:`/`sea:`-Zeilen (rund 6.700 und 730) sollen nach Richtung 7 „immer geprüft“ werden, würden im Live-Modus `episode` aber den Großteil des Rückstands wieder sperren. Plan-Vorschlag: Marker `ancestor_rule_since` beim ersten Start von 0.8.0; ältere Vorfahren-Schlüssel sperren nie, neue nach der Ausstrahlungs-Regel (nichts wird gelöscht, künftige Moduswechsel sind abgedeckt). Alternative: einmalig `ser:%`/`sea:%` der Sonarr-Instanz löschen (Deploy-Schritt mit Freigabe, dann ohne Marker). Welche Variante?
 
 ## Kritik geprüft (Review des Plans, 30.09.2026)
@@ -10382,7 +10382,7 @@ Jeder Punkt wurde am Code bzw. am Host nachgeprüft. Alle 17 Punkte stimmen und 
 | 9 | `init()` doppelt, Dedup an Sekundengrenzen | Alpine ruft `init()` einer `x-data`-Komponente selbst; `created_at` für Broadcast und DB getrennt gebildet | `x-init` entfernt (P5.2, Test); `seed()` vergleicht Instanz/Level/Text und Zeit mit ±1 s (P5.1, Test). Nicht gewählt: Zeitstempel einmal bilden und an `db.activity.insert` geben — das hätte P1.3 (Welle 1) von einer Signaturänderung in P3 abhängig gemacht |
 | 10 | bcrypt 5 wirft bei > 72 Byte | nachgestellt: `ValueError: password cannot be longer than 72 bytes` | auf 72 Byte kürzen wie ältere bcrypt/passlib/htpasswd, `ValueError`-Zweig nur noch für kaputte Hashes; Test in P4.4 |
 | 11 | Vorfahren-Regel macht die Live-Umstellung rückgängig | Vault „missingarr sucht fehlende Folgen nie ein zweites Mal“: 118 von 139 Serien durch alte `ser:`-Zeilen gesperrt; 0.7.0 prüft in `episode` nur `ep:` | Marker `ancestor_rule_since` (P3.1), `_blocked` ignoriert ältere Vorfahren-Schlüssel (P2.2), Regressionstest; Risiko, Release-Notiz 17, offene Frage 7 |
-| 12 | Standard-UID 1000 = `codeuser` | `getent passwd 1000` → `codeuser`; `/root` 755; Daten heute `root:root 644`, `.bak` daneben | Live-Vorschlag `PUID/PGID=568` (frei), Entrypoint `go-rwx` + `umask 077`, Tests; Release-Notiz 4 und 5, README, offene Frage 6. Der Image-Standard bleibt 1000 (Richtungsentscheidung 12) |
+| 12 | Standard-UID 1000 = ein vorhandener Login-Benutzer | `getent passwd 1000` → ein vorhandener Login-Benutzer; `/root` 755; Daten heute `root:root 644`, `.bak` daneben | Live-Vorschlag `PUID/PGID=568` (frei), Entrypoint `go-rwx` + `umask 077`, Tests; Release-Notiz 4 und 5, README, offene Frage 6. Der Image-Standard bleibt 1000 (Richtungsentscheidung 12) |
 | 13 | parallele Wellen im selben Arbeitsbaum | gemeinsamer Index und gemeinsame Suite | je Paket ein Worktree und Zweig, Merge am Wellenende; P3.4/P3.5 als P3b in Welle 2 (brauchen P1.4) |
 | 14 | `$SCRATCH` nirgends gesetzt | stimmt, nur ein Hinweistext | jeder Block setzt den absoluten Pfad und prüft `test -d`; `PROBE` ebenso |
 | 15 | Alt-DB nur als handgeschriebene DDL | Tags `v0.5.2`…`v0.7.0` liegen im Repo | zusätzlicher Test mit echter Release-Kette per `git show` (im Scratchpad nachgestellt: Kette läuft, Items A/B `legacy`, C `submitted`) |
