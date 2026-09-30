@@ -1,14 +1,27 @@
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
+
 from backend.config import settings
 
 logger = logging.getLogger("missingarr.database")
 
+BUSY_TIMEOUT_SECONDS = 30
+
+# app_settings key: local time of the first start of 0.8.0. Season and series
+# cache keys written before it do not block episodes (A9).
+ANCESTOR_RULE_SINCE_SETTING = "ancestor_rule_since"
+
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(settings.database_url, check_same_thread=False)
+    # A writer holding the lock for a few seconds must not turn a search that
+    # *arr already accepted into an untracked one (B2).
+    conn = sqlite3.connect(
+        settings.database_url, timeout=BUSY_TIMEOUT_SECONDS, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_SECONDS * 1000}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -28,9 +41,7 @@ def get_db():
         conn.close()
 
 
-def init_db():
-    with get_db() as conn:
-        conn.executescript("""
+_SCHEMA = """
             CREATE TABLE IF NOT EXISTS instances (
                 id                       INTEGER PRIMARY KEY AUTOINCREMENT,
                 name                     TEXT NOT NULL,
@@ -83,7 +94,8 @@ def init_db():
                 status          TEXT NOT NULL DEFAULT 'running'
                                 CHECK(status IN ('running','success','error',
                                                  'pending','partial','failed','unverified')),
-                error_message   TEXT
+                error_message   TEXT,
+                verified_count  INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_history_instance ON search_history(instance_id);
@@ -111,7 +123,8 @@ def init_db():
                 command_status TEXT NOT NULL DEFAULT 'legacy',
                 cache_key      TEXT NOT NULL DEFAULT '',
                 verified_at    TEXT,
-                created_at     TEXT
+                created_at     TEXT,
+                last_checked_at TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_history_items_run ON search_history_items(run_id);
@@ -133,31 +146,75 @@ def init_db():
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-        """)
+"""
 
-        # Reset any previously auto-migrated retry_hours back to 0 (permanent cache)
-        conn.execute("UPDATE instances SET retry_hours=0 WHERE retry_hours IN (1, 168)")
+# (table, column, definition) for every column added after a table was first
+# released. Existing databases get the missing ones; fresh ones have them
+# from _SCHEMA already.
+_COLUMN_MIGRATIONS = [
+    ("search_history_items", "item_type", "TEXT NOT NULL DEFAULT 'episode'"),
+    ("searched_items", "item_type", "TEXT NOT NULL DEFAULT 'episode'"),
+    ("searched_items", "title", "TEXT NOT NULL DEFAULT ''"),
+    # Command verification. The 'legacy' default settles existing rows in one
+    # go: they carry no command id and can never be verified.
+    ("search_history_items", "command_id", "INTEGER"),
+    ("search_history_items", "command_status", "TEXT NOT NULL DEFAULT 'legacy'"),
+    ("search_history_items", "cache_key", "TEXT NOT NULL DEFAULT ''"),
+    ("search_history_items", "verified_at", "TEXT"),
+    ("search_history_items", "created_at", "TEXT"),
+    ("search_history", "verified_count", "INTEGER NOT NULL DEFAULT 0"),
+    # Fair rotation and "expire only after asking" in verify_commands (B4, B5).
+    ("search_history_items", "last_checked_at", "TEXT"),
+]
 
-        # Migrations: add columns introduced after initial release
-        for sql in [
-            "ALTER TABLE search_history_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
-            "ALTER TABLE searched_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'episode'",
-            "ALTER TABLE searched_items ADD COLUMN title TEXT NOT NULL DEFAULT ''",
-            # Command verification. The 'legacy' default settles existing rows in
-            # one go: they carry no command id and can never be verified, so they
-            # must not enter the verification loop.
-            "ALTER TABLE search_history_items ADD COLUMN command_id INTEGER",
-            "ALTER TABLE search_history_items ADD COLUMN command_status TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE search_history_items ADD COLUMN cache_key TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE search_history_items ADD COLUMN verified_at TEXT",
-            "ALTER TABLE search_history_items ADD COLUMN created_at TEXT",
-            "ALTER TABLE search_history ADD COLUMN verified_count INTEGER NOT NULL DEFAULT 0",
-        ]:
-            try:
-                conn.execute(sql)
-            except Exception:
-                pass  # column already exists
 
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, definition in _COLUMN_MIGRATIONS:
+        if column in _columns(conn, table):
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        except sqlite3.OperationalError as exc:
+            # Only a column that appeared in the meantime is harmless. A bad
+            # default, an I/O error or a missing table must stop the start
+            # instead of leaving a half-migrated schema behind (B8).
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+
+def _assert_schema(conn: sqlite3.Connection) -> None:
+    missing = [
+        f"{table}.{column}"
+        for table, column, _ in _COLUMN_MIGRATIONS
+        if column not in _columns(conn, table)
+    ]
+    if missing:
+        raise RuntimeError("Database schema incomplete after migration: " + ", ".join(missing))
+
+
+def _restrict_file_permissions() -> None:
+    """The database holds the encrypted API keys and, without SECRET_KEY, the
+    keys to decrypt them — keep it readable by the app user only (C5). SQLite
+    creates -wal/-shm with the permissions of the database file."""
+    path = settings.database_url
+    if not path or path == ":memory:" or path.startswith("file:"):
+        return
+    for candidate in (path, f"{path}-wal", f"{path}-shm"):
+        try:
+            if os.path.exists(candidate):
+                os.chmod(candidate, 0o600)
+        except OSError as exc:
+            logger.warning("Could not restrict permissions of %s: %s", candidate, exc)
+
+
+def init_db():
+    with get_db() as conn:
+        conn.executescript(_SCHEMA)
+        _add_missing_columns(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_items_pending "
             "ON search_history_items(command_status)"
@@ -165,6 +222,23 @@ def init_db():
 
     # Needs its own connection with foreign keys off — see the docstring.
     _widen_history_status_check()
+
+    with get_db() as conn:
+        # After the rebuild: DROP TABLE removes the table's indexes with it.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_instance_started "
+            "ON search_history(instance_id, started_at DESC, id DESC)"
+        )
+        # First start of 0.8.0. Season and series keys cached before it were
+        # written under the old rules (show_batch, no air-date check) and must
+        # not block episodes now (A9, see search_missing._blocked).
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, datetime('now','localtime'))",
+            (ANCESTOR_RULE_SINCE_SETTING,),
+        )
+        _assert_schema(conn)
+
+    _restrict_file_permissions()
 
 
 def _widen_history_status_check() -> None:
