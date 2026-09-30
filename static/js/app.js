@@ -110,6 +110,20 @@ function createLogStore() {
             };
         },
 
+        // The page goes into the back/forward cache: give the connection back.
+        suspend() {
+            clearTimeout(this._retryTimer);
+            this._retryTimer = null;
+            if (this._evtSource) {
+                this._evtSource.close();
+                this._evtSource = null;
+            }
+        },
+
+        resume() {
+            if (this.enabled && !this._evtSource) this.connect();
+        },
+
         async _reconnect() {
             this._retryTimer = null;
             try {
@@ -186,6 +200,19 @@ document.addEventListener('alpine:init', () => {
     });
     Alpine.store('logs', createLogStore());
 });
+
+// A page in the back/forward cache kept its EventSource open. Browsers allow
+// six connections per host over HTTP/1.1, so a few full navigations left no
+// connection for the next page and it hung. Assigned, not added: this file
+// runs again after every boosted navigation.
+window.onpagehide = function () {
+    var logs = window.Alpine && Alpine.store('logs');
+    if (logs) logs.suspend();
+};
+window.onpageshow = function (event) {
+    var logs = window.Alpine && Alpine.store('logs');
+    if (logs && event.persisted) logs.resume();
+};
 
 // ── Countdown helper ──────────────────────────────────────────────────────────
 function countdownComponent(nextRunIso, status) {

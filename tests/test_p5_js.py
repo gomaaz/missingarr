@@ -70,6 +70,31 @@ out.sources = sources.length;
                    "afterStaleError": 0, "sources": 2}
 
 
+def test_stream_is_closed_while_the_page_sits_in_the_back_forward_cache(tmp_path):
+    # A cached page kept its EventSource open. Browsers allow six connections
+    # per host over HTTP/1.1, so after a few full navigations the next page
+    # hung. Close on pagehide, reopen when the page comes back from the cache.
+    out = run_js(tmp_path, """
+const store = stores.logs;
+store.init();
+const first = sources[0];
+window.onpagehide({ persisted: true });
+out.closed = first.readyState === 2 && store._evtSource === null;
+first.onerror();
+out.retries = activeTimers();
+window.onpageshow({ persisted: false });
+out.afterFreshShow = sources.length;
+window.onpageshow({ persisted: true });
+out.afterRestore = sources.length;
+store.enabled = false;
+window.onpagehide({ persisted: true });
+window.onpageshow({ persisted: true });
+out.pausedStaysClosed = sources.length;
+""")
+    assert out == {"closed": True, "retries": 0, "afterFreshShow": 1, "afterRestore": 2,
+                   "pausedStaysClosed": 2}
+
+
 def test_seed_merges_without_duplicates(tmp_path):
     out = run_js(tmp_path, """
 const store = stores.logs;
