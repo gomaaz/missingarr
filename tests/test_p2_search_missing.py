@@ -7,6 +7,7 @@ from backend import database, db
 from backend.agents.base import BaseAgent
 from backend.config import settings
 from backend.db import history
+from backend.skills import search_missing
 from backend.skills.search_missing import RANDOM_PAGE_BUDGET, SearchMissingSkill
 
 WANTED = "/api/v3/wanted/missing"
@@ -160,6 +161,35 @@ def test_ordered_modes_reach_the_whole_backlog(db_path):
         run_missing(agent)
         seen.update(episode_ids(agent))
     assert len(seen) == 100
+
+
+def test_ordered_modes_read_past_the_old_hundred_page_limit(db_path, monkeypatch):
+    # Page size 10 makes the old ceiling of 100 pages 1000 records; the
+    # oldest items sit behind it.
+    monkeypatch.setattr(search_missing, "ORDERED_PAGE_SIZE", 10)
+    inst = make_instance(search_order="oldest_first")
+    agent = agent_for(inst, missing=backlog(1500))
+    run_missing(agent)
+    assert episode_ids(agent) == [1500, 1499, 1498, 1497, 1496]
+    assert len([1 for path, _ in agent.gets if path == WANTED]) == 150
+    run = last_run()
+    assert run["status"] == "pending"
+    assert run["error_message"] is None
+
+
+def test_ordered_modes_stop_as_error_when_the_page_brake_holds(db_path, monkeypatch):
+    # The page ceiling is only an emergency brake: sorting a slice of the
+    # list would silently skip the rest, so the run fails visibly instead.
+    monkeypatch.setattr(search_missing, "ORDERED_PAGE_SIZE", 10)
+    monkeypatch.setattr(search_missing, "ORDERED_MAX_PAGES", 3)
+    inst = make_instance(search_order="newest_first")
+    agent = agent_for(inst, missing=backlog(50))
+    run_missing(agent)
+    assert agent.posts == []
+    assert len([1 for path, _ in agent.gets if path == WANTED]) == 3
+    run = last_run()
+    assert run["status"] == "error"
+    assert "more than 30 missing items" in run["error_message"]
 
 
 def test_smart_puts_recent_items_from_later_pages_first(db_path):

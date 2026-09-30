@@ -16,8 +16,11 @@ WANTED_PATH = "/api/v3/wanted/missing"
 # *arr's server-side sorting (the sort key parameter) is deliberately not used:
 # it drops records without the sort field (specials, films without a physical
 # date — see 8a1a912, c68178e).
+# They page to the end of the list; the page ceiling is only an emergency
+# brake far above any real backlog, and a run that hits it fails instead of
+# sorting a slice.
 ORDERED_PAGE_SIZE = 1000
-ORDERED_MAX_PAGES = 100
+ORDERED_MAX_PAGES = 1000
 
 # random: at most this many pages per run, so a mostly searched backlog does
 # not mean reading the whole list every interval (A-L3).
@@ -35,7 +38,6 @@ class _Stats:
     skipped_file: int = 0
     skipped_window: int = 0
     skipped_cache: int = 0
-    truncated: bool = False
     notes: list = field(default_factory=list)
 
     def describe(self) -> str:
@@ -80,10 +82,6 @@ class SearchMissingSkill(BaseSkill):
                 candidates, stats = self._collect_random(agent, cfg, per_run, mode, cutoff, force)
             else:
                 candidates, stats = self._collect_ordered(agent, cfg, per_run, mode, order, cutoff, force)
-            if stats.truncated:
-                stats.notes.append(
-                    f"only the first {ORDERED_MAX_PAGES * ORDERED_PAGE_SIZE} missing items were considered"
-                )
             wanted_count = len(candidates)
             agent.log("debug", self.name, stats.describe())
 
@@ -150,8 +148,10 @@ class SearchMissingSkill(BaseSkill):
         page = 1
         while True:
             if page > ORDERED_MAX_PAGES:
-                stats.truncated = True
-                break
+                raise RuntimeError(
+                    f"wanted list has more than {ORDERED_MAX_PAGES * ORDERED_PAGE_SIZE} missing "
+                    f"items — stopped instead of ordering only part of it"
+                )
             if agent.stop_requested():
                 break
             resp = agent.http_get(
