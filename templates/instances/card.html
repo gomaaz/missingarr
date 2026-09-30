@@ -7,13 +7,11 @@
 
 <div class="card instance-card {{ conn }}" id="icard-{{ inst.id }}"
      x-data="countdownComponent('{{ next_run or '' }}', '{{ agent_status }}')"
-     x-init="init()"
-     x-destroy="destroy()"
      hx-get="/api/instances/{{ inst.id }}/status"
      hx-trigger="every 5s"
      hx-swap="none"
      hx-disinherit="hx-swap"
-     hx-on::after-request="updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
+     hx-on::after-request="if (event.detail.successful) updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
 
     <!-- Card Header -->
     <div class="card-header">
@@ -31,6 +29,8 @@
                 <span class="badge badge-running" data-status-badge>RUNNING</span>
             {% elif agent_status == 'quiet' %}
                 <span class="badge badge-unknown" data-status-badge>QUIET</span>
+            {% elif agent_status == 'error' %}
+                <span class="badge badge-offline" data-status-badge title="The scheduler could not start — see Logs">ERROR</span>
             {% else %}
                 <span class="badge badge-scheduled" data-status-badge>WAIT</span>
             {% endif %}
@@ -60,6 +60,7 @@
             <button class="btn btn-force"
                     onclick="forceRun({{ inst.id }}, 'search_missing')"
                     {% if not is_enabled %}disabled{% endif %}
+                    :disabled="{{ 'true' if not is_enabled else 'false' }} || status === 'running'"
                     title="Force run now (bypasses quiet hours)">
                 FORCE
             </button>
@@ -80,7 +81,11 @@
         <div class="countdown-display" x-text="display">--:--</div>
         <div class="countdown-label">
             {% if next_run %}
-                Next run · {{ inst.interval_minutes }}m interval
+                Next search run
+            {% elif agent_status == 'error' %}
+                Scheduler error — see Logs
+            {% elif not inst.search_missing_enabled and not inst.search_upgrades_enabled %}
+                No search skill enabled
             {% else %}
                 Starting up...
             {% endif %}
