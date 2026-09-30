@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from backend.config import settings
 from backend.database import init_db
-from backend.crypto import get_session_secret
+from backend.crypto import get_session_secret, init_crypto
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
@@ -32,6 +32,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.version}")
     init_auth()
     init_db()
+    # Raises when the database needs SECRET_KEY and it is missing or wrong;
+    # the start stops with that message in the log.
+    init_crypto()
 
     # Wire broadcaster to current event loop
     loop = asyncio.get_event_loop()
