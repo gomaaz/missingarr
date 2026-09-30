@@ -322,22 +322,58 @@ def count_items_flat(
 
 
 def get_pending_items(instance_id: int, limit: int = 50) -> list[dict]:
-    """Items of this instance that still await a verdict, oldest first."""
+    """Items still awaiting a verdict. Never-checked items first, then the one
+    checked longest ago, so fifty commands *arr never settles cannot starve
+    every newer one (B4)."""
     with get_db() as conn:
         rows = conn.execute(
             """
-            SELECT si.id, si.run_id, si.command_id, si.cache_key
+            SELECT si.id, si.run_id, si.command_id, si.cache_key, si.last_checked_at
             FROM search_history_items si
             JOIN search_history h ON h.id = si.run_id
             WHERE h.instance_id = ?
               AND si.command_status = ?
               AND si.command_id IS NOT NULL
-            ORDER BY si.id
+            ORDER BY (si.last_checked_at IS NOT NULL), si.last_checked_at, si.id
             LIMIT ?
             """,
             (instance_id, ITEM_SUBMITTED, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def mark_checked(item_ids: list[int]) -> None:
+    """Note that *arr answered for these items without settling them yet.
+    Drives the rotation above and the grace period in expire_stale_items."""
+    if not item_ids:
+        return
+    with get_db() as conn:
+        conn.executemany(
+            "UPDATE search_history_items SET last_checked_at=datetime('now','localtime') WHERE id=?",
+            [(item_id,) for item_id in item_ids],
+        )
+
+
+def resolve_item(item_id: int, status: str, instance_id: int, cache_key: str) -> bool:
+    """Write a verdict and, for a failed command, release its cache key — in
+    one transaction (B3). Returns True when a cache entry was released."""
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE search_history_items
+            SET command_status=?, verified_at=datetime('now','localtime'),
+                last_checked_at=datetime('now','localtime')
+            WHERE id=?
+            """,
+            (status, item_id),
+        )
+        if status == ITEM_FAILED and cache_key:
+            cursor = conn.execute(
+                "DELETE FROM searched_items WHERE instance_id=? AND cache_key=?",
+                (instance_id, cache_key),
+            )
+            return cursor.rowcount > 0
+    return False
 
 
 def set_item_status(item_id: int, status: str) -> None:
@@ -354,6 +390,9 @@ def set_item_status(item_id: int, status: str) -> None:
 
 def expire_stale_items(instance_id: int, hours: int = 24) -> int:
     """Give up on items *arr never resolved. Returns how many were expired.
+
+    Only items *arr has answered at least once after their `hours` were up:
+    an instance switched off for a day must first ask, then give up (B5).
 
     Ages by the item's own created_at, not by the run's start: a run with
     missing_per_run=600 and a two-second delay spans over twenty minutes, so
@@ -372,11 +411,12 @@ def expire_stale_items(instance_id: int, hours: int = 24) -> int:
                   JOIN search_history h ON h.id = si.run_id
                   WHERE h.instance_id = ?
                     AND si.command_status = ?
-                    AND COALESCE(si.created_at, h.started_at)
-                        < datetime('now','localtime', ? || ' hours')
+                    AND si.last_checked_at IS NOT NULL
+                    AND si.last_checked_at
+                        >= datetime(COALESCE(si.created_at, h.started_at), ? || ' hours')
               )
             """,
-            (ITEM_EXPIRED, ITEM_SUBMITTED, instance_id, ITEM_SUBMITTED, f"-{hours}"),
+            (ITEM_EXPIRED, ITEM_SUBMITTED, instance_id, ITEM_SUBMITTED, f"+{hours}"),
         )
         return cursor.rowcount
 
