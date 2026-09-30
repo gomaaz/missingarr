@@ -119,7 +119,7 @@ def component_script(page, marker):
 def test_reset_and_heading_behave_in_the_component(client, tmp_path):
     # C13 is about behaviour: after a reset the open table must be empty and
     # the heading must name the instance. Run the real component in Node.
-    make_instance(name="Daniel's Sonarr")
+    make_instance(name="Alice's Sonarr")
     script = component_script(client.get("/searched").text, "function searchedPage()")
     out = run_js(tmp_path, f"""
 vm.runInThisContext({json.dumps(script)});
@@ -131,14 +131,14 @@ const deleted = (n) => ({{ status: 200, ok: true, redirected: false, url: '/api/
   json: async () => ({{ deleted: n }}) }});
 const page = searchedPage();
 responses.push(listed([{{ id: 1, title: 'A' }}, {{ id: 2, title: 'B' }}], 2));
-await page.loadInstance(1, "Daniel's Sonarr");
+await page.loadInstance(1, "Alice's Sonarr");
 out.heading = page.activeInstanceName;
 out.loaded = page.items.length;
 responses.push(deleted(5));
 await page.reset(2, 'Other');
 out.afterOtherReset = page.items.length;
 responses.push(deleted(2));
-await page.reset(1, "Daniel's Sonarr");
+await page.reset(1, "Alice's Sonarr");
 out.afterOwnReset = [page.items.length, page.total];
 responses.push(listed([{{ id: 3, title: 'C' }}], 1));
 await page.fetchItems();
@@ -146,7 +146,7 @@ responses.push(deleted(1));
 await page.resetAll();
 out.afterResetAll = [page.items.length, page.total];
 """)
-    assert out == {"heading": "Daniel's Sonarr", "loaded": 2, "afterOtherReset": 2,
+    assert out == {"heading": "Alice's Sonarr", "loaded": 2, "afterOtherReset": 2,
                    "afterOwnReset": [0, 0], "afterResetAll": [0, 0]}
 
 
