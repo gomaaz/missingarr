@@ -1,440 +1,484 @@
+import math
 import random
-import time
-from datetime import datetime, timezone, timedelta
-from backend.skills.base import BaseSkill, SearchResult
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
 from backend import db
+from backend.database import ANCESTOR_RULE_SINCE_SETTING
+from backend.skills.base import (
+    BaseSkill, SearchResult, SubmitOutcome, finish_search_run, parse_arr_date,
+    release_date, submit_candidates,
+)
+
+WANTED_PATH = "/api/v3/wanted/missing"
+
+# newest_first / oldest_first / smart read the whole list and sort it here.
+# *arr's server-side sorting (the sort key parameter) is deliberately not used:
+# it drops records without the sort field (specials, films without a physical
+# date — see 8a1a912, c68178e).
+ORDERED_PAGE_SIZE = 1000
+ORDERED_MAX_PAGES = 100
+
+# random: at most this many pages per run, so a mostly searched backlog does
+# not mean reading the whole list every interval (A-L3).
+RANDOM_PAGE_BUDGET = 10
+
+RATIO_THRESHOLD = 0.5
+CHECK_CHUNK = 1000
+
+
+@dataclass
+class _Stats:
+    total: int = 0
+    pages: int = 0
+    examined: int = 0
+    skipped_file: int = 0
+    skipped_window: int = 0
+    skipped_cache: int = 0
+    truncated: bool = False
+    notes: list = field(default_factory=list)
+
+    def describe(self) -> str:
+        return (
+            f"checked {self.examined} of {self.total} missing item(s) on {self.pages} page(s): "
+            f"{self.skipped_cache} already searched, {self.skipped_window} inside the release "
+            f"window, {self.skipped_file} with a file"
+        )
 
 
 class SearchMissingSkill(BaseSkill):
     name = "search_missing"
 
+    # 50 % recent, 30 % random, 20 % oldest — repeated over the whole list.
+    SMART_PATTERN = (0, 0, 0, 0, 0, 1, 1, 1, 2, 2)
+
     def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
         run_id = db.history.start_run(cfg["id"], cfg["name"], self.name)
         wanted_count = 0
-        triggered_count = 0
+        outcome = SubmitOutcome()
 
         try:
-            per_run = cfg.get("missing_per_run", 5)
-            search_order = cfg.get("search_order", "random")
-            missing_mode = cfg.get("missing_mode", "episode")
-            delay = cfg.get("seconds_between_actions", 2)
-
-            # Fetch a larger pool so random order picks from a broad set,
-            # not just the same top-N items every run.
-            fetch_size = min(per_run * 10, 100) if search_order == "random" else per_run * 2
-
-            params = {
-                "pageSize": fetch_size,
-                "page": 1,
-                "monitored": "true",
-            }
-
-            # For random order: probe for total so we can pick a random page and
-            # reach items beyond the first page — true rotation across the full backlog.
-            max_page = 1
-            if search_order == "random":
-                try:
-                    probe = agent.http_get("/api/v3/wanted/missing", params={**params, "pageSize": 1})
-                    total_available = probe.get("totalRecords", 0)
-                    if total_available > fetch_size:
-                        max_page = -(-total_available // fetch_size)  # ceil division
-                        if max_page >= 2:
-                            params["page"] = random.randint(1, max_page)
-                except Exception:
-                    pass
-
-            agent.log("info", self.name, f"Searching for missing content (pool={fetch_size}, page={params['page']}, per_run={per_run})...")
-
-            resp = agent.http_get("/api/v3/wanted/missing", params=params)
-            records = resp.get("records", [])
-            total = resp.get("totalRecords", 0)
-
-            if not records:
-                agent.log("info", self.name, "No missing content found")
-                db.history.finish_run(run_id, 0, 0, "success")
-                agent.state["last_wanted"] = 0
-                agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            per_run = int(cfg.get("missing_per_run", 5) or 0)
+            if per_run <= 0:
+                agent.log("info", self.name, "Missing per run is 0 — nothing to do")
+                finish_search_run(self.name, agent, run_id, 0, outcome)
                 return
 
-            # Filter: hours_after_release (skipped for force runs)
-            hours = cfg.get("hours_after_release", 9)
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours) if (not force and hours > 0) else None
-            if cutoff is not None:
-                filtered = []
-                for r in records:
-                    date_str = r.get("airDateUtc") or r.get("physicalRelease") or r.get("inCinemas")
-                    if date_str:
-                        try:
-                            released = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                            if released <= cutoff:
-                                filtered.append(r)
-                        except (ValueError, TypeError):
-                            filtered.append(r)
-                    else:
-                        filtered.append(r)
-                records = filtered
+            order = cfg.get("search_order", "random")
+            mode = cfg.get("missing_mode", "episode")
+            hours = int(cfg.get("hours_after_release", 9) or 0)
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=hours)
+                if (not force and hours > 0) else None
+            )
 
-            if not records:
-                agent.log("info", self.name, f"All results within hours_after_release={hours}h window")
-                db.history.finish_run(run_id, 0, 0, "success")
-                agent.state["last_wanted"] = 0
-                agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                return
-
-            # Apply search_order to the full pool
-            records = self._apply_order(records, search_order, cfg["type"])
-
-            # Filter already-searched items from cache, then take per_run.
-            # Force runs bypass the DB cache but still deduplicate within this run.
-            skipped_file = 0
-            skipped_cache = 0
-            candidates = []
-            seen_keys: set = set()  # dedup within this run (same season/series key)
-            for record in records:
-                if record.get("hasFile"):
-                    skipped_file += 1
-                    continue
-                # Use hierarchical keys for DB check: covers episode, season, and series level.
-                check_keys = self._check_keys(cfg["type"], record, missing_mode)
-                if not force and check_keys and db.searched.exists_any(cfg["id"], check_keys, cfg.get("retry_hours", 0)):
-                    skipped_cache += 1
-                    continue
-                # Use the broad intent key for within-run dedup
-                # (prevents duplicate season/series searches within the same run).
-                dedup_key = self._cache_key(cfg["type"], record, missing_mode)
-                if dedup_key and dedup_key in seen_keys:
-                    continue
-                candidates.append(record)
-                if dedup_key:
-                    seen_keys.add(dedup_key)
-                if len(candidates) >= per_run:
-                    break
-
-            # Top-up: if not enough candidates from the first page, try more random pages
-            if search_order == "random" and len(candidates) < per_run and max_page > 1:
-                tried_pages = {params["page"]}
-                for _ in range(max_page - 1):
-                    if len(candidates) >= per_run:
-                        break
-                    remaining = [p for p in range(1, max_page + 1) if p not in tried_pages]
-                    if not remaining:
-                        break
-                    params["page"] = random.choice(remaining)
-                    tried_pages.add(params["page"])
-                    try:
-                        extra_resp = agent.http_get("/api/v3/wanted/missing", params=params)
-                        extra_records = self._apply_order(extra_resp.get("records", []), search_order, cfg["type"])
-                        for record in extra_records:
-                            if len(candidates) >= per_run:
-                                break
-                            if record.get("hasFile"):
-                                continue
-                            if cutoff is not None:
-                                date_str = record.get("airDateUtc") or record.get("physicalRelease") or record.get("inCinemas")
-                                if date_str:
-                                    try:
-                                        released = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                                        if released > cutoff:
-                                            continue
-                                    except (ValueError, TypeError):
-                                        pass
-                            check_keys = self._check_keys(cfg["type"], record, missing_mode)
-                            if not force and check_keys and db.searched.exists_any(cfg["id"], check_keys, cfg.get("retry_hours", 0)):
-                                continue
-                            dedup_key = self._cache_key(cfg["type"], record, missing_mode)
-                            if dedup_key and dedup_key in seen_keys:
-                                continue
-                            candidates.append(record)
-                            if dedup_key:
-                                seen_keys.add(dedup_key)
-                    except Exception:
-                        break
-
+            agent.log("info", self.name,
+                      f"Searching for missing content (order={order}, per_run={per_run})...")
+            if order == "random":
+                candidates, stats = self._collect_random(agent, cfg, per_run, mode, cutoff, force)
+            else:
+                candidates, stats = self._collect_ordered(agent, cfg, per_run, mode, order, cutoff, force)
+            if stats.truncated:
+                stats.notes.append(
+                    f"only the first {ORDERED_MAX_PAGES * ORDERED_PAGE_SIZE} missing items were considered"
+                )
             wanted_count = len(candidates)
-
-            if skipped_file:
-                agent.log("debug", self.name, f"Skipped {skipped_file} items that already have a file")
-            if skipped_cache:
-                agent.log("debug", self.name, f"Skipped {skipped_cache} already-searched items from pool of {len(records)}")
+            agent.log("debug", self.name, stats.describe())
 
             if not candidates:
-                skipped = skipped_file + skipped_cache
-                agent.log("info", self.name, f"All {skipped} items in pool already searched or exist — nothing to do (total missing: {total})")
-                db.history.finish_run(run_id, 0, 0, "success")
-                agent.state["last_wanted"] = 0
-                agent.state["last_triggered"] = 0
-                agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                agent.log("info", self.name, f"Nothing to search — {stats.describe()}")
+                finish_search_run(self.name, agent, run_id, 0, outcome, stats.notes)
                 return
 
-            # Lazy series title lookup for Sonarr — only fetch the specific series
-            # whose titles are missing from the wanted/missing response (typically 0–5),
-            # instead of pre-fetching the entire library which is slow for large instances.
-            series_lookup: dict[int, str] = {}
-            if cfg["type"] == "sonarr":
-                needed = {
-                    r.get("seriesId") for r in candidates
-                    if r.get("seriesId")
-                    and not (r.get("series") or {}).get("title", "")
-                    and not r.get("seriesTitle", "")
-                }
-                for sid in needed:
-                    try:
-                        s = agent.http_get(f"/api/v3/series/{sid}")
-                        series_lookup[sid] = s.get("title", "")
-                    except Exception:
-                        pass
-
-            # Execute searches respecting rate cap
-            for record in candidates:
-                if not agent.check_rate_cap():
-                    agent.log("warn", self.name, "Rate cap reached — stopping run")
-                    break
-
-                result = self._trigger_search(agent, cfg, record, missing_mode, series_lookup)
-                if result.ok:
-                    triggered_count += 1
-                    agent.record_action()
-                    db.history.insert_item(
-                        run_id,
-                        result.title,
-                        result.arr_id,
-                        result.item_type,
-                        cache_key=result.cache_key,
-                        command_id=result.command_id,
-                    )
-                    if result.cache_key:
-                        db.searched.add(cfg["id"], result.cache_key, result.title, result.item_type)
-
-                if delay > 0 and record is not candidates[-1]:
-                    time.sleep(delay)
-
+            series_lookup = self._series_lookup(agent, cfg, candidates)
+            delay = cfg.get("seconds_between_actions", 2) or 0
+            outcome = submit_candidates(
+                self.name, agent, run_id, candidates,
+                lambda record: self._trigger_search(agent, cfg, record, mode, series_lookup),
+                delay,
+            )
             agent.log(
                 "info", self.name,
-                f"Done — candidates: {wanted_count}, triggered: {triggered_count} (total missing: {total})",
+                f"Done — candidates: {wanted_count}, triggered: {outcome.triggered}, "
+                f"failed: {len(outcome.errors)} (total missing: {stats.total})",
             )
-            db.history.finish_run(run_id, wanted_count, triggered_count, "success")
-            agent.state["last_wanted"] = wanted_count
-            agent.state["last_triggered"] = triggered_count
-            agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            finish_search_run(self.name, agent, run_id, wanted_count, outcome, stats.notes)
 
         except Exception as exc:
             agent.log("error", self.name, f"Search failed: {exc}")
-            db.history.finish_run(run_id, wanted_count, triggered_count, "error", str(exc))
+            db.history.finish_run(run_id, wanted_count, outcome.triggered, "error", str(exc))
+
+    # ── Collecting candidates ────────────────────────────────────────────────
+
+    def _collect_random(self, agent, cfg, per_run, mode, cutoff, force):
+        stats = _Stats()
+        page_size = min(max(per_run * 10, 50), 250)
+        probe = agent.http_get(WANTED_PATH, params={"page": 1, "pageSize": 1, "monitored": "true"})
+        stats.total = int(probe.get("totalRecords", 0) or 0)
+
+        pages = list(range(1, max(1, math.ceil(stats.total / page_size)) + 1))
+        random.shuffle(pages)
+        budget = max(RANDOM_PAGE_BUDGET, math.ceil(per_run * 4 / page_size))
+
+        candidates: list = []
+        seen: set = set()
+        for page in pages[:budget]:
+            if len(candidates) >= per_run or agent.stop_requested():
+                break
+            try:
+                resp = agent.http_get(
+                    WANTED_PATH, params={"page": page, "pageSize": page_size, "monitored": "true"}
+                )
+            except Exception as exc:
+                if stats.pages == 0:
+                    raise
+                stats.notes.append(f"page {page} could not be loaded: {exc}")
+                break
+            stats.pages += 1
+            records = list(resp.get("records") or [])
+            random.shuffle(records)
+            self._take_eligible(cfg, records, mode, cutoff, force, per_run, candidates, seen, stats)
+        return candidates, stats
+
+    def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force):
+        """Read the whole wanted list, sort it here, then walk it in order (A3/A4)."""
+        stats = _Stats()
+        records: list = []
+        seen_ids: set = set()
+        page = 1
+        while True:
+            if page > ORDERED_MAX_PAGES:
+                stats.truncated = True
+                break
+            if agent.stop_requested():
+                break
+            resp = agent.http_get(
+                WANTED_PATH, params={"page": page, "pageSize": ORDERED_PAGE_SIZE, "monitored": "true"}
+            )
+            batch = resp.get("records") or []
+            stats.total = int(resp.get("totalRecords", 0) or 0)
+            stats.pages += 1
+            for record in batch:
+                record_id = record.get("id")
+                if record_id in seen_ids:
+                    continue
+                seen_ids.add(record_id)
+                records.append(record)
+            if not batch or page * ORDERED_PAGE_SIZE >= stats.total:
+                break
+            page += 1
+
+        ordered = self._apply_order(records, order, cfg["type"])
+        candidates: list = []
+        self._take_eligible(cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats)
+        return candidates, stats
+
+    def _take_eligible(self, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats):
+        """Append records, in the given order, that are missing, released and
+        not in the cache, until per_run candidates exist. The cache is asked
+        once per chunk, not once per record (A-L3)."""
+        arr_type = cfg["type"]
+        retry_hours = int(cfg.get("retry_hours", 0) or 0)
+        # For season/series keys: a search inside the release window proves
+        # nothing about the episode (A9/B6). Force runs skip the cache anyway.
+        window = timedelta(hours=max(0, int(cfg.get("hours_after_release", 9) or 0)))
+        since = None if force else self._ancestor_rule_since()
+        for start in range(0, len(records), CHECK_CHUNK):
+            if len(candidates) >= per_run:
+                return
+            pool = []
+            for record in records[start:start + CHECK_CHUNK]:
+                stats.examined += 1
+                if record.get("hasFile"):
+                    stats.skipped_file += 1
+                    continue
+                if cutoff is not None:
+                    released = release_date(record, arr_type)
+                    if released is not None and released > cutoff:
+                        stats.skipped_window += 1
+                        continue
+                pool.append(record)
+
+            hits = {} if force else db.searched.lookup_many(
+                cfg["id"], [key for r in pool for key in self._check_keys(arr_type, r)], retry_hours
+            )
+            for record in pool:
+                if len(candidates) >= per_run:
+                    return
+                if not force and self._blocked(arr_type, record, hits, window, since):
+                    stats.skipped_cache += 1
+                    continue
+                dedup = self._cache_key(arr_type, record, mode)
+                if dedup in seen:
+                    continue
+                seen.add(dedup)
+                candidates.append(record)
+
+    # ── Cache keys ───────────────────────────────────────────────────────────
 
     def _cache_key(self, arr_type: str, record: dict, mode: str) -> str:
-        """Broad intent key used for within-run deduplication (seen_keys set).
-        Prevents triggering duplicate season/series searches in the same run."""
+        """Broad intent key for within-run deduplication, so one run does not
+        send the same season or series search twice."""
         if arr_type == "radarr":
             return f"mov:{record.get('id')}"
-        if mode == "episode":
-            return f"ep:{record.get('id')}"
-        elif mode == "season_packs":
+        if mode in ("season_packs", "smart"):
             return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
-        elif mode == "show_batch":
+        if mode == "show_batch":
             return f"ser:{record.get('seriesId')}"
-        elif mode == "smart":
-            # Use season-level key so multiple episodes from the same season don't each
-            # trigger a separate SeasonSearch within the same run.
-            return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
         return f"ep:{record.get('id')}"
 
-    def _check_keys(self, arr_type: str, record: dict, mode: str) -> list:
-        """Hierarchical cache keys for cross-run DB lookup.
-        Checks narrow (episode) → broad (season/series) so that a past SeasonSearch
-        blocks individual episode candidates and a past EpisodeSearch blocks that
-        specific episode — without incorrectly blocking the whole season."""
+    def _check_keys(self, arr_type: str, record: dict) -> list:
+        """Every cache key that can cover this record — independent of the
+        current mode, so a mode switch does not bypass earlier season or
+        series searches (A9)."""
         if arr_type == "radarr":
             return [f"mov:{record.get('id')}"]
+        keys = [f"ep:{record.get('id')}"]
         series_id = record.get("seriesId")
-        season = record.get("seasonNumber")
-        ep_id = record.get("id")
-        if mode == "episode":
-            return [f"ep:{ep_id}"]
-        elif mode == "season_packs":
-            return [f"sea:{series_id}:{season}", f"ep:{ep_id}"]
-        elif mode == "show_batch":
-            return [f"ser:{series_id}", f"sea:{series_id}:{season}", f"ep:{ep_id}"]
-        elif mode == "smart":
-            return [f"sea:{series_id}:{season}", f"ep:{ep_id}"]
-        return [f"ep:{ep_id}"]
+        if series_id is not None:
+            keys.append(f"ser:{series_id}")
+            if record.get("seasonNumber") is not None:
+                keys.append(f"sea:{series_id}:{record.get('seasonNumber')}")
+        return keys
+
+    @staticmethod
+    def _ancestor_rule_since() -> datetime | None:
+        """First start of 0.8.0 (aware UTC), written once by init_db()."""
+        value = db.app_settings.get_value(ANCESTOR_RULE_SINCE_SETTING)
+        if not value:
+            return None
+        try:
+            return db.searched.local_to_utc(value)
+        except ValueError:
+            return None
+
+    def _blocked(self, arr_type: str, record: dict, hits: dict,
+                 window: timedelta = timedelta(0), since: datetime | None = None) -> bool:
+        """The record's own key always blocks.
+
+        A season or series key blocks only when that search ran after the
+        episode aired *and* after its release window (hours_after_release):
+        a season search from last month, or one a few hours after the air
+        date while indexers do not have it yet, cannot have found it (A8/B6).
+        Keys cached before `since` (first start of 0.8.0) never block an
+        episode: they come from show_batch runs under the old rules and would
+        lock most of the live backlog again (A9). Without an air date a
+        broader key from after `since` blocks, as before."""
+        own = f"mov:{record.get('id')}" if arr_type == "radarr" else f"ep:{record.get('id')}"
+        if own in hits:
+            return True
+        if arr_type == "radarr":
+            return False
+        aired = release_date(record, arr_type)
+        for key in self._check_keys(arr_type, record):
+            if key == own or key not in hits:
+                continue
+            searched = hits[key]
+            if since is not None and searched < since:
+                continue
+            if aired is None or searched >= aired + window:
+                return True
+        return False
+
+    # ── Ordering ─────────────────────────────────────────────────────────────
 
     def _apply_order(self, records: list, order: str, arr_type: str) -> list:
-        date_key = "airDateUtc" if arr_type == "sonarr" else "physicalRelease"
+        undated = datetime.min.replace(tzinfo=timezone.utc)
 
-        if order == "random":
-            random.shuffle(records)
+        def when(record):
+            return release_date(record, arr_type) or undated
 
-        elif order == "newest_first":
-            records.sort(
-                key=lambda r: r.get(date_key) or "",
-                reverse=True,
-            )
+        if order == "newest_first":
+            return sorted(records, key=when, reverse=True)
+        if order == "oldest_first":
+            return sorted(records, key=when)
+        if order == "smart":
+            return self._smart_order(records, when)
+        shuffled = list(records)
+        random.shuffle(shuffled)
+        return shuffled
 
-        elif order == "oldest_first":
-            records.sort(
-                key=lambda r: r.get(date_key) or "",
-                reverse=False,
-            )
+    def _smart_order(self, records: list, when) -> list:
+        """Order the whole list so that, from the front, half the picks are
+        recent (last 30 days), 30 % random and 20 % the oldest — without
+        dropping anything (A4)."""
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        recent = [r for r in records if when(r) >= recent_cutoff]
+        rest = [r for r in records if when(r) < recent_cutoff]
+        random.shuffle(recent)
+        shuffled_rest = list(rest)
+        random.shuffle(shuffled_rest)
+        queues = [recent, shuffled_rest, sorted(rest, key=when)]
+        positions = [0, 0, 0]
+        used: set = set()
 
-        elif order == "smart":
-            # 50% recent (last 30d), 30% random, 20% oldest
-            now = datetime.now(timezone.utc)
-            cutoff_30d = now - timedelta(days=30)
-            recent, rest = [], []
-            for r in records:
-                date_str = r.get(date_key) or ""
-                try:
-                    d = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                    if d >= cutoff_30d:
-                        recent.append(r)
-                    else:
-                        rest.append(r)
-                except ValueError:
-                    rest.append(r)
+        def draw(q):
+            queue = queues[q]
+            while positions[q] < len(queue):
+                record = queue[positions[q]]
+                positions[q] += 1
+                if id(record) not in used:
+                    used.add(id(record))
+                    return record
+            return None
 
-            random.shuffle(recent)
-            random.shuffle(rest)
+        ordered: list = []
+        while len(ordered) < len(records):
+            for q in self.SMART_PATTERN:
+                # An empty queue hands its turn to the next one that has records left.
+                record = draw(q)
+                for fallback in (0, 1, 2):
+                    if record is not None:
+                        break
+                    record = draw(fallback)
+                if record is None:
+                    return ordered
+                ordered.append(record)
+        return ordered
 
-            # Build result: recent first, then random rest, then oldest rest
-            rest_oldest = sorted(rest, key=lambda r: r.get(date_key) or "")
+    # ── Triggering ───────────────────────────────────────────────────────────
 
-            n = len(records)
-            n_recent = max(1, int(n * 0.5))
-            n_random = max(1, int(n * 0.3))
-            n_oldest = max(1, int(n * 0.2))
+    def _series_lookup(self, agent, cfg, candidates) -> dict[int, str]:
+        """Fetch titles only for series the wanted list did not name."""
+        lookup: dict[int, str] = {}
+        if cfg["type"] != "sonarr":
+            return lookup
+        needed = {
+            r.get("seriesId") for r in candidates
+            if r.get("seriesId")
+            and not (r.get("series") or {}).get("title", "")
+            and not r.get("seriesTitle", "")
+        }
+        for series_id in needed:
+            try:
+                lookup[series_id] = agent.http_get(f"/api/v3/series/{series_id}").get("title", "")
+            except Exception:
+                pass
+        return lookup
 
-            result = recent[:n_recent] + rest[:n_random] + rest_oldest[:n_oldest]
+    def _series_title(self, record: dict, series_lookup: dict) -> str:
+        series_id = record.get("seriesId")
+        title = (record.get("series") or {}).get("title", "") or record.get("seriesTitle", "")
+        if not title and series_id and series_lookup:
+            title = series_lookup.get(series_id, f"Series #{series_id}")
+        return title
 
-            # Deduplicate by record ID (same record can appear in rest and rest_oldest)
-            seen: set = set()
-            records = []
-            for r in result:
-                rec_id = r.get("id")
-                if rec_id not in seen:
-                    seen.add(rec_id)
-                    records.append(r)
+    def _label(self, arr_type: str, record: dict, series_lookup: dict) -> str:
+        if arr_type == "radarr":
+            title = record.get("title") or f"Movie #{record.get('id')}"
+            year = record.get("year", "")
+            return f"{title} ({year})" if year else title
+        series_title = self._series_title(record, series_lookup)
+        episode_title = record.get("title", "")
+        if series_title:
+            return (f"{series_title} S{(record.get('seasonNumber') or 0):02d}"
+                    f"E{(record.get('episodeNumber') or 0):02d} – {episode_title}")
+        return episode_title or f"Episode #{record.get('id')}"
 
-        return records
-
-    def _trigger_search(self, agent, cfg: dict, record: dict, missing_mode: str, series_lookup: dict | None = None) -> SearchResult:
+    def _trigger_search(self, agent, cfg, record, mode, series_lookup) -> SearchResult:
+        arr_type = cfg["type"]
         try:
-            if cfg["type"] == "sonarr":
-                return self._sonarr_search(agent, record, missing_mode, series_lookup or {})
-            else:
-                return self._radarr_search(agent, record)
+            if arr_type == "sonarr":
+                return self._sonarr_search(agent, record, mode, series_lookup or {})
+            return self._radarr_search(agent, record)
         except Exception as exc:
-            agent.log("warn", self.name, f"Failed to trigger search: {exc}")
-            return SearchResult(False)
+            return SearchResult(
+                False, self._label(arr_type, record, series_lookup or {}),
+                "movie" if arr_type == "radarr" else "episode", "", record.get("id"), None, str(exc),
+            )
 
-    def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict | None = None) -> SearchResult:
-        """The cache_key and arr_id reflect the actual command issued, not the intent
-        mode, so subsequent runs check at the correct granularity and the history
-        entry points at the entity *arr was really asked about."""
+    def _episodes(self, agent, series_id, season_number=None):
+        params = {"seriesId": series_id, "includeImages": "false"}
+        if season_number is not None:
+            params["seasonNumber"] = season_number
+        try:
+            episodes = agent.http_get("/api/v3/episode", params=params)
+        except Exception as exc:
+            agent.log("debug", self.name, f"Episode list for series {series_id} failed, using EpisodeSearch: {exc}")
+            return None
+        return episodes if isinstance(episodes, list) else None
+
+    @staticmethod
+    def _density(episodes, season=None, exclude_specials=False) -> tuple[int, int]:
+        """(missing, relevant) over monitored episodes that have already aired.
+        Unmonitored and future episodes say nothing about whether a pack is
+        worth searching (A8)."""
+        now = datetime.now(timezone.utc)
+        relevant = []
+        for e in episodes or []:
+            if not e.get("monitored"):
+                continue
+            if season is not None and e.get("seasonNumber") != season:
+                continue
+            if exclude_specials and e.get("seasonNumber") == 0:
+                continue
+            aired = parse_arr_date(e.get("airDateUtc"))
+            if aired is None or aired > now:
+                continue
+            relevant.append(e)
+        missing = sum(1 for e in relevant if not e.get("hasFile"))
+        return missing, len(relevant)
+
+    @staticmethod
+    def _dense(missing: int, total: int) -> bool:
+        return total > 0 and missing / total >= RATIO_THRESHOLD
+
+    def _sonarr_search(self, agent, record: dict, mode: str, series_lookup: dict) -> SearchResult:
+        """cache_key and arr_id describe the command actually sent, not the
+        mode's intent, so later runs check at the right level."""
         episode_id = record.get("id")
         series_id = record.get("seriesId")
         season_number = record.get("seasonNumber")
-        series_title = (record.get("series") or {}).get("title", "") or record.get("seriesTitle", "")
-        # Fall back to pre-fetched series lookup if API didn't include nested series data
-        if not series_title and series_id and series_lookup:
-            series_title = series_lookup.get(series_id, f"Series #{series_id}")
-        ep_title = record.get("title", "")
+        series_title = self._series_title(record, series_lookup)
+        label = self._label("sonarr", record, series_lookup)
 
-        def _episode_label() -> str:
-            if series_title:
-                return f"{series_title} S{(season_number or 0):02d}E{record.get('episodeNumber', 0):02d} – {ep_title}"
-            return ep_title
+        if not episode_id:
+            return SearchResult(False, label, "episode", "", None, None, "record has no episode id")
 
-        def _fire_episode() -> SearchResult:
+        def fire_episode() -> SearchResult:
             resp = agent.http_post("/api/v3/command", {"name": "EpisodeSearch", "episodeIds": [episode_id]})
-            return SearchResult(True, _episode_label(), "episode", f"ep:{episode_id}", episode_id, resp.get("id"))
+            agent.log("debug", self.name, f"EpisodeSearch: {label}")
+            return SearchResult(True, label, "episode", f"ep:{episode_id}", episode_id, resp.get("id"))
 
-        def _fire_season() -> SearchResult:
+        def fire_season() -> SearchResult:
             resp = agent.http_post(
                 "/api/v3/command",
                 {"name": "SeasonSearch", "seriesId": series_id, "seasonNumber": season_number},
             )
-            label = f"{series_title} Season {season_number}"
-            return SearchResult(True, label, "season", f"sea:{series_id}:{season_number}", series_id, resp.get("id"))
+            title = f"{series_title} Season {season_number}"
+            agent.log("debug", self.name, f"SeasonSearch: {title}")
+            return SearchResult(True, title, "season", f"sea:{series_id}:{season_number}", series_id, resp.get("id"))
 
-        def _fire_series() -> SearchResult:
+        def fire_series() -> SearchResult:
             resp = agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
+            agent.log("debug", self.name, f"SeriesSearch: {series_title}")
             return SearchResult(True, series_title, "series", f"ser:{series_id}", series_id, resp.get("id"))
 
-        if mode == "episode" and episode_id:
-            result = _fire_episode()
-            agent.log("debug", self.name, f"EpisodeSearch: {result.title}")
-            return result
+        if mode in ("season_packs", "smart") and series_id is not None and season_number is not None:
+            missing, total = self._density(self._episodes(agent, series_id, season_number), season=season_number)
+            agent.log("debug", self.name,
+                      f"{mode}: {missing}/{total} aired monitored episodes of season {season_number} missing")
+            return fire_season() if self._dense(missing, total) else fire_episode()
 
-        elif mode == "season_packs" and series_id is not None and season_number is not None:
-            try:
-                eps = agent.http_get(f"/api/v3/episode?seriesId={series_id}&seasonNumber={season_number}&includeImages=false")
-                total_eps = len(eps) if isinstance(eps, list) else 0
-                missing_eps = sum(1 for e in (eps if isinstance(eps, list) else []) if not e.get("hasFile"))
-                ratio = missing_eps / total_eps if total_eps > 0 else 1.0
-                if ratio >= 0.5:
-                    agent.log("debug", self.name, f"SeasonSearch: {series_title} Season {season_number} (missing {missing_eps}/{total_eps} eps)")
-                    return _fire_season()
-                agent.log("debug", self.name, f"season_packs → EpisodeSearch (only {missing_eps}/{total_eps} eps missing)")
-                return _fire_episode()
-            except Exception as exc:
-                agent.log("debug", self.name, f"season_packs ratio check failed, falling back to EpisodeSearch: {exc}")
-                return _fire_episode()
+        if mode == "show_batch" and series_id is not None:
+            episodes = self._episodes(agent, series_id)
+            series_missing, series_total = self._density(episodes, exclude_specials=True)
+            if self._dense(series_missing, series_total):
+                return fire_series()
+            if season_number is not None:
+                season_missing, season_total = self._density(episodes, season=season_number)
+                if self._dense(season_missing, season_total):
+                    return fire_season()
+            return fire_episode()
 
-        elif mode == "show_batch" and series_id is not None:
-            try:
-                eps = agent.http_get(f"/api/v3/episode?seriesId={series_id}&includeImages=false")
-                eps_list = eps if isinstance(eps, list) else []
-                total_eps = len(eps_list)
-                missing_eps = sum(1 for e in eps_list if not e.get("hasFile"))
-                series_ratio = missing_eps / total_eps if total_eps > 0 else 1.0
-                if series_ratio >= 0.5:
-                    agent.log("debug", self.name, f"SeriesSearch: {series_title} (missing {missing_eps}/{total_eps} eps)")
-                    return _fire_series()
-                # Check season ratio using same data to avoid extra API call
-                sea_eps = [e for e in eps_list if e.get("seasonNumber") == season_number]
-                total_sea = len(sea_eps)
-                missing_sea = sum(1 for e in sea_eps if not e.get("hasFile"))
-                sea_ratio = missing_sea / total_sea if total_sea > 0 else 1.0
-                if sea_ratio >= 0.5 and season_number is not None:
-                    agent.log("debug", self.name, f"show_batch → SeasonSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
-                    return _fire_season()
-                agent.log("debug", self.name, f"show_batch → EpisodeSearch (series {missing_eps}/{total_eps}, season {missing_sea}/{total_sea})")
-                return _fire_episode()
-            except Exception as exc:
-                agent.log("debug", self.name, f"show_batch ratio check failed, falling back to EpisodeSearch: {exc}")
-                return _fire_episode()
-
-        elif mode == "smart" and series_id is not None and season_number is not None:
-            try:
-                eps = agent.http_get(f"/api/v3/episode?seriesId={series_id}&seasonNumber={season_number}&includeImages=false")
-                total_eps = len(eps) if isinstance(eps, list) else 0
-                missing_eps = sum(1 for e in (eps if isinstance(eps, list) else []) if not e.get("hasFile"))
-                ratio = missing_eps / total_eps if total_eps > 0 else 1.0
-
-                if ratio >= 0.5:
-                    agent.log("debug", self.name, f"Smart: SeasonSearch (missing {missing_eps}/{total_eps} eps)")
-                    return _fire_season()
-                agent.log("debug", self.name, f"Smart: EpisodeSearch (missing {missing_eps}/{total_eps} eps)")
-                return _fire_episode()
-            except Exception as exc:
-                agent.log("debug", self.name, f"Smart mode episode fetch failed, falling back to EpisodeSearch: {exc}")
-                return _fire_episode()
-
-        elif episode_id:
-            return _fire_episode()
-
-        return SearchResult(False)
+        return fire_episode()
 
     def _radarr_search(self, agent, record: dict) -> SearchResult:
         movie_id = record.get("id")
-        title = record.get("title", f"Movie #{movie_id}")
-        year = record.get("year", "")
-        label = f"{title} ({year})" if year else title
-        if movie_id:
-            resp = agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
-            agent.log("debug", self.name, f"MoviesSearch: {label}")
-            return SearchResult(True, label, "movie", f"mov:{movie_id}", movie_id, resp.get("id"))
-        return SearchResult(False)
+        label = self._label("radarr", record, {})
+        if not movie_id:
+            return SearchResult(False, label, "movie", "", None, None, "record has no movie id")
+        resp = agent.http_post("/api/v3/command", {"name": "MoviesSearch", "movieIds": [movie_id]})
+        agent.log("debug", self.name, f"MoviesSearch: {label}")
+        return SearchResult(True, label, "movie", f"mov:{movie_id}", movie_id, resp.get("id"))

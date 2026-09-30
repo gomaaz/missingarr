@@ -30,11 +30,18 @@ class HealthCheckSkill(BaseSkill):
             agent.state["connection_status"] = "offline"
 
         except requests.exceptions.HTTPError as exc:
-            status_code = exc.response.status_code if exc.response else 0
+            # Not `if exc.response`: Response.__bool__ is .ok, so every 4xx/5xx
+            # read as "no response" and a wrong API key showed up as HTTP 0 (A-L1).
+            status_code = exc.response.status_code if exc.response is not None else 0
             if status_code in (401, 403):
                 agent.log("error", self.name, "Invalid API key")
                 db.instances.update_status(cfg["id"], "error")
                 agent.state["connection_status"] = "error"
+            elif 300 <= status_code < 400:
+                agent.log("warn", self.name,
+                          f"HTTP {status_code} from *arr API — redirects are not followed, check the URL")
+                db.instances.update_status(cfg["id"], "offline")
+                agent.state["connection_status"] = "offline"
             else:
                 agent.log("warn", self.name, f"HTTP {status_code} from *arr API")
                 db.instances.update_status(cfg["id"], "offline")
