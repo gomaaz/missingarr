@@ -81,6 +81,77 @@ def test_trigger_reports_busy_unknown_and_started(db_path):
     wait_until(lambda: agent._get_skill("search_missing").calls == [True])
 
 
+def gate_config_reload(agent, gate):
+    """Hold every run of this agent in its config reload, i.e. before
+    _run_skill could take the skill lock itself, until the gate opens."""
+    reload = agent._load_fresh_config
+
+    def held():
+        gate.wait(5)
+        return reload()
+
+    agent._load_fresh_config = held
+    return agent
+
+
+def trigger_twice_at_once(trigger):
+    barrier = threading.Barrier(2)
+    results = []
+
+    def call():
+        barrier.wait(5)
+        results.append(trigger())
+
+    callers = [threading.Thread(target=call) for _ in range(2)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(5)
+    return sorted(results)
+
+
+def test_two_triggers_at_once_start_exactly_one_run(db_path):
+    agent = prepared_agent(make_instance())
+    gate = threading.Event()
+    gate_config_reload(agent, gate)
+    results = trigger_twice_at_once(lambda: agent.trigger_now("search_missing"))
+    gate.set()
+    assert results == sorted([TRIGGER_STARTED, TRIGGER_BUSY])
+    wait_until(lambda: agent._get_skill("search_missing").calls == [True])
+    wait_until(lambda: not agent.runtime.busy_skills())
+    assert agent._get_skill("search_missing").calls == [True]
+
+
+def test_two_force_runs_at_once_on_a_disabled_instance_start_exactly_one(db_path):
+    inst = make_instance(enabled=False)
+    orch = fake_orchestrator()
+    gate = threading.Event()
+    created = []
+    make_agent = orch._make_agent
+
+    def gated_agent(config):
+        agent = gate_config_reload(make_agent(config), gate)
+        created.append(agent)
+        return agent
+
+    orch._make_agent = gated_agent
+    results = trigger_twice_at_once(lambda: orch.trigger(inst["id"], "search_missing"))
+    gate.set()
+    assert results == sorted([TRIGGER_STARTED, TRIGGER_BUSY])
+    wait_until(lambda: inst["id"] not in orch._adhoc)
+    assert not orch._runtime(inst["id"]).busy_skills()
+    assert sorted(len(agent._get_skill("search_missing").calls) for agent in created) == [0, 1]
+
+
+def test_a_trigger_skipped_by_its_gate_frees_the_skill(db_path):
+    agent = prepared_agent(make_instance(search_missing_enabled=False))
+    assert agent.trigger_now("search_missing", force=False) == TRIGGER_STARTED
+    wait_until(lambda: not agent.runtime.busy_skills())
+    assert agent._get_skill("search_missing").calls == []
+    assert agent.trigger_now("search_missing") == TRIGGER_STARTED
+    wait_until(lambda: agent._get_skill("search_missing").calls == [True])
+
+
 def test_orchestrator_trigger_for_unknown_instance(db_path):
     assert fake_orchestrator().trigger(999, "search_missing") == TRIGGER_NOT_FOUND
 

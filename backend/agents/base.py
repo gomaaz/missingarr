@@ -241,7 +241,25 @@ class BaseAgent(ABC):
             self.config = fresh
         self._update_next_run()
 
-    def _run_skill(self, skill_name: str, force: bool = False):
+    def _run_skill(self, skill_name: str, force: bool = False, reserved: bool = False):
+        """Scheduler jobs and trigger_now land here.
+
+        reserved: trigger_now already holds the skill lock for this run. It
+        takes the lock before it answers "started"; a locked() check alone let
+        two quick triggers both pass, and one of the two runs was then dropped
+        here. The reserved lock is released on every path, early exits too.
+        """
+        lock = self.runtime.skill_lock(skill_name)
+        if not reserved:
+            self._gated_run(skill_name, force, lock)
+            return
+        try:
+            self._gated_run(skill_name, force, None)
+        finally:
+            lock.release()
+
+    def _gated_run(self, skill_name: str, force: bool, lock: Optional[threading.Lock]):
+        """lock: the skill lock to take, or None when the caller holds it."""
         skill = self._get_skill(skill_name)
         if not skill:
             return
@@ -274,8 +292,7 @@ class BaseAgent(ABC):
         # One run per skill at a time. A second request is dropped at once —
         # the API reports "busy" before it gets here (A11), so waiting would
         # only turn a double click into a second, repeated run.
-        lock = self.runtime.skill_lock(skill_name)
-        if not lock.acquire(blocking=False):
+        if lock is not None and not lock.acquire(blocking=False):
             self.log("warn", skill_name, "Already running — skipping duplicate trigger")
             return
 
@@ -293,7 +310,8 @@ class BaseAgent(ABC):
             if drives_display:
                 self.state["status"] = "error" if self._scheduler_failed else "scheduled"
                 self._update_next_run()
-            lock.release()
+            if lock is not None:
+                lock.release()
 
     def trigger_now(self, skill_name: str, force: bool = True,
                     on_done: Callable[["BaseAgent"], None] | None = None) -> str:
@@ -305,23 +323,30 @@ class BaseAgent(ABC):
         if not self._get_skill(skill_name):
             self.log("warn", "system", f"Trigger ignored — skill '{skill_name}' not registered on this agent")
             return TRIGGER_UNKNOWN_SKILL
-        if self.runtime.skill_lock(skill_name).locked():
+        # Reserve the lock here, in the caller: "started" must mean the run
+        # will happen. The thread hands it back when the run is over.
+        lock = self.runtime.skill_lock(skill_name)
+        if not lock.acquire(blocking=False):
             self.log("info", "system", f"Trigger for '{skill_name}' rejected — it is already running")
             return TRIGGER_BUSY
-        self.log("info", "system", f"{'Force' if force else 'Manual'} trigger received for '{skill_name}'")
 
         def run():
             try:
-                self._run_skill(skill_name, force)
+                self._run_skill(skill_name, force, reserved=True)
             finally:
                 if on_done is not None:
                     on_done(self)
 
-        threading.Thread(
-            target=run,
-            name=f"trigger-{self.config['id']}-{skill_name}",
-            daemon=True,
-        ).start()
+        try:
+            self.log("info", "system", f"{'Force' if force else 'Manual'} trigger received for '{skill_name}'")
+            threading.Thread(
+                target=run,
+                name=f"trigger-{self.config['id']}-{skill_name}",
+                daemon=True,
+            ).start()
+        except BaseException:
+            lock.release()
+            raise
         return TRIGGER_STARTED
 
     def _skill_lock(self, skill_name: str) -> threading.Lock:
