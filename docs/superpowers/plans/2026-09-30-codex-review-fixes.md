@@ -149,6 +149,8 @@ class InstanceRuntime:
     action_timestamps: deque            # time.monotonic() floats, aufsteigend
     skill_locks: dict[str, threading.Lock]
     skill_locks_guard: threading.Lock
+    unsaved_lock: threading.Lock        # Nachbesserung: schützt unsaved_submissions
+    unsaved_submissions: list           # skills.base.UnsavedSubmission; nur im Speicher, ein Neustart verliert sie
     def skill_lock(self, skill_name: str) -> threading.Lock: ...
     def busy_skills(self) -> list[str]: ...
 
@@ -166,6 +168,7 @@ class BaseAgent(ABC):
     def refresh_config(self) -> None: ...              # Konfig frisch aus DB, next_run_at neu
     def trigger_now(self, skill_name: str, force: bool = True,
                     on_done: Callable[["BaseAgent"], None] | None = None) -> str: ...  # TRIGGER_*; on_done nach Laufende im Trigger-Thread
+        # Nachbesserung: belegt die Skill-Sperre selbst, bevor es STARTED meldet; der Trigger-Thread gibt sie auf jedem Weg frei
     def reserve_action(self) -> float | None: ...      # Token oder None, wenn rate_cap erreicht
     def release_action(self, token: float) -> None: ...
     def get_rate_used(self) -> int: ...
@@ -266,6 +269,8 @@ def expire_stale_items(instance_id: int, hours: int = 24) -> int         # nur I
 def close_interrupted_runs() -> int
 def purge_old_runs(instance_id: int, days: int) -> int                   # 0, wenn days <= 0; nie running/pending
 def clear() -> dict                                                      # {"deleted": int, "kept_open": int}
+    # Nachbesserung: beide lassen auch beendete Läufe stehen, die noch ein Item mit command_status='submitted' haben
+    # (ein Lauf mit Speicherfehler endet als 'error' mit solchen Items); kept_open zählt sie mit
 def get_latest_run_verification(instance_id: int) -> dict | None        # nur beendete Läufe; Schlüssel id, status, triggered_count, verified_count
 def query_items_flat(instance_id: int | None = None, item_type: str | None = None, skill: str | None = None,
                      search: str | None = None, limit: int = 250, offset: int = 0) -> list[dict]
@@ -316,11 +321,27 @@ class SubmitOutcome:
     errors: list[str]            # "<Titel>: <Fehler>"
     stopped: bool = False
     rate_capped: bool = False
+    store_error: str = ""        # Nachbesserung: ein angenommener Befehl ließ sich nicht speichern, der Lauf endete dort
 
 def submit_candidates(skill_name: str, agent, run_id: int, candidates: list, fire, delay: float) -> SubmitOutcome
+    # Nachbesserung: bricht nach dem ersten Speicherfehler ab; der Befehl kommt als UnsavedSubmission in agent.runtime
 def finish_search_run(skill_name: str, agent, run_id: int, wanted: int, outcome: SubmitOutcome, notes=()) -> str
     # setzt finish_run + state last_wanted/last_triggered/last_verified=0 (+ last_sync außer bei "error"); gibt Status zurück
+    # Nachbesserung: store_error → Status "error", Meldung "Stopped: <store_error>" vorn im error_message
+
+# Nachbesserung (Speicherfehler nach angenommenem Befehl):
+@dataclass(frozen=True)
+class UnsavedSubmission:
+    run_id: int
+    result: SearchResult
+    sent_at: datetime            # aware UTC
+def store_unsaved_submissions(skill_name: str, agent, run_id: int) -> None
+    # am Anfang jedes Suchlaufs: speichert die Liste unter dem sendenden Lauf (gelöscht → unter run_id), hört beim ersten Fehler auf
+def unsaved_cache_keys(agent) -> dict[str, datetime]
+    # cache_key → sent_at der noch nicht gespeicherten Befehle mit command_id; sperren wie Cache-Einträge (außer bei force)
 ```
+
+`SearchMissingSkill` (Nachbesserung): `ORDERED_MAX_PAGES = 1000`. Die geordneten Modi lesen bis `totalRecords` oder zu einer leeren Seite; wird die Grenze erreicht, endet der Lauf als `error` („wanted list has more than … missing items“) statt einen Ausschnitt zu sortieren.
 
 ### P4 liefert (Welle 2)
 
@@ -10296,16 +10317,16 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 9. **`trigger` sagt „läuft schon“.** Läuft der Skill bereits, antwortet `POST /api/instances/<id>/trigger` mit `409` statt `200` (auch bei `force=false`; früher wurde der Aufruf mit `200` angenommen und still verworfen). Force wartet nicht mehr bis zu 90 s. Der dokumentierte curl-Ablauf bleibt sonst gleich; mit `curl -f` endet ein 409 mit Exit-Code 22.
 10. **401 statt Login-Seite.** `/api/*` ohne Sitzung antwortet `401 {"detail": "Not authenticated"}` statt mit einer Umleitung auf das Login-HTML. htmx-Aufrufe (auch der 5-s-Status der Dashboard-Karten) bekommen zusätzlich `HX-Redirect`, der Browser landet dann auf der Login-Seite und kommt danach auf die Seite zurück.
 11. **Fremde Seiten können nichts mehr auslösen.** POST/PUT/DELETE mit fremdem `Origin` oder `Sec-Fetch-Site` außer `same-origin`/`none` → `403`. Das trifft auch andere Dienste auf demselben Host (same-site). curl ohne diese Header ist nicht betroffen.
-12. **Strengere Listen-Parameter.** `limit` über dem Maximum oder negativ → `422` statt stiller Kappung (`/api/history` ≤ 200, `/api/history/items` ≤ 1000, `/api/searched` ≤ 500, `/api/activity` ≤ 500). `DELETE /api/history` antwortet mit `deleted`/`kept_open` und löscht offene Läufe nicht mehr.
+12. **Strengere Listen-Parameter.** `limit` über dem Maximum oder negativ → `422` statt stiller Kappung (`/api/history` ≤ 200, `/api/history/items` ≤ 1000, `/api/searched` ≤ 500, `/api/activity` ≤ 500). `DELETE /api/history` antwortet mit `deleted`/`kept_open` und löscht offene Läufe nicht mehr, auch keine beendeten, deren Befehle noch auf ihr Urteil warten.
 13. **Login-Sperre.** Nach 5 Fehlversuchen von einer Adresse 30 s Sperre, verdoppelt bis 15 min (`429`). Hinter einem Reverse-Proxy sehen alle Clients die Proxy-Adresse, siehe `FORWARDED_ALLOW_IPS`.
 14. **Keine Weiterleitungen zu *arr.** Antwortet Sonarr/Radarr (oder ein Proxy davor) mit 3xx, gilt die Instanz als offline mit Hinweis „redirect“ — dann die URL korrigieren.
-15. **Reihenfolgen `newest_first`/`oldest_first`/`smart` wirken jetzt über den ganzen Rückstand.** Dafür wird die ganze Wanted-Liste in Seiten zu 1000 gelesen (bis 100 Seiten). Bei großen Listen mehr GETs pro Lauf als bisher.
+15. **Reihenfolgen `newest_first`/`oldest_first`/`smart` wirken jetzt über den ganzen Rückstand.** Dafür wird die ganze Wanted-Liste in Seiten zu 1000 gelesen, bis zum Ende. Bei großen Listen mehr GETs pro Lauf als bisher. Erst bei mehr als 1.000.000 fehlenden Einträgen bricht der Lauf als Fehler ab.
 16. **`random` liest höchstens 10 Seiten pro Lauf.** Bei weitgehend abgearbeitetem Rückstand findet ein Lauf die letzten offenen Einträge unter Umständen erst in einem späteren Lauf; dafür nicht mehr die ganze Liste bei jedem Intervall.
 17. **Cache-Regel für Sonarr.** Jeder Modus prüft jetzt Folge, Staffel und Serie. Eine Staffel- oder Seriensuche sperrt eine Folge nur, wenn sie nach Ausstrahlung **plus** `hours_after_release` lief **und** nach dem ersten Start von 0.8.0 (`ancestor_rule_since`). Folgen: Die rund 6.700 `ser:`- und 730 `sea:`-Zeilen aus früherem `show_batch`/`smart` sperren im Live-Modus `episode` weiterhin nichts; Sonarr sucht den am 30.09.2026 wieder freigegebenen Rückstand weiter (Regressionstest `test_series_keys_from_before_the_update_do_not_block`). Wechselt jemand künftig von `show_batch`/`season_packs` nach `episode`, sperren die dann neuen Staffel-/Seriensuchen die Folgen, die sie abgedeckt haben. Eine Staffelsuche wenige Stunden nach der Ausstrahlung sperrt die neue Folge nicht mehr dauerhaft. Offene Frage 7.
 18. **Weniger Staffel-/Serienpakete.** Die Dichte zählt nur überwachte, bereits ausgestrahlte Folgen, die Serie ohne Staffel 0. Bei laufenden Staffeln gibt es öfter EpisodeSearch.
 19. **Radarr-Freigabedatum.** Ein Film gilt ab dem früheren von digitaler und physischer VÖ als erschienen, sonst ab Kinostart. Digital erschienene Filme werden früher gesucht; Filme, deren digitale VÖ noch kommt, später. `newest_first`/`oldest_first` sortieren danach.
 20. **Upgrades.** Alle Seiten der Cutoff-Liste sind erreichbar. Fällt jede Quelle aus, ist der Lauf `error` statt „keine Kandidaten“.
-21. **Ehrliche Laufstatus.** Scheitert jedes Einreichen, ist der Lauf `error`; scheitern einige, nennt der Lauf Zahl und ersten Fehler, die History zeigt diese Titel als „gescheitert“ ohne Befehls-ID, und die Verifikation ergibt höchstens „teilweise“.
+21. **Ehrliche Laufstatus.** Scheitert jedes Einreichen, ist der Lauf `error`; scheitern einige, nennt der Lauf Zahl und ersten Fehler, die History zeigt diese Titel als „gescheitert“ ohne Befehls-ID, und die Verifikation ergibt höchstens „teilweise“. Nimmt *arr einen Befehl an, aber die Datenbank kann ihn nicht speichern, endet der Lauf dort als `error` mit der Befehls-ID; der Titel wird nicht erneut gesucht, und der nächste Suchlauf speichert den Befehl nach. Diese Liste liegt nur im Speicher: nach einem Neustart kann der Titel einmal mehr gesucht werden.
 22. **Verifikation in der Ruhezeit.** `verify_commands` fragt auch während der Ruhezeit den Befehlsstatus ab (keine Suchen). `orphaned` zählt als gescheitert und gibt den Cache frei. Nach 24 h läuft ein Item erst ab, wenn *arr selbst geantwortet hat; 502/503/504 eines Proxys vor einem ausgefallenen *arr, 401/403 und 3xx zählen nicht als Antwort.
 23. **Abbrechen.** Deaktivieren oder Löschen einer Instanz bricht einen laufenden Suchlauf sofort ab (Radarr mit 600 Items endet nicht mehr erst nach ~20 min). Speichern im Formular bricht nicht ab.
 24. **Rate-Fenster bleibt erhalten.** Speichern oder Aus/An setzt den Zähler nicht mehr auf 0 (ein Container-Neustart weiterhin).
@@ -10322,7 +10343,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 
 | Risiko | Wirkung | Gegenmaßnahme im Plan |
 |---|---|---|
-| Große Wanted-Liste bei `newest_first`/`oldest_first`/`smart` | bis 100 GETs à 1000 Einträge pro Lauf, Last auf *arr, Lauf dauert länger | Obergrenze `ORDERED_MAX_PAGES`, Hinweis am Lauf bei Kappung; `random` (Standard) bleibt günstig. Welche Reihenfolge live läuft, ist unbekannt (offene Frage). |
+| Große Wanted-Liste bei `newest_first`/`oldest_first`/`smart` | ein GET à 1000 Einträge je angefangene 1000 fehlende Einträge pro Lauf, Last auf *arr, Lauf dauert länger | Notbremse `ORDERED_MAX_PAGES` (1000 Seiten), der Lauf endet dann als Fehler statt einen Ausschnitt zu sortieren; `random` (Standard) bleibt günstig. Welche Reihenfolge live läuft, ist unbekannt (offene Frage). |
 | Live-URL leitet um | Instanz nach Update „offline“ | klare Meldung „redirect … check the URL“; Abnahme nach Deployment: „Test“ auf beiden Karten |
 | `SECRET_KEY` im Live-Stack schon gesetzt | automatische Umschlüsselung beim ersten Start, danach Pflichtwert | Release-Notiz Punkt 5, offene Frage 1, Backup vor Update. Wiederherstellung bei verlorenem Wert (Container gestoppt, mit einem SQLite-Werkzeug auf dem Host): `DELETE FROM app_settings WHERE key IN ('key_source','secret_key_check'); UPDATE instances SET api_key='';`, dann ohne `SECRET_KEY` (oder mit neuem Wert) starten und alle API-Schlüssel im Formular neu eingeben. Ohne das `UPDATE` scheitert schon `orchestrator.start_all()` an `InvalidToken` für jede `enc:`-Zeile. Test `test_lost_secret_key_recovery_path_works` (P4.2), README-Hinweis (P6.4). |
 | Login-Sperre hinter Proxy | alle Clients teilen eine Adresse, 5 Fehlversuche sperren alle bis 15 min | Tailnet-Zugang, README nennt `FORWARDED_ALLOW_IPS` |
