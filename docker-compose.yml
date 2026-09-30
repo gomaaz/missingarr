@@ -10,10 +10,20 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - TZ=Europe/Berlin
-      # Authentication — always active
-      # If AUTH_PASSWORD is not set, a temporary password is printed in the logs
+      # The container starts as root only to hand ./data to this user, then drops to it.
+      - PUID=1000
+      - PGID=1000
+      # Authentication is always active. Plain text or a bcrypt hash ($2b$...; write every $ as $$ here).
+      # Without AUTH_PASSWORD a temporary password is printed in the logs.
       - AUTH_USERNAME=admin
       - AUTH_PASSWORD=
-      # Stable session key — generate with: python -c "import secrets; print(secrets.token_hex(32))"
+      # Optional. When set, the key that encrypts the *arr API keys and the session key are derived
+      # from it and no longer stored in the database. Once set it must never change or go missing —
+      # keep a copy. Generate: python -c "import secrets; print(secrets.token_hex(32))"
       - SECRET_KEY=
+      # true only when missingarr is reached over HTTPS, otherwise login stops working.
+      - COOKIE_SECURE=false
+      # Finished search runs older than this many days are deleted; 0 keeps them forever.
+      - HISTORY_RETENTION_DAYS=365
+    stop_grace_period: 15s
     restart: unless-stopped
