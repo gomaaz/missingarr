@@ -1,5 +1,8 @@
+import time
+
 from backend.skills.base import BaseSkill
 from backend import db
+from backend.config import settings
 from backend.verification import (
     map_command_status,
     aggregate_run_status,
@@ -21,6 +24,7 @@ class VerifyCommandsSkill(BaseSkill):
     MAX_PER_RUN = 50
     STALE_HOURS = 24
 
+    HOUSEKEEPING_INTERVAL_SECONDS = 3600
     # Per instance id, shared by every skill object: a reload creates new
     # skills, and the throttle must survive that.
     _last_housekeeping: dict[int, float] = {}
@@ -102,5 +106,28 @@ class VerifyCommandsSkill(BaseSkill):
             )
 
     def _housekeeping(self, agent) -> None:
-        """Filled in by Task P3.5."""
-        return None
+        """Hourly per instance: drop finished runs past HISTORY_RETENTION_DAYS
+        (B7) and cache rows outside the retry window (B6)."""
+        instance_id = agent.config["id"]
+        now = time.monotonic()
+        last = self._last_housekeeping.get(instance_id)
+        if last is not None and now - last < self.HOUSEKEEPING_INTERVAL_SECONDS:
+            return
+        self._last_housekeeping[instance_id] = now
+
+        try:
+            retry_hours = int(agent.config.get("retry_hours") or 0)
+            cache = db.searched.purge_expired(instance_id, retry_hours)
+            runs = db.history.purge_old_runs(instance_id, settings.history_retention_days)
+        except Exception as exc:
+            agent.log("warn", self.name, f"Housekeeping failed: {exc}")
+            return
+
+        if cache or runs:
+            agent.log(
+                "info",
+                self.name,
+                f"Housekeeping: removed {runs} run(s) older than "
+                f"{settings.history_retention_days} days and {cache} expired cache entr"
+                f"{'y' if cache == 1 else 'ies'}",
+            )
