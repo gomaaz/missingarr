@@ -1,9 +1,11 @@
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -11,30 +13,77 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from backend import db
 from backend.skills.base import BaseSkill
 
+logger = logging.getLogger("missingarr.agent")
+
+MIN_INTERVAL_MINUTES = 1
+MAX_INTERVAL_MINUTES = 10080
+UPGRADE_INTERVAL_FACTOR = 4
+
+TRIGGER_STARTED = "started"
+TRIGGER_BUSY = "busy"
+TRIGGER_UNKNOWN_SKILL = "unknown_skill"
+
+# Verification only reads command status from *arr; holding it back during
+# quiet hours just delayed verdicts and, near 24 h, lost them (B5).
+QUIET_HOURS_EXEMPT = ("health_check", "verify_commands")
+
+
+@dataclass
+class InstanceRuntime:
+    """Per-instance state that must outlive one agent object.
+
+    Saving the form, switching the instance off and on, and a force run on a
+    disabled instance each create a new agent. The rate window and the skill
+    locks belong to the instance: otherwise every save refilled the rate cap
+    (A-L4) and a run of the old agent could overlap one of the new agent.
+
+    One lock per skill. state["status"] is a display value shared by the
+    whole agent and must not double as a mutex — doing so let a running
+    search block the health check every single hour.
+    """
+
+    rate_lock: threading.Lock = field(default_factory=threading.Lock)
+    action_timestamps: deque = field(default_factory=deque)
+    skill_locks: dict = field(default_factory=dict)
+    skill_locks_guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def skill_lock(self, skill_name: str) -> threading.Lock:
+        with self.skill_locks_guard:
+            return self.skill_locks.setdefault(skill_name, threading.Lock())
+
+    def busy_skills(self) -> list[str]:
+        with self.skill_locks_guard:
+            return sorted(name for name, lock in self.skill_locks.items() if lock.locked())
+
+
+def wait_runtime_idle(runtime: InstanceRuntime, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while runtime.busy_skills():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
 
 class BaseAgent(ABC):
     HEALTH_CHECK_INTERVAL_MINUTES = 5
+    SEARCH_JOBS = (("missing", "search_missing_enabled"), ("upgrades", "search_upgrades_enabled"))
 
-    def __init__(self, config: dict, broadcaster=None):
+    def __init__(self, config: dict, broadcaster=None, runtime: InstanceRuntime | None = None):
         self.config = config
         self.broadcaster = broadcaster
         self._scheduler: Optional[BackgroundScheduler] = None
         self._stop_event = threading.Event()
+        self._abort_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
-
-        # One lock per skill. state["status"] is a display value shared by the
-        # whole agent and must not double as a mutex — doing so let a running
-        # search block the health check every single hour.
-        self._skill_locks: dict[str, threading.Lock] = {}
-        self._skill_locks_guard = threading.Lock()
-
-        # Rate-limit tracking: timestamps of recent actions
-        self._action_timestamps: deque = deque()
+        self._scheduler_failed = False
+        self.runtime = runtime if runtime is not None else InstanceRuntime()
 
         # Live state exposed to dashboard
+        # "starting" until _run has really started the scheduler: the card must
+        # not claim "scheduled" for an agent whose scheduler never ran (A1).
         self.state = {
-            "status": "scheduled",   # scheduled | running | off | quiet
+            "status": "starting",   # starting | scheduled | running | off | quiet | error
             "next_run_at": None,
             "last_wanted": 0,
             "last_triggered": 0,
@@ -52,6 +101,7 @@ class BaseAgent(ABC):
 
     def start(self):
         self._stop_event.clear()
+        self._abort_event.clear()
         self._skills = self.build_skills()
         self._thread = threading.Thread(
             target=self._run,
@@ -59,9 +109,14 @@ class BaseAgent(ABC):
             daemon=True,
         )
         self._thread.start()
-        self.log("info", "system", f"Agent started — {self.config['type'].upper()} '{self.config['name']}'")
+        # "Agent started" is logged by _run once the scheduler really runs (A1).
 
-    def stop(self):
+    def stop(self, abort_running: bool = True):
+        """Stop scheduling. With abort_running a search in progress ends at its
+        next check (A-L5); a reload passes False so saving the form does not
+        cut a long run short."""
+        if abort_running:
+            self._abort_event.set()
         self._stop_event.set()
         if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
@@ -71,82 +126,120 @@ class BaseAgent(ABC):
         self.state["next_run_at"] = None
         self.log("info", "system", f"Agent stopped — '{self.config['name']}'")
 
+    def request_abort(self) -> None:
+        """Only set the abort signal (throwaway force agents, tests)."""
+        self._abort_event.set()
+
+    def stop_requested(self) -> bool:
+        return self._abort_event.is_set()
+
+    def wait_or_stop(self, seconds: float) -> bool:
+        """Sleep between actions; returns True as soon as an abort is requested."""
+        if seconds <= 0:
+            return self._abort_event.is_set()
+        return self._abort_event.wait(seconds)
+
+    def wait_idle(self, timeout: float) -> bool:
+        """True once no skill of this instance holds its lock any more."""
+        return wait_runtime_idle(self.runtime, timeout)
+
     def reload(self, new_config: dict):
-        self.stop()
+        self.stop(abort_running=False)
         self.config = new_config
         self.state["connection_status"] = new_config.get("connection_status", "unknown")
         self.start()
 
-    def _run(self):
-        self._scheduler = BackgroundScheduler(
+    def _interval_minutes(self) -> int:
+        raw = self.config.get("interval_minutes", 15)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 15
+        clamped = min(max(value, MIN_INTERVAL_MINUTES), MAX_INTERVAL_MINUTES)
+        if clamped != value:
+            self.log(
+                "warn", "system",
+                f"interval_minutes={raw} is outside {MIN_INTERVAL_MINUTES}..{MAX_INTERVAL_MINUTES} "
+                f"— using {clamped}",
+            )
+        return clamped
+
+    def _build_scheduler(self) -> BackgroundScheduler:
+        scheduler = BackgroundScheduler(
             timezone="UTC",
             job_defaults={"misfire_grace_time": 60, "coalesce": True},
         )
+        instance_id = self.config["id"]
+        interval = self._interval_minutes()
+        upgrade_interval = interval * UPGRADE_INTERVAL_FACTOR
+        now = datetime.now(timezone.utc)
 
-        cfg = self.config
-        interval = cfg.get("interval_minutes", 15)
-
-        # Register missing search job
-        if cfg.get("search_missing_enabled") and self._get_skill("search_missing"):
-            self._scheduler.add_job(
-                self._run_skill,
-                "interval",
-                minutes=interval,
-                args=["search_missing"],
-                id=f"missing_{cfg['id']}",
-                next_run_time=None,  # don't run immediately
-            )
-            # Schedule first run after interval
-            first_run = datetime.now(timezone.utc) + timedelta(minutes=interval)
-            self.state["next_run_at"] = first_run.isoformat()
-            self._scheduler.reschedule_job(
-                f"missing_{cfg['id']}",
-                trigger="interval",
-                minutes=interval,
-                start_date=first_run,
-            )
-
-        # Register upgrades job (separate interval)
-        if cfg.get("search_upgrades_enabled") and self._get_skill("search_upgrades"):
-            upgrade_interval = cfg.get("interval_minutes", 15) * 4  # upgrades less frequent
-            self._scheduler.add_job(
-                self._run_skill,
-                "interval",
-                minutes=upgrade_interval,
-                args=["search_upgrades"],
-                id=f"upgrades_{cfg['id']}",
-                next_run_time=datetime.now(timezone.utc) + timedelta(minutes=upgrade_interval),
-            )
-
-        # Health check every 5 minutes
-        self._scheduler.add_job(
-            self._run_skill,
-            "interval",
-            minutes=self.HEALTH_CHECK_INTERVAL_MINUTES,
-            args=["health_check"],
-            id=f"health_{cfg['id']}",
-            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+        # Both search jobs are always registered and _run_skill gates them on
+        # the enable flag it re-reads from the database. Registering only the
+        # enabled ones meant a skill switched on from the card never ran (A2).
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=interval,
+            start_date=now + timedelta(minutes=interval),
+            args=["search_missing"], id=f"missing_{instance_id}",
         )
-
-        # Verification every 2 minutes. Runs regardless of the search-enabled
-        # flags: entries submitted before a skill was switched off would stay
-        # unresolved forever otherwise.
-        self._scheduler.add_job(
-            self._run_skill,
-            "interval",
-            minutes=2,
-            args=["verify_commands"],
-            id=f"verify_{cfg['id']}",
-            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=upgrade_interval,
+            start_date=now + timedelta(minutes=upgrade_interval),
+            args=["search_upgrades"], id=f"upgrades_{instance_id}",
         )
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=self.HEALTH_CHECK_INTERVAL_MINUTES,
+            args=["health_check"], id=f"health_{instance_id}",
+            next_run_time=now + timedelta(seconds=10),
+        )
+        # Verification runs regardless of the search flags: entries submitted
+        # before a skill was switched off would stay unresolved otherwise.
+        scheduler.add_job(
+            self._run_skill, "interval", minutes=2,
+            args=["verify_commands"], id=f"verify_{instance_id}",
+            next_run_time=now + timedelta(seconds=30),
+        )
+        return scheduler
 
-        self._scheduler.start()
+    def _run(self):
+        scheduler = None
+        try:
+            scheduler = self._build_scheduler()
+            scheduler.start()
+        except Exception as exc:
+            logger.exception("Scheduler for instance %s failed to start", self.config.get("id"))
+            self._scheduler_failed = True
+            # Log first, then publish the status: whoever sees "error" must find the reason.
+            self.log("error", "system", f"Scheduler failed to start — no searches will run: {exc}")
+            self.state["next_run_at"] = None
+            self.state["status"] = "error"
+            if scheduler is not None and scheduler.running:
+                scheduler.shutdown(wait=False)
+            return
+
+        self._scheduler = scheduler
+        self._update_next_run()
         self.state["status"] = "scheduled"
+        self.log("info", "system",
+                 f"Agent started — {self.config['type'].upper()} '{self.config['name']}'")
 
-        # Block until stop_event is set
         self._stop_event.wait()
-        if self._scheduler.running:
-            self._scheduler.shutdown(wait=False)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+
+    def _load_fresh_config(self) -> dict | None:
+        try:
+            return db.instances.get_by_id(self.config["id"])
+        except Exception as exc:
+            logger.warning("Could not reload config of instance %s: %s", self.config.get("id"), exc)
+            return None
+
+    def refresh_config(self) -> None:
+        """Pick up changed flags without restarting — a running search keeps going."""
+        fresh = self._load_fresh_config()
+        if fresh:
+            self.config = fresh
+        self._update_next_run()
 
     def _run_skill(self, skill_name: str, force: bool = False):
         skill = self._get_skill(skill_name)
@@ -155,34 +248,34 @@ class BaseAgent(ABC):
 
         # Refresh config from DB so search preferences changed in the UI
         # are picked up immediately without requiring an agent restart.
-        fresh = db.instances.get_by_id(self.config["id"])
+        fresh = self._load_fresh_config()
         if fresh:
             self.config = fresh
 
-        # Check skill-level enable flags — config already refreshed above
+        # Skill-level enable flags — config already refreshed above.
+        # Every early exit of a search job recomputes next_run_at; otherwise the
+        # card counted down to 00m 00s after a skipped run and stayed there
+        # until the next real run (A13).
         if not force and skill_name == "search_missing" and not self.config.get("search_missing_enabled"):
             self.log("debug", skill_name, "Skipping — missing search disabled")
+            self._update_next_run()
             return
         if not force and skill_name == "search_upgrades" and not self.config.get("search_upgrades_enabled"):
             self.log("debug", skill_name, "Skipping — upgrades search disabled")
+            self._update_next_run()
             return
 
-        # Check quiet hours — skipped for health_check and force runs
-        if skill_name != "health_check" and not force and self._in_quiet_hours():
+        if skill_name not in QUIET_HOURS_EXEMPT and not force and self._in_quiet_hours():
             self.log("debug", skill_name, "Skipping — quiet hours active")
             self.state["status"] = "quiet"
+            self._update_next_run()
             return
 
-        # Guard against concurrent runs of the same skill. Force triggers wait
-        # up to 90 s for an active run of that skill to finish; scheduled
-        # triggers are dropped immediately.
-        lock = self._skill_lock(skill_name)
-        deadline = time.monotonic() + (90 if force else 0)
-        acquired = lock.acquire(blocking=False)
-        while not acquired and time.monotonic() < deadline:
-            time.sleep(1)
-            acquired = lock.acquire(blocking=False)
-        if not acquired:
+        # One run per skill at a time. A second request is dropped at once —
+        # the API reports "busy" before it gets here (A11), so waiting would
+        # only turn a double click into a second, repeated run.
+        lock = self.runtime.skill_lock(skill_name)
+        if not lock.acquire(blocking=False):
             self.log("warn", skill_name, "Already running — skipping duplicate trigger")
             return
 
@@ -198,29 +291,41 @@ class BaseAgent(ABC):
             self.log("error", skill_name, f"Unhandled exception: {exc}")
         finally:
             if drives_display:
-                self.state["status"] = "scheduled"
-                # Update next_run_at from scheduler
+                self.state["status"] = "error" if self._scheduler_failed else "scheduled"
                 self._update_next_run()
             lock.release()
 
-    def trigger_now(self, skill_name: str, force: bool = True):
-        """Manual trigger — runs in a separate thread to not block the caller."""
-        skill = self._get_skill(skill_name)
-        if not skill:
-            self.log("warn", "system", f"Force trigger ignored — skill '{skill_name}' not registered on this agent")
-            return
+    def trigger_now(self, skill_name: str, force: bool = True,
+                    on_done: Callable[["BaseAgent"], None] | None = None) -> str:
+        """Manual trigger — runs in its own thread. Returns TRIGGER_*.
 
-        self.log("info", "system", f"Force trigger received for '{skill_name}'")
-        t = threading.Thread(
-            target=self._run_skill,
-            args=[skill_name, force],
+        on_done(agent) is called in that thread once the run is over; the
+        orchestrator uses it to forget a throwaway agent (and its decrypted
+        config) as soon as it is finished."""
+        if not self._get_skill(skill_name):
+            self.log("warn", "system", f"Trigger ignored — skill '{skill_name}' not registered on this agent")
+            return TRIGGER_UNKNOWN_SKILL
+        if self.runtime.skill_lock(skill_name).locked():
+            self.log("info", "system", f"Trigger for '{skill_name}' rejected — it is already running")
+            return TRIGGER_BUSY
+        self.log("info", "system", f"{'Force' if force else 'Manual'} trigger received for '{skill_name}'")
+
+        def run():
+            try:
+                self._run_skill(skill_name, force)
+            finally:
+                if on_done is not None:
+                    on_done(self)
+
+        threading.Thread(
+            target=run,
+            name=f"trigger-{self.config['id']}-{skill_name}",
             daemon=True,
-        )
-        t.start()
+        ).start()
+        return TRIGGER_STARTED
 
     def _skill_lock(self, skill_name: str) -> threading.Lock:
-        with self._skill_locks_guard:
-            return self._skill_locks.setdefault(skill_name, threading.Lock())
+        return self.runtime.skill_lock(skill_name)
 
     def _get_skill(self, name: str) -> Optional[BaseSkill]:
         for s in self._skills:
@@ -252,38 +357,78 @@ class BaseAgent(ABC):
             # Overnight: e.g. 23:00 – 06:00
             return now_t >= start_t or now_t < end_t
 
-    def check_rate_cap(self) -> bool:
-        """Returns True if we're allowed to perform another action."""
-        window_minutes = self.config.get("rate_window_minutes", 60)
-        cap = self.config.get("rate_cap", 25)
-        cutoff = time.monotonic() - window_minutes * 60
+    def _rate_window_seconds(self) -> float:
+        try:
+            return max(0, int(self.config.get("rate_window_minutes", 60))) * 60
+        except (TypeError, ValueError):
+            return 3600
 
-        with self._lock:
-            # Remove old timestamps outside the window
-            while self._action_timestamps and self._action_timestamps[0] < cutoff:
-                self._action_timestamps.popleft()
-            return len(self._action_timestamps) < cap
+    def _rate_cap(self) -> int:
+        try:
+            return int(self.config.get("rate_cap", 25))
+        except (TypeError, ValueError):
+            return 25
 
-    def record_action(self):
-        """Record that an action was taken (for rate-cap tracking)."""
-        with self._lock:
-            self._action_timestamps.append(time.monotonic())
+    def _prune_actions(self, now: float) -> None:
+        """Caller holds runtime.rate_lock."""
+        cutoff = now - self._rate_window_seconds()
+        stamps = self.runtime.action_timestamps
+        while stamps and stamps[0] < cutoff:
+            stamps.popleft()
+
+    def reserve_action(self) -> float | None:
+        """Check the cap and claim a slot in one step (A10).
+
+        Missing and upgrade runs hold different skill locks and run in
+        parallel; checking and recording separately let both pass the last
+        free slot. Returns a token for release_action(), or None when the cap
+        is reached.
+        """
+        with self.runtime.rate_lock:
+            # Taken under the lock so the deque stays in ascending order.
+            now = time.monotonic()
+            self._prune_actions(now)
+            if len(self.runtime.action_timestamps) >= self._rate_cap():
+                return None
+            self.runtime.action_timestamps.append(now)
+            return now
+
+    def release_action(self, token: float) -> None:
+        """Give a slot back when the command was not accepted by *arr."""
+        with self.runtime.rate_lock:
+            try:
+                self.runtime.action_timestamps.remove(token)
+            except ValueError:
+                pass
 
     def get_rate_used(self) -> int:
-        window_minutes = self.config.get("rate_window_minutes", 60)
-        cutoff = time.monotonic() - window_minutes * 60
-        with self._lock:
-            while self._action_timestamps and self._action_timestamps[0] < cutoff:
-                self._action_timestamps.popleft()
-            return len(self._action_timestamps)
+        with self.runtime.rate_lock:
+            self._prune_actions(time.monotonic())
+            return len(self.runtime.action_timestamps)
+
+    # Deprecated: only until the skills use reserve_action() (P2). Task Z removes them.
+    def check_rate_cap(self) -> bool:
+        with self.runtime.rate_lock:
+            self._prune_actions(time.monotonic())
+            return len(self.runtime.action_timestamps) < self._rate_cap()
+
+    def record_action(self) -> None:
+        with self.runtime.rate_lock:
+            self.runtime.action_timestamps.append(time.monotonic())
 
     def _update_next_run(self):
-        if not self._scheduler:
+        """next_run_at = the earliest run of the search jobs that are switched on (A13)."""
+        scheduler = self._scheduler
+        if scheduler is None:
             return
-        job_id = f"missing_{self.config['id']}"
-        job = self._scheduler.get_job(job_id)
-        if job and job.next_run_time:
-            self.state["next_run_at"] = job.next_run_time.isoformat()
+        times = []
+        for prefix, flag in self.SEARCH_JOBS:
+            if not self.config.get(flag):
+                continue
+            job = scheduler.get_job(f"{prefix}_{self.config['id']}")
+            if job is not None and job.next_run_time is not None:
+                times.append(job.next_run_time)
+        self.state["next_run_at"] = min(times).isoformat() if times else None
 
     def log(self, level: str, skill: str, message: str):
         cfg = self.config
@@ -291,43 +436,66 @@ class BaseAgent(ABC):
         instance_name = cfg.get("name", "unknown")
 
         # Mask API key if accidentally in message
-        api_key = cfg.get("api_key", "")
+        api_key = cfg.get("api_key") or ""
         if api_key and api_key in message:
             message = message.replace(api_key, "****")
 
-        db.activity.insert(instance_id, instance_name, level, message, skill)
+        try:
+            db.activity.insert(instance_id, instance_name, level, message, skill)
+        except Exception as exc:
+            # A log line must never turn a successful action into a failure:
+            # the POST to *arr has already happened when the debug line after
+            # it is written (B2).
+            logger.warning("Could not store log line for instance %s (%s): %s",
+                           instance_id, exc, message)
 
         if self.broadcaster:
-            self.broadcaster.broadcast({
-                "instance_id": instance_id,
-                "instance_name": instance_name,
-                "level": level,
-                "skill": skill,
-                "message": message,
-            })
+            try:
+                self.broadcaster.broadcast({
+                    "instance_id": instance_id,
+                    "instance_name": instance_name,
+                    "level": level,
+                    "skill": skill,
+                    "message": message,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+            except Exception as exc:
+                logger.warning("Could not broadcast log line: %s", exc)
+
+    @staticmethod
+    def _check_response(resp: requests.Response) -> None:
+        # requests would follow a redirect and send X-Api-Key along to the new
+        # host (only Authorization is stripped). *arr never redirects its API,
+        # so a 3xx means a wrong URL — report it instead of following (C4).
+        if 300 <= resp.status_code < 400:
+            raise requests.exceptions.HTTPError(
+                f"{resp.status_code} redirect not followed — check the instance URL",
+                response=resp,
+            )
+        resp.raise_for_status()
 
     def http_get(self, path: str, params: Optional[dict] = None) -> dict:
         url = self.config["url"].rstrip("/") + path
-        api_key = self.config["api_key"]
         resp = requests.get(
             url,
-            headers={"X-Api-Key": api_key},
+            headers={"X-Api-Key": self.config["api_key"]},
             params=params or {},
             timeout=10,
+            allow_redirects=False,
         )
-        resp.raise_for_status()
+        self._check_response(resp)
         return resp.json()
 
     def http_post(self, path: str, body: dict) -> dict:
         url = self.config["url"].rstrip("/") + path
-        api_key = self.config["api_key"]
         resp = requests.post(
             url,
-            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            headers={"X-Api-Key": self.config["api_key"], "Content-Type": "application/json"},
             json=body,
             timeout=10,
+            allow_redirects=False,
         )
-        resp.raise_for_status()
+        self._check_response(resp)
         return resp.json()
 
     def http_get_raw(self, path: str) -> tuple[int, dict | None]:
@@ -336,7 +504,8 @@ class BaseAgent(ABC):
         Verification needs to tell "*arr does not know this command" (404, a
         real answer) apart from "*arr is unreachable" (retry later), which
         raise_for_status collapses into one exception. Returns status 0 for
-        network-level failures.
+        network-level failures. A redirect is not followed (C4) and comes back
+        as its 3xx status without payload.
         """
         url = self.config["url"].rstrip("/") + path
         try:
@@ -344,6 +513,7 @@ class BaseAgent(ABC):
                 url,
                 headers={"X-Api-Key": self.config["api_key"]},
                 timeout=10,
+                allow_redirects=False,
             )
         except requests.exceptions.RequestException:
             return 0, None
