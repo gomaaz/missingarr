@@ -462,28 +462,40 @@ class BaseAgent(ABC):
             except Exception as exc:
                 logger.warning("Could not broadcast log line: %s", exc)
 
+    @staticmethod
+    def _check_response(resp: requests.Response) -> None:
+        # requests would follow a redirect and send X-Api-Key along to the new
+        # host (only Authorization is stripped). *arr never redirects its API,
+        # so a 3xx means a wrong URL — report it instead of following (C4).
+        if 300 <= resp.status_code < 400:
+            raise requests.exceptions.HTTPError(
+                f"{resp.status_code} redirect not followed — check the instance URL",
+                response=resp,
+            )
+        resp.raise_for_status()
+
     def http_get(self, path: str, params: Optional[dict] = None) -> dict:
         url = self.config["url"].rstrip("/") + path
-        api_key = self.config["api_key"]
         resp = requests.get(
             url,
-            headers={"X-Api-Key": api_key},
+            headers={"X-Api-Key": self.config["api_key"]},
             params=params or {},
             timeout=10,
+            allow_redirects=False,
         )
-        resp.raise_for_status()
+        self._check_response(resp)
         return resp.json()
 
     def http_post(self, path: str, body: dict) -> dict:
         url = self.config["url"].rstrip("/") + path
-        api_key = self.config["api_key"]
         resp = requests.post(
             url,
-            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            headers={"X-Api-Key": self.config["api_key"], "Content-Type": "application/json"},
             json=body,
             timeout=10,
+            allow_redirects=False,
         )
-        resp.raise_for_status()
+        self._check_response(resp)
         return resp.json()
 
     def http_get_raw(self, path: str) -> tuple[int, dict | None]:
@@ -492,7 +504,8 @@ class BaseAgent(ABC):
         Verification needs to tell "*arr does not know this command" (404, a
         real answer) apart from "*arr is unreachable" (retry later), which
         raise_for_status collapses into one exception. Returns status 0 for
-        network-level failures.
+        network-level failures. A redirect is not followed (C4) and comes back
+        as its 3xx status without payload.
         """
         url = self.config["url"].rstrip("/") + path
         try:
@@ -500,6 +513,7 @@ class BaseAgent(ABC):
                 url,
                 headers={"X-Api-Key": self.config["api_key"]},
                 timeout=10,
+                allow_redirects=False,
             )
         except requests.exceptions.RequestException:
             return 0, None
