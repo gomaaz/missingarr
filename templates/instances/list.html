@@ -70,7 +70,7 @@ async function deleteInstance(id, name) {
             toast(`Instance "${name}" deleted`, 'info');
             setTimeout(() => location.reload(), 800);
         } else {
-            toast('Failed to delete instance', 'error');
+            toast(await errorDetail(resp, 'Failed to delete instance'), 'error');
         }
     } catch (err) {
         if (!isSessionExpired(err)) toast('Failed to delete instance', 'error');

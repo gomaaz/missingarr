@@ -78,8 +78,13 @@ def delete_instance(instance_id: int, request: Request):
     if not db.instances.get_by_id(instance_id):
         raise HTTPException(404, "Instance not found")
     # Abort a running search and wait for it before the row (and its foreign
-    # keys) disappear (A-L5).
-    _get_orchestrator(request).forget_instance(instance_id, wait_seconds=DELETE_WAIT_SECONDS)
+    # keys) disappear (A-L5). If it does not stop in time, keep the instance:
+    # the search could still send a command that then has nowhere to be
+    # recorded. The agent was stopped for the delete, so bring it back.
+    orchestrator = _get_orchestrator(request)
+    if not orchestrator.forget_instance(instance_id, wait_seconds=DELETE_WAIT_SECONDS):
+        orchestrator.reload_agent(instance_id)
+        raise HTTPException(409, "A search of this instance is still stopping — try deleting again in a moment.")
     db.instances.delete(instance_id)
 
 

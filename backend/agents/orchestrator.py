@@ -116,7 +116,8 @@ class Orchestrator:
             displaced.stop(abort_running=False)
         agent.start()
 
-    def stop_agent(self, instance_id: int, abort_running: bool = True, wait_seconds: float = 0.0):
+    def stop_agent(self, instance_id: int, abort_running: bool = True, wait_seconds: float = 0.0) -> bool:
+        """Returns False only when waiting was asked for and a skill still runs."""
         with self._lock:
             agent = self._agents.pop(instance_id, None)
             adhocs = self._adhoc.pop(instance_id, set()) if abort_running else set()
@@ -126,6 +127,8 @@ class Orchestrator:
             adhoc.request_abort()
         if wait_seconds > 0 and not wait_runtime_idle(self._runtime(instance_id), wait_seconds):
             logger.warning("Instance %s still busy after %.0fs", instance_id, wait_seconds)
+            return False
+        return True
 
     def reload_agent(self, instance_id: int):
         """Restart with fresh config; a search in progress keeps running."""
@@ -141,11 +144,18 @@ class Orchestrator:
         if agent is not None:
             agent.refresh_config()
 
-    def forget_instance(self, instance_id: int, wait_seconds: float = 15.0) -> None:
-        """Before deleting: abort, wait until no skill holds a lock, drop state."""
-        self.stop_agent(instance_id, abort_running=True, wait_seconds=wait_seconds)
+    def forget_instance(self, instance_id: int, wait_seconds: float = 15.0) -> bool:
+        """Before deleting: abort, wait until no skill holds a lock, drop state.
+
+        Returns False if a skill is still running after `wait_seconds`. The
+        caller must not delete the row then: the skill could still send a
+        command, and the runtime (with its unsaved submissions) is kept.
+        """
+        if not self.stop_agent(instance_id, abort_running=True, wait_seconds=wait_seconds):
+            return False
         with self._runtimes_lock:
             self._runtimes.pop(instance_id, None)
+        return True
 
     def trigger(self, instance_id: int, skill_name: str, force: bool = True) -> str:
         """Returns TRIGGER_STARTED, TRIGGER_BUSY, TRIGGER_UNKNOWN_SKILL or TRIGGER_NOT_FOUND."""

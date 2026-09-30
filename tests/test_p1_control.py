@@ -261,10 +261,26 @@ def test_forget_instance_waits_for_running_skills(db_path):
     lock.acquire()
     threading.Timer(0.3, lock.release).start()
     started = time.monotonic()
-    orch.forget_instance(inst["id"], wait_seconds=3)
+    assert orch.forget_instance(inst["id"], wait_seconds=3) is True
     assert time.monotonic() - started >= 0.25
     assert inst["id"] not in orch._runtimes
     assert not orch.is_running(inst["id"])
+
+
+def test_forget_instance_reports_a_skill_that_does_not_stop_in_time(db_path):
+    # The caller must not delete the row then: the skill could still send a
+    # command, and the runtime keeps its unsaved submissions.
+    inst = make_instance()
+    orch = fake_orchestrator()
+    orch.start_agent(inst["id"])
+    runtime = orch._runtime(inst["id"])
+    lock = runtime.skill_lock("search_missing")
+    lock.acquire()
+    try:
+        assert orch.forget_instance(inst["id"], wait_seconds=0.2) is False
+        assert orch._runtimes.get(inst["id"]) is runtime
+    finally:
+        lock.release()
 
 
 def test_refresh_config_updates_a_running_agent(db_path):

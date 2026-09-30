@@ -46,6 +46,7 @@ class FakeOrchestrator:
     def __init__(self):
         self.calls = []
         self.trigger_result = "started"
+        self.forget_result = True
 
     def get_agent_state(self, instance_id):
         return {}
@@ -64,6 +65,7 @@ class FakeOrchestrator:
 
     def forget_instance(self, instance_id, wait_seconds=15.0):
         self.calls.append(("forget", instance_id, db.instances.get_by_id(instance_id) is not None))
+        return self.forget_result
 
     def trigger(self, instance_id, skill_name, force=True):
         self.calls.append(("trigger", instance_id, skill_name, force))
@@ -178,6 +180,18 @@ def test_disabling_aborts_and_deleting_waits_for_the_agent(api):
     assert client.delete(f"/api/instances/{instance_id}").status_code == 204
     assert ("forget", instance_id, True) in fake.calls
     assert db.instances.get_by_id(instance_id) is None
+
+
+def test_delete_keeps_the_instance_while_a_search_does_not_stop(api):
+    client, fake = api
+    instance_id = make_instance(enabled=True)["id"]
+    fake.forget_result = False
+    resp = client.delete(f"/api/instances/{instance_id}")
+    assert resp.status_code == 409
+    assert "still" in resp.json()["detail"]
+    assert db.instances.get_by_id(instance_id) is not None
+    # The agent was stopped for the delete; an enabled instance gets it back.
+    assert ("reload", instance_id) in fake.calls
 
 
 class Handler(BaseHTTPRequestHandler):

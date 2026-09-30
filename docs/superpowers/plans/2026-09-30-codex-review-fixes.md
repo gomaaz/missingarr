@@ -197,10 +197,10 @@ class Orchestrator:
         # Nachbesserung: Hauspflege für jede Instanz, auch abgeschaltete; nur DB, nie *arr;
         # nicht gestartete Agenten liefern nur log(), Drossel wie im Skill
     def start_agent(self, instance_id: int) -> None
-    def stop_agent(self, instance_id: int, abort_running: bool = True, wait_seconds: float = 0.0) -> None
+    def stop_agent(self, instance_id: int, abort_running: bool = True, wait_seconds: float = 0.0) -> bool  # False: still busy after waiting
     def reload_agent(self, instance_id: int) -> None          # stoppt ohne Abbruch, startet neu
     def refresh_config(self, instance_id: int) -> None         # ohne Neustart
-    def forget_instance(self, instance_id: int, wait_seconds: float = 15.0) -> None  # vor dem Löschen
+    def forget_instance(self, instance_id: int, wait_seconds: float = 15.0) -> bool  # vor dem Löschen; False: Lauf hält noch, nicht löschen (DELETE -> 409)
     def trigger(self, instance_id: int, skill_name: str, force: bool = True) -> str  # TRIGGER_* oder TRIGGER_NOT_FOUND
     def get_agent_state(self, instance_id: int) -> dict | None  # wie bisher + rate_used, rate_cap, rate_window
     def get_all_states(self) -> dict[int, dict]
