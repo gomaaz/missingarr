@@ -247,13 +247,16 @@ class LazySessionMiddleware(SessionMiddleware):
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def is_same_origin_request(headers) -> bool:
+def is_same_origin_request(headers, *, scheme: str) -> bool:
     """True unless a browser tells us the request comes from another site (C3).
 
     Modern browsers send Sec-Fetch-Site on every request; 'same-site' is not
     enough, because every other service on the same host counts as same-site.
-    Older browsers send Origin on unsafe requests. Clients that send neither
-    (curl, scripts) are not browsers and cannot be forged by a web page.
+    Older browsers send Origin on unsafe requests; it must match scheme and
+    host, like the same-origin policy. `scheme` is the request's own scheme
+    (behind a TLS proxy uvicorn takes it from X-Forwarded-Proto, see
+    FORWARDED_ALLOW_IPS). Clients that send neither header (curl, scripts)
+    are not browsers and cannot be forged by a web page.
     """
     site = headers.get("sec-fetch-site")
     if site is not None:
@@ -263,12 +266,15 @@ def is_same_origin_request(headers) -> bool:
         return True
     if origin == "null":
         return False
-    return urlsplit(origin).netloc.lower() == (headers.get("host") or "").lower()
+    parsed = urlsplit(origin)
+    return (parsed.scheme.lower() == scheme.lower()
+            and parsed.netloc.lower() == (headers.get("host") or "").lower())
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.method not in SAFE_METHODS and not is_same_origin_request(request.headers):
+        if request.method not in SAFE_METHODS and not is_same_origin_request(
+                request.headers, scheme=request.url.scheme):
             logger.warning(
                 "Blocked cross-site %s %s (Origin=%r, Sec-Fetch-Site=%r)",
                 request.method, request.url.path,

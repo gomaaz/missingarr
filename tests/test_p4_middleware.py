@@ -87,6 +87,7 @@ def test_public_paths_stay_public(client):
     {"Sec-Fetch-Site": "cross-site"},
     {"Sec-Fetch-Site": "same-site"},
     {"Sec-Fetch-Site": "same-site", "Origin": f"http://{HOST}"},
+    {"Origin": f"https://{HOST}"},
 ])
 def test_cross_site_writes_are_blocked(client, headers):
     login(client)
@@ -119,6 +120,13 @@ def test_login_from_another_site_is_blocked(client):
 
 
 def test_origin_check_unit():
-    assert is_same_origin_request({"host": "a:8000", "origin": "http://a:8000"})
-    assert not is_same_origin_request({"host": "a:8000", "origin": "http://a:9000"})
-    assert is_same_origin_request({"host": "a:8000"})
+    assert is_same_origin_request({"host": "a:8000", "origin": "http://a:8000"}, scheme="http")
+    assert not is_same_origin_request({"host": "a:8000", "origin": "http://a:9000"}, scheme="http")
+    assert is_same_origin_request({"host": "a:8000"}, scheme="http")
+
+
+def test_origin_check_compares_the_scheme():
+    # Same host and port, other scheme: a different origin (same-origin policy).
+    assert not is_same_origin_request({"host": "a:8000", "origin": "https://a:8000"}, scheme="http")
+    assert not is_same_origin_request({"host": "a:8000", "origin": "http://a:8000"}, scheme="https")
+    assert is_same_origin_request({"host": "a", "origin": "HTTPS://A"}, scheme="https")

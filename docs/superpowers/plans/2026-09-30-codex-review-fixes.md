@@ -397,7 +397,7 @@ def create_remember_token(username: str, now: int | None = None) -> str
 def verify_remember_token(token: str, now: int | None = None) -> str | None
 def revoke_all_tokens() -> int
 def current_token_version() -> int
-def is_same_origin_request(headers) -> bool
+def is_same_origin_request(headers, *, scheme: str) -> bool   # Origin must match scheme and host (Codex review, round 3)
 class LoginThrottle; login_throttle: LoginThrottle
 class LazySessionMiddleware; class CSRFMiddleware; class AuthMiddleware
 # backend/crypto.py
