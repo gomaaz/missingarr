@@ -2,7 +2,7 @@ import threading
 from typing import Optional
 
 from backend import db
-from backend.agents.base import BaseAgent
+from backend.agents.base import BaseAgent, InstanceRuntime
 from backend.agents.sonarr import SonarrAgent
 from backend.agents.radarr import RadarrAgent
 
@@ -12,15 +12,25 @@ class Orchestrator:
         self.broadcaster = broadcaster
         self._agents: dict[int, BaseAgent] = {}
         self._lock = threading.Lock()
+        # Rate window and skill locks per instance; they outlive the agent
+        # objects that come and go on save, disable/enable and force runs (A-L4).
+        self._runtimes: dict[int, InstanceRuntime] = {}
+        self._runtimes_lock = threading.Lock()
+
+    def _runtime(self, instance_id: int) -> InstanceRuntime:
+        with self._runtimes_lock:
+            return self._runtimes.setdefault(instance_id, InstanceRuntime())
+
+    def _agent_class(self, arr_type: str):
+        if arr_type == "sonarr":
+            return SonarrAgent
+        if arr_type == "radarr":
+            return RadarrAgent
+        raise ValueError(f"Unknown instance type: {arr_type}")
 
     def _make_agent(self, config: dict) -> BaseAgent:
-        arr_type = config.get("type", "sonarr")
-        if arr_type == "sonarr":
-            return SonarrAgent(config, self.broadcaster)
-        elif arr_type == "radarr":
-            return RadarrAgent(config, self.broadcaster)
-        else:
-            raise ValueError(f"Unknown instance type: {arr_type}")
+        agent_class = self._agent_class(config.get("type", "sonarr"))
+        return agent_class(config, self.broadcaster, runtime=self._runtime(config["id"]))
 
     def start_all(self):
         instances = db.instances.get_all(include_disabled=False)

@@ -3,6 +3,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -19,11 +20,48 @@ MAX_INTERVAL_MINUTES = 10080
 UPGRADE_INTERVAL_FACTOR = 4
 
 
+@dataclass
+class InstanceRuntime:
+    """Per-instance state that must outlive one agent object.
+
+    Saving the form, switching the instance off and on, and a force run on a
+    disabled instance each create a new agent. The rate window and the skill
+    locks belong to the instance: otherwise every save refilled the rate cap
+    (A-L4) and a run of the old agent could overlap one of the new agent.
+
+    One lock per skill. state["status"] is a display value shared by the
+    whole agent and must not double as a mutex — doing so let a running
+    search block the health check every single hour.
+    """
+
+    rate_lock: threading.Lock = field(default_factory=threading.Lock)
+    action_timestamps: deque = field(default_factory=deque)
+    skill_locks: dict = field(default_factory=dict)
+    skill_locks_guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def skill_lock(self, skill_name: str) -> threading.Lock:
+        with self.skill_locks_guard:
+            return self.skill_locks.setdefault(skill_name, threading.Lock())
+
+    def busy_skills(self) -> list[str]:
+        with self.skill_locks_guard:
+            return sorted(name for name, lock in self.skill_locks.items() if lock.locked())
+
+
+def wait_runtime_idle(runtime: InstanceRuntime, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while runtime.busy_skills():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 class BaseAgent(ABC):
     HEALTH_CHECK_INTERVAL_MINUTES = 5
     SEARCH_JOBS = (("missing", "search_missing_enabled"), ("upgrades", "search_upgrades_enabled"))
 
-    def __init__(self, config: dict, broadcaster=None):
+    def __init__(self, config: dict, broadcaster=None, runtime: InstanceRuntime | None = None):
         self.config = config
         self.broadcaster = broadcaster
         self._scheduler: Optional[BackgroundScheduler] = None
@@ -31,16 +69,7 @@ class BaseAgent(ABC):
         self._abort_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._scheduler_failed = False
-        self._lock = threading.Lock()
-
-        # One lock per skill. state["status"] is a display value shared by the
-        # whole agent and must not double as a mutex — doing so let a running
-        # search block the health check every single hour.
-        self._skill_locks: dict[str, threading.Lock] = {}
-        self._skill_locks_guard = threading.Lock()
-
-        # Rate-limit tracking: timestamps of recent actions
-        self._action_timestamps: deque = deque()
+        self.runtime = runtime if runtime is not None else InstanceRuntime()
 
         # Live state exposed to dashboard
         # "starting" until _run has really started the scheduler: the card must
@@ -252,8 +281,7 @@ class BaseAgent(ABC):
         t.start()
 
     def _skill_lock(self, skill_name: str) -> threading.Lock:
-        with self._skill_locks_guard:
-            return self._skill_locks.setdefault(skill_name, threading.Lock())
+        return self.runtime.skill_lock(skill_name)
 
     def _get_skill(self, name: str) -> Optional[BaseSkill]:
         for s in self._skills:
@@ -285,30 +313,64 @@ class BaseAgent(ABC):
             # Overnight: e.g. 23:00 – 06:00
             return now_t >= start_t or now_t < end_t
 
-    def check_rate_cap(self) -> bool:
-        """Returns True if we're allowed to perform another action."""
-        window_minutes = self.config.get("rate_window_minutes", 60)
-        cap = self.config.get("rate_cap", 25)
-        cutoff = time.monotonic() - window_minutes * 60
+    def _rate_window_seconds(self) -> float:
+        try:
+            return max(0, int(self.config.get("rate_window_minutes", 60))) * 60
+        except (TypeError, ValueError):
+            return 3600
 
-        with self._lock:
-            # Remove old timestamps outside the window
-            while self._action_timestamps and self._action_timestamps[0] < cutoff:
-                self._action_timestamps.popleft()
-            return len(self._action_timestamps) < cap
+    def _rate_cap(self) -> int:
+        try:
+            return int(self.config.get("rate_cap", 25))
+        except (TypeError, ValueError):
+            return 25
 
-    def record_action(self):
-        """Record that an action was taken (for rate-cap tracking)."""
-        with self._lock:
-            self._action_timestamps.append(time.monotonic())
+    def _prune_actions(self, now: float) -> None:
+        """Caller holds runtime.rate_lock."""
+        cutoff = now - self._rate_window_seconds()
+        stamps = self.runtime.action_timestamps
+        while stamps and stamps[0] < cutoff:
+            stamps.popleft()
+
+    def reserve_action(self) -> float | None:
+        """Check the cap and claim a slot in one step (A10).
+
+        Missing and upgrade runs hold different skill locks and run in
+        parallel; checking and recording separately let both pass the last
+        free slot. Returns a token for release_action(), or None when the cap
+        is reached.
+        """
+        with self.runtime.rate_lock:
+            # Taken under the lock so the deque stays in ascending order.
+            now = time.monotonic()
+            self._prune_actions(now)
+            if len(self.runtime.action_timestamps) >= self._rate_cap():
+                return None
+            self.runtime.action_timestamps.append(now)
+            return now
+
+    def release_action(self, token: float) -> None:
+        """Give a slot back when the command was not accepted by *arr."""
+        with self.runtime.rate_lock:
+            try:
+                self.runtime.action_timestamps.remove(token)
+            except ValueError:
+                pass
 
     def get_rate_used(self) -> int:
-        window_minutes = self.config.get("rate_window_minutes", 60)
-        cutoff = time.monotonic() - window_minutes * 60
-        with self._lock:
-            while self._action_timestamps and self._action_timestamps[0] < cutoff:
-                self._action_timestamps.popleft()
-            return len(self._action_timestamps)
+        with self.runtime.rate_lock:
+            self._prune_actions(time.monotonic())
+            return len(self.runtime.action_timestamps)
+
+    # Deprecated: only until the skills use reserve_action() (P2). Task Z removes them.
+    def check_rate_cap(self) -> bool:
+        with self.runtime.rate_lock:
+            self._prune_actions(time.monotonic())
+            return len(self.runtime.action_timestamps) < self._rate_cap()
+
+    def record_action(self) -> None:
+        with self.runtime.rate_lock:
+            self.runtime.action_timestamps.append(time.monotonic())
 
     def _update_next_run(self):
         """next_run_at = the earliest run of the search jobs that are switched on (A13)."""
@@ -330,20 +392,31 @@ class BaseAgent(ABC):
         instance_name = cfg.get("name", "unknown")
 
         # Mask API key if accidentally in message
-        api_key = cfg.get("api_key", "")
+        api_key = cfg.get("api_key") or ""
         if api_key and api_key in message:
             message = message.replace(api_key, "****")
 
-        db.activity.insert(instance_id, instance_name, level, message, skill)
+        try:
+            db.activity.insert(instance_id, instance_name, level, message, skill)
+        except Exception as exc:
+            # A log line must never turn a successful action into a failure:
+            # the POST to *arr has already happened when the debug line after
+            # it is written (B2).
+            logger.warning("Could not store log line for instance %s (%s): %s",
+                           instance_id, exc, message)
 
         if self.broadcaster:
-            self.broadcaster.broadcast({
-                "instance_id": instance_id,
-                "instance_name": instance_name,
-                "level": level,
-                "skill": skill,
-                "message": message,
-            })
+            try:
+                self.broadcaster.broadcast({
+                    "instance_id": instance_id,
+                    "instance_name": instance_name,
+                    "level": level,
+                    "skill": skill,
+                    "message": message,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+            except Exception as exc:
+                logger.warning("Could not broadcast log line: %s", exc)
 
     def http_get(self, path: str, params: Optional[dict] = None) -> dict:
         url = self.config["url"].rstrip("/") + path
