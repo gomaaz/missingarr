@@ -5,10 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
     <link rel="stylesheet" href="/static/css/app.css">
-    <!-- Alpine.js -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
-    <!-- htmx -->
-    <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+    <!-- Alpine.js / htmx — vendored, verified against the npm integrity (scripts/vendor_assets.py) -->
+    <script defer src="/static/vendor/alpinejs-3.14.1.min.js"></script>
+    <script src="/static/vendor/htmx-2.0.4.min.js"></script>
 </head>
 <body x-data hx-boost="true">
 
@@ -31,13 +30,15 @@
     <div class="navbar-right">
         <span class="version-badge">v{{ version }}</span>
         <a href="https://github.com/gomaaz/missingarr" target="_blank" class="btn btn-secondary btn-sm">GitHub</a>
-        <a href="/logout" class="btn btn-secondary btn-sm" title="Sign out">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:middle;">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                <polyline points="16 17 21 12 16 7"/>
-                <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-        </a>
+        <form method="post" action="/logout" hx-boost="false" style="display:inline;margin:0;">
+            <button type="submit" class="btn btn-secondary btn-sm" title="Sign out">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:middle;">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                    <polyline points="16 17 21 12 16 7"/>
+                    <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+            </button>
+        </form>
     </div>
 </nav>
 

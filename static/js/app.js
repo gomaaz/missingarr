@@ -1,28 +1,55 @@
-// Missingarr — Alpine.js stores & SSE setup
+// Missingarr — Alpine.js stores, API helper & SSE setup.
+// Top level holds function declarations only: hx-boost re-runs this file on
+// every navigation, and a second `class`/`let` declaration would be a SyntaxError.
 
-document.addEventListener('alpine:init', () => {
+function sessionExpiredError() {
+    const err = new Error('Session expired');
+    err.name = 'SessionExpiredError';
+    return err;
+}
 
-    // ── Toast store ──────────────────────────────────────────────────────────
-    Alpine.store('toasts', {
-        items: [],
-        _id: 0,
-        add(message, type = 'info', duration = 4000) {
-            const id = ++this._id;
-            this.items.push({ id, message, type });
-            setTimeout(() => this.remove(id), duration);
-        },
-        remove(id) {
-            this.items = this.items.filter(t => t.id !== id);
-        }
-    });
+function isSessionExpired(err) {
+    return !!err && err.name === 'SessionExpiredError';
+}
 
-    // ── Log store ─────────────────────────────────────────────────────────────
-    Alpine.store('logs', {
+// fetch() that notices a lost session. The server answers 401 for /api/*; a
+// redirect to /login counts the same. Go to the login page instead of
+// reporting a success that did not happen (C-L6).
+async function apiFetch(url, options = {}) {
+    const resp = await fetch(url, Object.assign({ credentials: 'same-origin' }, options));
+    const toLogin = resp.redirected && new URL(resp.url, location.href).pathname === '/login';
+    if (resp.status === 401 || toLogin) {
+        location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+        throw sessionExpiredError();
+    }
+    return resp;
+}
+
+function toast(message, type = 'info') {
+    Alpine.store('toasts').add(message, type);
+}
+
+// Same line = same instance, level and message within one second. The live
+// entry's created_at comes from Python's clock, the stored one from SQLite's
+// datetime('now'); both are taken separately and may straddle a second.
+function logEntryKey(entry) {
+    return `${entry.instance_name}|${entry.level}|${entry.message}`;
+}
+
+function logEntrySeconds(entry) {
+    const t = Date.parse(String(entry.created_at || '').replace(' ', 'T'));
+    return Number.isNaN(t) ? null : t / 1000;
+}
+
+function createLogStore() {
+    return {
         enabled: true,
         debug: false,
         entries: [],
         maxEntries: 500,
+        retryDelay: 5000,
         _evtSource: null,
+        _retryTimer: null,
         _nextId: 0,
         _buffer: [],
         _flushTimer: null,
@@ -31,11 +58,38 @@ document.addEventListener('alpine:init', () => {
             this.connect();
         },
 
+        // Rows rendered into the logs page (newest first). Merged with what the
+        // live stream already delivered, without duplicates (C11).
+        seed(rows) {
+            if (!Array.isArray(rows)) return;
+            const known = new Map();
+            for (const entry of this.entries) {
+                const key = logEntryKey(entry);
+                if (!known.has(key)) known.set(key, []);
+                known.get(key).push(logEntrySeconds(entry));
+            }
+            const isKnown = (row) => {
+                const seconds = known.get(logEntryKey(row));
+                if (!seconds) return false;
+                const t = logEntrySeconds(row);
+                return seconds.some(s => s === null || t === null || Math.abs(s - t) <= 1);
+            };
+            const older = rows
+                .filter(row => !isKnown(row))
+                .map(row => Object.assign({}, row, { _id: this._nextId++ }));
+            this.entries = this.entries
+                .concat(older)
+                .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+                .slice(0, this.maxEntries);
+        },
+
         connect() {
+            clearTimeout(this._retryTimer);
+            this._retryTimer = null;
             if (this._evtSource) this._evtSource.close();
-            const url = `/api/activity/stream?debug=${this.debug ? 1 : 0}`;
-            this._evtSource = new EventSource(url);
-            this._evtSource.onmessage = (e) => {
+            const source = new EventSource(`/api/activity/stream?debug=${this.debug ? 1 : 0}`);
+            this._evtSource = source;
+            source.onmessage = (e) => {
                 if (!this.enabled) return;
                 try {
                     const entry = JSON.parse(e.data);
@@ -44,13 +98,26 @@ document.addEventListener('alpine:init', () => {
                     if (!this._flushTimer) {
                         this._flushTimer = setTimeout(() => this._flush(), 150);
                     }
-                } catch {}
+                } catch (err) {}
             };
-            this._evtSource.onerror = () => {
-                if (this.enabled) {
-                    setTimeout(() => this.connect(), 5000);
-                }
+            // While CONNECTING the browser reconnects by itself. Only a CLOSED
+            // source (a non-200 answer such as 401) needs us — once, and only
+            // for the source that is still current (C12).
+            source.onerror = () => {
+                if (source !== this._evtSource || !this.enabled) return;
+                if (source.readyState !== EventSource.CLOSED || this._retryTimer) return;
+                this._retryTimer = setTimeout(() => this._reconnect(), this.retryDelay);
             };
+        },
+
+        async _reconnect() {
+            this._retryTimer = null;
+            try {
+                await apiFetch('/api/activity?limit=1');
+            } catch (err) {
+                if (isSessionExpired(err)) return;
+            }
+            if (this.enabled) this.connect();
         },
 
         _flush() {
@@ -71,13 +138,17 @@ document.addEventListener('alpine:init', () => {
 
         toggleEnabled() {
             this.enabled = !this.enabled;
-            if (!this.enabled && this._evtSource) {
-                this._evtSource.close();
-                this._evtSource = null;
+            clearTimeout(this._retryTimer);
+            this._retryTimer = null;
+            if (!this.enabled) {
+                if (this._evtSource) {
+                    this._evtSource.close();
+                    this._evtSource = null;
+                }
                 clearTimeout(this._flushTimer);
                 this._flushTimer = null;
                 this._buffer = [];
-            } else if (this.enabled) {
+            } else {
                 this.connect();
             }
         },
@@ -97,7 +168,23 @@ document.addEventListener('alpine:init', () => {
             if (!ts) return '-';
             return ts.replace('T', ' ').substring(0, 19);
         }
+    };
+}
+
+document.addEventListener('alpine:init', () => {
+    Alpine.store('toasts', {
+        items: [],
+        _id: 0,
+        add(message, type = 'info', duration = 4000) {
+            const id = ++this._id;
+            this.items.push({ id, message, type });
+            setTimeout(() => this.remove(id), duration);
+        },
+        remove(id) {
+            this.items = this.items.filter(t => t.id !== id);
+        }
     });
+    Alpine.store('logs', createLogStore());
 });
 
 // ── Countdown helper ──────────────────────────────────────────────────────────
@@ -116,7 +203,7 @@ function countdownComponent(nextRunIso, status) {
             clearInterval(this._timer);
         },
         update() {
-            if (!this.nextRun || this.status === 'off' || this.status === 'running') {
+            if (!this.nextRun || this.status === 'off' || this.status === 'running' || this.status === 'error') {
                 this.display = this.status === 'running' ? 'Running...' : '--:--';
                 return;
             }
@@ -124,41 +211,21 @@ function countdownComponent(nextRunIso, status) {
             const h = Math.floor(diff / 3600);
             const m = Math.floor((diff % 3600) / 60);
             const s = diff % 60;
-            if (h > 0) {
-                this.display = `${h}h ${String(m).padStart(2, '0')}m`;
-            } else {
-                this.display = `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
-            }
-        }
-    };
-}
-
-// ── Form helpers ──────────────────────────────────────────────────────────────
-function instanceForm(instanceType) {
-    return {
-        type: instanceType || 'sonarr',
-        upgradesEnabled: false,
-
-        showMissingMode() { return this.type === 'sonarr'; },
-        showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
-
-        async testConnection(url, apiKey) {
-            try {
-                const resp = await fetch('/api/instances/' + window._editInstanceId + '/test');
-                const data = await resp.json();
-                if (resp.ok) {
-                    Alpine.store('toasts').add(`Connected — ${data.appName} v${data.version}`, 'success');
-                } else {
-                    Alpine.store('toasts').add(data.detail || 'Connection failed', 'error');
-                }
-            } catch {
-                Alpine.store('toasts').add('Connection test failed', 'error');
-            }
+            this.display = h > 0
+                ? `${h}h ${String(m).padStart(2, '0')}m`
+                : `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
         }
     };
 }
 
 // ── Card live-update (called by htmx after every /status poll) ────────────────
+var STATUS_BADGES = {
+    running: ['badge badge-running', 'RUNNING'],
+    quiet: ['badge badge-unknown', 'QUIET'],
+    off: ['badge badge-unknown', 'OFF'],
+    error: ['badge badge-offline', 'ERROR'],
+};
+
 function updateCardState(instanceId, responseText) {
     try {
         const data = JSON.parse(responseText);
@@ -166,33 +233,19 @@ function updateCardState(instanceId, responseText) {
         const card = document.getElementById(`icard-${instanceId}`);
         if (!card) return;
 
-        // Update Alpine countdown component (nextRun + status)
         const alpineData = Alpine.$data(card);
         if (alpineData) {
             alpineData.nextRun = state.next_run_at ? new Date(state.next_run_at) : null;
             alpineData.status = state.status || 'unknown';
         }
 
-        // Status badge
         const badgeEl = card.querySelector('[data-status-badge]');
         if (badgeEl) {
-            const s = state.status || 'off';
-            if (s === 'running') {
-                badgeEl.className = 'badge badge-running';
-                badgeEl.textContent = 'RUNNING';
-            } else if (s === 'quiet') {
-                badgeEl.className = 'badge badge-unknown';
-                badgeEl.textContent = 'QUIET';
-            } else if (s === 'off') {
-                badgeEl.className = 'badge badge-unknown';
-                badgeEl.textContent = 'OFF';
-            } else {
-                badgeEl.className = 'badge badge-scheduled';
-                badgeEl.textContent = 'WAIT';
-            }
+            const [cls, text] = STATUS_BADGES[state.status || 'off'] || ['badge badge-scheduled', 'WAIT'];
+            badgeEl.className = cls;
+            badgeEl.textContent = text;
         }
 
-        // Connection badge
         const connEl = card.querySelector('[data-conn-badge]');
         if (connEl) {
             const c = data.connection_status || 'unknown';
@@ -201,7 +254,6 @@ function updateCardState(instanceId, responseText) {
             connEl.textContent = c;
         }
 
-        // Rate bar
         const rateCap = state.rate_cap || 1;
         const rateUsed = state.rate_used || 0;
         const ratePct = Math.min(100, Math.round((rateUsed / rateCap) * 100));
@@ -213,7 +265,6 @@ function updateCardState(instanceId, responseText) {
         const rateUsedEl = card.querySelector('[data-rate-used]');
         if (rateUsedEl) rateUsedEl.textContent = `${rateUsed} / ${rateCap}`;
 
-        // Stats
         card.querySelectorAll('[data-stat]').forEach(el => {
             const key = el.dataset.stat;
             if (key === 'last_wanted') el.textContent = state.last_wanted ?? '-';
@@ -224,26 +275,27 @@ function updateCardState(instanceId, responseText) {
     } catch (_) {}
 }
 
-// ── Force trigger ─────────────────────────────────────────────────────────────
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function errorDetail(resp, fallback) {
+    const data = await resp.json().catch(() => ({}));
+    return typeof data.detail === 'string' ? data.detail : fallback;
+}
+
 async function forceRun(instanceId, skill = 'search_missing') {
     try {
-        const resp = await fetch(`/api/instances/${instanceId}/trigger?skill=${skill}&force=true`, {
-            method: 'POST'
-        });
-        // If auth redirected us to /login the response will be the login page HTML.
-        // Detect this by checking resp.redirected or the final URL.
-        if (resp.redirected || resp.url.includes('/login')) {
-            location.reload();
-            return;
-        }
+        const resp = await apiFetch(
+            `/api/instances/${instanceId}/trigger?skill=${encodeURIComponent(skill)}&force=true`,
+            { method: 'POST' }
+        );
         if (resp.ok) {
-            Alpine.store('toasts').add('Run triggered!', 'success');
+            toast('Run triggered!', 'success');
+        } else if (resp.status === 409) {
+            toast('Already running — wait for the current run to finish', 'info');
         } else {
-            const data = await resp.json().catch(() => ({}));
-            Alpine.store('toasts').add(data.detail || 'Failed to trigger run', 'error');
+            toast(await errorDetail(resp, 'Failed to trigger run'), 'error');
         }
-    } catch {
-        Alpine.store('toasts').add('Network error', 'error');
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Network error', 'error');
     }
 }
 
@@ -252,15 +304,15 @@ async function testCardConnection(instanceId, btn) {
     btn.disabled = true;
     btn.textContent = '…';
     try {
-        const resp = await fetch(`/api/instances/${instanceId}/test`);
-        const data = await resp.json();
+        const resp = await apiFetch(`/api/instances/${instanceId}/test`);
         if (resp.ok) {
-            Alpine.store('toasts').add(`Online — ${data.appName} v${data.version}`, 'success');
+            const data = await resp.json();
+            toast(`Online — ${data.appName} v${data.version}`, 'success');
         } else {
-            Alpine.store('toasts').add(data.detail || 'Connection failed', 'error');
+            toast(await errorDetail(resp, 'Connection failed'), 'error');
         }
-    } catch {
-        Alpine.store('toasts').add('Connection test failed', 'error');
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Connection test failed', 'error');
     } finally {
         btn.disabled = false;
         btn.innerHTML = orig;
@@ -270,9 +322,10 @@ async function testCardConnection(instanceId, btn) {
 async function toggleSkill(instanceId, skill, currentlyEnabled, btn) {
     const newEnabled = !currentlyEnabled;
     try {
-        const resp = await fetch(`/api/instances/${instanceId}/toggle-skill?skill=${skill}&enabled=${newEnabled}`, {
-            method: 'POST'
-        });
+        const resp = await apiFetch(
+            `/api/instances/${instanceId}/toggle-skill?skill=${skill}&enabled=${newEnabled}`,
+            { method: 'POST' }
+        );
         if (resp.ok) {
             btn.className = btn.className.replace(
                 newEnabled ? 'btn-toggle-off' : 'btn-toggle-on',
@@ -280,28 +333,25 @@ async function toggleSkill(instanceId, skill, currentlyEnabled, btn) {
             );
             btn.setAttribute('onclick', `toggleSkill(${instanceId}, '${skill}', ${newEnabled}, this)`);
             const name = skill.charAt(0).toUpperCase() + skill.slice(1);
-            Alpine.store('toasts').add(`${name} ${newEnabled ? 'enabled' : 'disabled'}`, 'info');
+            toast(`${name} ${newEnabled ? 'enabled' : 'disabled'}`, 'info');
         } else {
-            Alpine.store('toasts').add('Failed to toggle skill', 'error');
+            toast(await errorDetail(resp, 'Failed to toggle skill'), 'error');
         }
-    } catch {
-        Alpine.store('toasts').add('Failed to toggle skill', 'error');
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Failed to toggle skill', 'error');
     }
 }
 
 async function toggleInstance(instanceId, enabled) {
     try {
-        const resp = await fetch(`/api/instances/${instanceId}/toggle?enabled=${enabled}`, {
-            method: 'POST'
-        });
-        if (resp.ok) {
-            Alpine.store('toasts').add(enabled ? 'Instance enabled' : 'Instance disabled', 'info');
-            htmx.ajax('GET', `/instances/${instanceId}/card`, {
-                target: `#icard-${instanceId}`,
-                swap: 'outerHTML'
-            });
+        const resp = await apiFetch(`/api/instances/${instanceId}/toggle?enabled=${enabled}`, { method: 'POST' });
+        if (!resp.ok) {
+            toast(await errorDetail(resp, 'Failed to toggle instance'), 'error');
+            return;
         }
-    } catch {
-        Alpine.store('toasts').add('Failed to toggle instance', 'error');
+        toast(enabled ? 'Instance enabled' : 'Instance disabled', 'info');
+        htmx.ajax('GET', `/instances/${instanceId}/card`, { target: `#icard-${instanceId}`, swap: 'outerHTML' });
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Failed to toggle instance', 'error');
     }
 }
