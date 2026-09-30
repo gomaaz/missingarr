@@ -5,7 +5,6 @@ from backend.verification import (
     aggregate_run_status,
     ITEM_SUBMITTED,
     ITEM_COMPLETED,
-    ITEM_FAILED,
 )
 
 
@@ -22,8 +21,46 @@ class VerifyCommandsSkill(BaseSkill):
     MAX_PER_RUN = 50
     STALE_HOURS = 24
 
+    # Per instance id, shared by every skill object: a reload creates new
+    # skills, and the throttle must survive that.
+    _last_housekeeping: dict[int, float] = {}
+
     def execute(self, agent, force: bool = False) -> None:
         instance_id = agent.config["id"]
+
+        # Ask first, expire afterwards: an item gets its answer from *arr even
+        # when the instance was off for longer than STALE_HOURS (B5).
+        pending = db.history.get_pending_items(instance_id, self.MAX_PER_RUN)
+        queried = resolved = 0
+        answered: list[int] = []
+
+        for item in pending:
+            if agent.stop_requested():
+                break
+            http_status, payload = agent.http_get_raw(f"/api/v3/command/{item['command_id']}")
+            queried += 1
+            status = map_command_status(http_status, payload)
+            if status == ITEM_SUBMITTED:
+                # Only *arr's own word on this command counts as a check. A
+                # 502/503/504 from a reverse proxy in front of a dead Sonarr,
+                # a 401/403 for a wrong key or a 3xx are no answer, and must
+                # not use up the grace period (B5). A 404 never gets here:
+                # map_command_status settles it as expired.
+                if http_status == 200 and isinstance(payload, dict):
+                    answered.append(item["id"])
+                continue
+
+            released = db.history.resolve_item(item["id"], status, instance_id, item["cache_key"])
+            resolved += 1
+            if released:
+                agent.log(
+                    "warn",
+                    self.name,
+                    f"Command {item['command_id']} failed in *arr — "
+                    f"released '{item['cache_key']}' for another attempt",
+                )
+
+        db.history.mark_checked(answered)
 
         expired = db.history.expire_stale_items(instance_id, self.STALE_HOURS)
         if expired:
@@ -32,28 +69,6 @@ class VerifyCommandsSkill(BaseSkill):
                 self.name,
                 f"Gave up on {expired} command(s) still unresolved after {self.STALE_HOURS}h",
             )
-
-        pending = db.history.get_pending_items(instance_id, self.MAX_PER_RUN)
-        resolved = 0
-
-        for item in pending:
-            http_status, payload = agent.http_get_raw(f"/api/v3/command/{item['command_id']}")
-            status = map_command_status(http_status, payload)
-            if status == ITEM_SUBMITTED:
-                continue  # still running, or *arr unreachable — try next pass
-
-            db.history.set_item_status(item["id"], status)
-            resolved += 1
-
-            if status == ITEM_FAILED and item["cache_key"]:
-                removed = db.searched.delete(instance_id, item["cache_key"])
-                if removed:
-                    agent.log(
-                        "warn",
-                        self.name,
-                        f"Command {item['command_id']} failed in *arr — "
-                        f"released '{item['cache_key']}' for another attempt",
-                    )
 
         # Settle every run that has nothing open left — not just the ones touched
         # above. A run whose items were all filed as expired on insert (no command
@@ -66,17 +81,26 @@ class VerifyCommandsSkill(BaseSkill):
                 statuses.count(ITEM_COMPLETED),
             )
 
-        # The card shows the youngest run, so read it back rather than counting
-        # this pass: one pass may resolve items from several runs, or none.
+        # Read the card's numbers back rather than counting this pass: one pass
+        # may resolve items from several runs, or none. Both come from the same
+        # finished run, never from two different ones (B-L4).
         latest = db.history.get_latest_run_verification(instance_id)
         if latest:
             agent.state["last_verified"] = latest["verified_count"]
+            agent.state["last_triggered"] = latest["triggered_count"]
 
-        if pending:
+        self._housekeeping(agent)
+
+        if queried:
             # Both numbers, always: 50 queried with 0 resolved is a backlog, and
-            # logging only the resolved count would hide it.
+            # logging only the resolved count would hide it. Counted as asked,
+            # not as fetched: an abort can end the loop early.
             agent.log(
                 "info",
                 self.name,
-                f"Queried {len(pending)} command(s), {resolved} resolved",
+                f"Queried {queried} command(s), {resolved} resolved",
             )
+
+    def _housekeeping(self, agent) -> None:
+        """Filled in by Task P3.5."""
+        return None

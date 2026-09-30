@@ -17,8 +17,10 @@ RUN_PARTIAL = "partial"
 RUN_FAILED = "failed"
 RUN_UNVERIFIED = "unverified"
 
-# *arr command states that mean the command will not run (or did not finish).
-_ARR_FAILURE_STATES = {"failed", "aborted", "cancelled"}
+# *arr command states that mean the command did not finish its search.
+# 'orphaned' is what *arr sets on start for commands that were running when it
+# went down (CommandStatus enum in Sonarr/Radarr core) — same as aborted (B-L3).
+_ARR_FAILURE_STATES = {"failed", "aborted", "cancelled", "orphaned"}
 
 
 def map_command_status(http_status: int, payload: dict | None) -> str:
