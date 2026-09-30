@@ -134,6 +134,35 @@ def test_clear_keeps_open_runs_and_their_items(db_path):
     assert sql("SELECT COUNT(*) FROM search_history_items")[0][0] == 1
 
 
+def test_clear_keeps_finished_runs_whose_commands_await_a_verdict(db_path):
+    # A search run that stopped on a store failure is closed as 'error' and
+    # still has submitted items. They are the only link from a command id to
+    # its cache key until verification settles them (B-L2).
+    inst = make_instance()
+    stopped = new_run(inst)
+    history.record_submission(stopped, inst["id"], "A", 1, "episode", "ep:1", 11)
+    history.finish_run(stopped, 2, 2, "error", "Stopped: Command 12 for B was sent but could not be stored")
+    settled = new_run(inst)
+    item = history.record_submission(settled, inst["id"], "C", 3, "episode", "ep:3", 13)
+    history.resolve_item(item, "completed", inst["id"], "ep:3")
+    history.finish_run(settled, 1, 1, "error", "boom")
+
+    assert history.clear() == {"deleted": 1, "kept_open": 1}
+    assert {r["id"] for r in history.query(limit=10)} == {stopped}
+    assert history.get_item_statuses(stopped) == ["submitted"]
+
+
+def test_purge_keeps_old_runs_whose_commands_await_a_verdict(db_path):
+    inst = make_instance()
+    stopped = new_run(inst)
+    history.record_submission(stopped, inst["id"], "A", 1, "episode", "ep:1", 11)
+    history.finish_run(stopped, 1, 1, "error", "Stopped: could not be stored")
+    sql("UPDATE search_history SET started_at=datetime('now','localtime','-400 days') WHERE id=?", (stopped,))
+
+    assert history.purge_old_runs(inst["id"], 365) == 0
+    assert history.get_item_statuses(stopped) == ["submitted"]
+
+
 def test_purge_old_runs_only_touches_old_finished_runs(db_path):
     inst = make_instance()
     old_done = new_run(inst)

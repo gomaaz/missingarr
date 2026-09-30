@@ -10,6 +10,15 @@ _INSERT_ITEM = """
             CASE WHEN ? = 'now' THEN datetime('now','localtime') ELSE NULL END)
 """
 
+# A finished run can still hold commands awaiting their verdict: a run that
+# stopped on a store failure is closed as 'error' with its submitted items.
+# Deleting it would cut the only link from those command ids to their cache
+# keys (B-L2). Takes ITEM_SUBMITTED as its one parameter.
+_AWAITS_VERDICT = """
+    EXISTS (SELECT 1 FROM search_history_items si
+            WHERE si.run_id = search_history.id AND si.command_status = ?)
+"""
+
 
 def start_run(instance_id: int, instance_name: str, skill: str) -> int:
     with get_db() as conn:
@@ -177,18 +186,19 @@ def close_interrupted_runs() -> int:
 
 def purge_old_runs(instance_id: int, days: int) -> int:
     """Delete finished runs older than `days` (B7). Items go with them (ON
-    DELETE CASCADE). Open runs stay: their items still link command ids to
-    cache keys."""
+    DELETE CASCADE). Open runs and runs with commands still awaiting a
+    verdict stay: their items still link command ids to cache keys."""
     if days <= 0:
         return 0
     with get_db() as conn:
         cursor = conn.execute(
-            """
+            f"""
             DELETE FROM search_history
             WHERE instance_id=? AND status NOT IN ('running','pending')
               AND started_at < datetime('now','localtime', ? || ' days')
+              AND NOT {_AWAITS_VERDICT}
             """,
-            (instance_id, f"-{days}"),
+            (instance_id, f"-{days}", ITEM_SUBMITTED),
         )
         return cursor.rowcount
 
@@ -448,12 +458,19 @@ def get_latest_run_verification(instance_id: int) -> Optional[dict]:
 
 
 def clear() -> dict:
-    """Delete finished runs only. Open runs keep their submitted items: an item
-    is the only link from a command id to its cache key, and without it a
-    command that later fails would keep its title blocked (B-L2)."""
+    """Delete finished runs only. Open runs, and finished runs with commands
+    still awaiting a verdict, keep their submitted items: an item is the only
+    link from a command id to its cache key, and without it a command that
+    later fails would keep its title blocked (B-L2)."""
     with get_db() as conn:
         kept = conn.execute(
-            "SELECT COUNT(*) FROM search_history WHERE status IN ('running','pending')"
+            f"SELECT COUNT(*) FROM search_history "
+            f"WHERE status IN ('running','pending') OR {_AWAITS_VERDICT}",
+            (ITEM_SUBMITTED,),
         ).fetchone()[0]
-        cursor = conn.execute("DELETE FROM search_history WHERE status NOT IN ('running','pending')")
+        cursor = conn.execute(
+            f"DELETE FROM search_history "
+            f"WHERE status NOT IN ('running','pending') AND NOT {_AWAITS_VERDICT}",
+            (ITEM_SUBMITTED,),
+        )
         return {"deleted": cursor.rowcount, "kept_open": kept}

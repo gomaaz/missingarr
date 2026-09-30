@@ -305,6 +305,35 @@ def test_unstored_submission_is_not_sent_again_and_stored_later(db_path, monkeyp
     assert [i["cache_key"] for i in history.get_items_for_run(second["id"])] == ["ep:3"]
 
 
+def test_a_run_stopped_by_a_store_failure_survives_clearing_the_history(db_path, monkeypatch):
+    # The run ends as an error, but the command it stored before the failure
+    # still awaits its verdict. Clearing the history must not cut the link
+    # from that command id to its cache key (B-L2), or a failed command would
+    # keep its title blocked for good with retry_hours=0.
+    inst = make_instance(search_order="oldest_first", missing_per_run=2)
+    agent = agent_for(inst, missing=backlog(4))
+    store = history.record_submission
+    calls = []
+
+    def second_fails(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise RuntimeError("database is locked")
+        return store(*args, **kwargs)
+
+    monkeypatch.setattr(db.history, "record_submission", second_fails)
+    run_missing(agent)
+    run = last_run()
+    assert episode_ids(agent) == [4, 3]
+    assert run["status"] == "error"
+
+    history.clear()
+    items = history.get_items_for_run(run["id"])
+    assert [(i["cache_key"], i["command_status"]) for i in items] == [("ep:4", "submitted")]
+    assert history.resolve_item(items[0]["id"], "failed", inst["id"], "ep:4") is True
+    assert cache_keys() == []
+
+
 def test_rate_cap_is_respected_and_failed_posts_give_their_slot_back(db_path):
     inst = make_instance(search_order="oldest_first", missing_per_run=3, rate_cap=1)
     agent = agent_for(inst, missing=backlog(3), fail_posts={1})
