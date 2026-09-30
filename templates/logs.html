@@ -2,7 +2,71 @@
 {% block title %}Logs — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div x-data="logsTable()" x-init="init()">
+<script type="application/json" id="logs-seed">{{ recent|tojson }}</script>
+<script>
+function logsTable() {
+    return {
+        page: 0,
+        perPage: 20,
+        filterInstance: '',
+        filterLevel: '',
+        _filtered: [],
+
+        init() {
+            // Stored entries from the server, so a fresh load is not empty (C11).
+            const seed = document.getElementById('logs-seed');
+            if (seed) this.$store.logs.seed(JSON.parse(seed.textContent));
+            this._refilter();
+            this.$watch('$store.logs.entries', () => this._refilter());
+            this.$watch('filterInstance', () => { this.page = 0; this._refilter(); });
+            this.$watch('filterLevel',    () => { this.page = 0; this._refilter(); });
+        },
+
+        _refilter() {
+            let entries = this.$store.logs.entries;
+            if (this.filterInstance) entries = entries.filter(e => e.instance_name === this.filterInstance);
+            if (this.filterLevel)    entries = entries.filter(e => e.level === this.filterLevel);
+            this._filtered = entries;
+        },
+
+        pageEntries() {
+            const start = this.page * this.perPage;
+            return this._filtered.slice(start, start + this.perPage);
+        },
+
+        pageCount() {
+            return Math.max(1, Math.ceil(this._filtered.length / this.perPage));
+        },
+
+        paginationLabel() {
+            const total = this._filtered.length;
+            const start = this.page * this.perPage + 1;
+            const end = Math.min(start + this.perPage - 1, total);
+            return total === 0 ? '0 entries' : `${start}–${end} of ${total}`;
+        },
+
+        fmt(ts) {
+            if (!ts) return '—';
+            return ts.replace('T', ' ').substring(0, 19);
+        }
+    };
+}
+
+async function clearAllLogs() {
+    if (!confirm('Clear all logs from database?')) return;
+    try {
+        const resp = await apiFetch('/api/activity', { method: 'DELETE' });
+        if (resp.ok) {
+            toast('Logs cleared', 'info');
+            Alpine.store('logs').clear();
+        }
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Could not clear logs', 'error');
+    }
+}
+</script>
+
+<div x-data="logsTable()">
 
     <!-- Toolbar -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.75rem;">
@@ -13,7 +77,7 @@
             <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
                     x-model="filterInstance" @change="page = 0">
                 <option value="">All instances</option>
-                {% for inst in all_instances %}
+                {% for inst in instances %}
                 <option value="{{ inst.name }}">{{ inst.name }}</option>
                 {% endfor %}
             </select>
@@ -131,60 +195,4 @@
 .log-badge-error { background: rgba(220,50,50,0.25); color: #e05050; }
 .log-badge-debug { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
 </style>
-
-<script>
-function logsTable() {
-    return {
-        page: 0,
-        perPage: 20,
-        filterInstance: '',
-        filterLevel: '',
-        _filtered: [],
-
-        init() {
-            this._refilter();
-            this.$watch('$store.logs.entries', () => this._refilter());
-            this.$watch('filterInstance', () => { this.page = 0; this._refilter(); });
-            this.$watch('filterLevel',    () => { this.page = 0; this._refilter(); });
-        },
-
-        _refilter() {
-            let entries = this.$store.logs.entries;
-            if (this.filterInstance) entries = entries.filter(e => e.instance_name === this.filterInstance);
-            if (this.filterLevel)    entries = entries.filter(e => e.level === this.filterLevel);
-            this._filtered = entries;
-        },
-
-        pageEntries() {
-            const start = this.page * this.perPage;
-            return this._filtered.slice(start, start + this.perPage);
-        },
-
-        pageCount() {
-            return Math.max(1, Math.ceil(this._filtered.length / this.perPage));
-        },
-
-        paginationLabel() {
-            const total = this._filtered.length;
-            const start = this.page * this.perPage + 1;
-            const end = Math.min(start + this.perPage - 1, total);
-            return total === 0 ? '0 entries' : `${start}–${end} of ${total}`;
-        },
-
-        fmt(ts) {
-            if (!ts) return '—';
-            return ts.replace('T', ' ').substring(0, 19);
-        }
-    };
-}
-
-async function clearAllLogs() {
-    if (!confirm('Clear all logs from database?')) return;
-    const resp = await fetch('/api/activity', { method: 'DELETE' });
-    if (resp.ok) {
-        Alpine.store('toasts').add('Logs cleared', 'info');
-        Alpine.store('logs').clear();
-    }
-}
-</script>
 {% endblock %}

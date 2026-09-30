@@ -43,7 +43,8 @@
                 <div style="display:flex;gap:0.4rem;">
                     <a href="/instances/{{ inst.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
                     <button class="btn btn-danger btn-sm"
-                            onclick="deleteInstance({{ inst.id }}, '{{ inst.name|e }}')">
+                            data-id="{{ inst.id }}" data-name="{{ inst.name }}"
+                            onclick="deleteInstance(this.dataset.id, this.dataset.name)">
                         Delete
                     </button>
                 </div>
@@ -63,12 +64,16 @@
 <script>
 async function deleteInstance(id, name) {
     if (!confirm(`Delete instance "${name}"? This will also remove all logs and history for this instance.`)) return;
-    const resp = await fetch(`/api/instances/${id}`, { method: 'DELETE' });
-    if (resp.ok || resp.status === 204) {
-        Alpine.store('toasts').add(`Instance "${name}" deleted`, 'info');
-        setTimeout(() => location.reload(), 800);
-    } else {
-        Alpine.store('toasts').add('Failed to delete instance', 'error');
+    try {
+        const resp = await apiFetch(`/api/instances/${id}`, { method: 'DELETE' });
+        if (resp.ok || resp.status === 204) {
+            toast(`Instance "${name}" deleted`, 'info');
+            setTimeout(() => location.reload(), 800);
+        } else {
+            toast('Failed to delete instance', 'error');
+        }
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Failed to delete instance', 'error');
     }
 }
 </script>
