@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -15,8 +17,9 @@ from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
 from backend.auth import (
-    AuthMiddleware, CSRFMiddleware, LazySessionMiddleware, verify_password, auth_enabled, init_auth,
-    create_remember_token, _REMEMBER_COOKIE, _REMEMBER_MAX_AGE,
+    AuthMiddleware, CSRFMiddleware, LazySessionMiddleware, REMEMBER_COOKIE, REMEMBER_MAX_AGE,
+    auth_enabled, create_remember_token, init_auth, is_authenticated, login_throttle,
+    revoke_all_tokens, start_session, verify_password,
 )
 
 logging.basicConfig(
@@ -221,17 +224,37 @@ async def help_page(request: Request):
 
 # ─── Auth routes ───────────────────────────────────────────────────────────────
 
-@app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, next: str = "/", error: str = ""):
-    if not auth_enabled():
-        return RedirectResponse("/", status_code=302)
-    if request.session.get("user"):
-        return RedirectResponse(next or "/", status_code=302)
+def safe_next(value: str | None) -> str:
+    """Only local paths. '//host' and '/\\host' are treated by browsers as
+    another host (C10)."""
+    if not value or not value.startswith("/") or value.startswith(("//", "/\\")):
+        return "/"
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc or any(ord(ch) < 32 for ch in value):
+        return "/"
+    return value
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_page(request: Request, next_path: str, error: str, status: int, headers: dict | None = None):
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"request": request, "app_name": settings.app_name, "next": next, "error": error},
+        {"request": request, "app_name": settings.app_name, "next": next_path, "error": error},
+        status_code=status,
+        headers=headers,
     )
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/", error: str = ""):
+    target = safe_next(next)
+    if not auth_enabled() or is_authenticated(request):
+        return RedirectResponse(target, status_code=302)
+    return _login_page(request, target, error, 200)
 
 
 @app.post("/login")
@@ -242,34 +265,42 @@ async def login_submit(
     next: str = Form(default="/"),
     remember: bool = Form(default=False),
 ):
+    target = safe_next(next)
     if not auth_enabled():
-        return RedirectResponse("/", status_code=302)
+        return RedirectResponse(target, status_code=302)
+
+    address = client_ip(request)
+    wait = login_throttle.retry_after(address)
+    if wait:
+        logger.warning("Sign-in from %s refused — locked for another %ds", address, wait)
+        return _login_page(
+            request, target,
+            f"Too many failed sign-in attempts. Try again in {math.ceil(wait / 60)} minute(s).",
+            429, {"Retry-After": str(wait)},
+        )
 
     if username == settings.auth_username and verify_password(password):
-        request.session["user"] = username
-        response = RedirectResponse(next or "/", status_code=302)
+        login_throttle.record_success(address)
+        start_session(request)
+        response = RedirectResponse(target, status_code=302)
         if remember:
-            token = create_remember_token(username)
             response.set_cookie(
-                _REMEMBER_COOKIE, token,
-                max_age=_REMEMBER_MAX_AGE,
-                httponly=True,
-                samesite="lax",
+                REMEMBER_COOKIE, create_remember_token(username),
+                max_age=REMEMBER_MAX_AGE, httponly=True, samesite="lax",
+                secure=settings.cookie_secure,
             )
         return response
 
-    # Invalid credentials — re-render login with error
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {"request": request, "app_name": settings.app_name, "next": next, "error": "Invalid username or password."},
-        status_code=401,
-    )
+    failures = login_throttle.record_failure(address)
+    logger.warning("Failed sign-in for user %r from %s (%d in a row)", username[:64], address, failures)
+    return _login_page(request, target, "Invalid username or password.", 401)
 
 
-@app.get("/logout")
+@app.post("/logout")
 async def logout(request: Request):
+    # Signs out every browser and script, not only this one (C6).
+    revoke_all_tokens()
     request.session.clear()
-    response = RedirectResponse("/login", status_code=302)
-    response.delete_cookie(_REMEMBER_COOKIE)
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(REMEMBER_COOKIE, httponly=True, samesite="lax", secure=settings.cookie_secure)
     return response
