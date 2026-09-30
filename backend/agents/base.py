@@ -406,16 +406,6 @@ class BaseAgent(ABC):
             self._prune_actions(time.monotonic())
             return len(self.runtime.action_timestamps)
 
-    # Deprecated: only until the skills use reserve_action() (P2). Task Z removes them.
-    def check_rate_cap(self) -> bool:
-        with self.runtime.rate_lock:
-            self._prune_actions(time.monotonic())
-            return len(self.runtime.action_timestamps) < self._rate_cap()
-
-    def record_action(self) -> None:
-        with self.runtime.rate_lock:
-            self.runtime.action_timestamps.append(time.monotonic())
-
     def _update_next_run(self):
         """next_run_at = the earliest run of the search jobs that are switched on (A13)."""
         scheduler = self._scheduler

@@ -100,32 +100,6 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def insert_item(
-    run_id: int,
-    title: str,
-    arr_id: Optional[int],
-    item_type: str,
-    cache_key: str = "",
-    command_id: Optional[int] = None,
-):
-    """Record a triggered search.
-
-    Without a command id from *arr there is nothing to verify later, so the
-    row is filed as expired rather than claiming a pending verification — and
-    it gets its verified_at right away, because it is never open.
-    """
-    if command_id is not None:
-        status, verified = ITEM_SUBMITTED, None
-    else:
-        status, verified = ITEM_EXPIRED, "now"
-
-    with get_db() as conn:
-        conn.execute(
-            _INSERT_ITEM,
-            (run_id, title, arr_id, item_type, cache_key, command_id, status, verified),
-        )
-
-
 def record_submission(
     run_id: int,
     instance_id: int,
@@ -374,18 +348,6 @@ def resolve_item(item_id: int, status: str, instance_id: int, cache_key: str) ->
             )
             return cursor.rowcount > 0
     return False
-
-
-def set_item_status(item_id: int, status: str) -> None:
-    with get_db() as conn:
-        conn.execute(
-            """
-            UPDATE search_history_items
-            SET command_status=?, verified_at=datetime('now','localtime')
-            WHERE id=?
-            """,
-            (status, item_id),
-        )
 
 
 def expire_stale_items(instance_id: int, hours: int = 24) -> int:

@@ -14,48 +14,6 @@ def local_to_utc(value: str) -> datetime:
     return naive.astimezone(timezone.utc)
 
 
-def exists(instance_id: int, cache_key: str, retry_hours: int = 0) -> bool:
-    with get_db() as conn:
-        if retry_hours > 0:
-            row = conn.execute(
-                """
-                SELECT 1 FROM searched_items
-                WHERE instance_id=? AND cache_key=?
-                AND searched_at > datetime('now', 'localtime', ? || ' hours')
-                """,
-                (instance_id, cache_key, f"-{retry_hours}"),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT 1 FROM searched_items WHERE instance_id=? AND cache_key=?",
-                (instance_id, cache_key),
-            ).fetchone()
-        return row is not None
-
-
-def exists_any(instance_id: int, keys: list, retry_hours: int = 0) -> bool:
-    """Return True if any of the given keys is present in the cache."""
-    if not keys:
-        return False
-    placeholders = ",".join("?" * len(keys))
-    with get_db() as conn:
-        if retry_hours > 0:
-            row = conn.execute(
-                f"""
-                SELECT 1 FROM searched_items
-                WHERE instance_id=? AND cache_key IN ({placeholders})
-                AND searched_at > datetime('now', 'localtime', ? || ' hours')
-                """,
-                [instance_id, *keys, f"-{retry_hours}"],
-            ).fetchone()
-        else:
-            row = conn.execute(
-                f"SELECT 1 FROM searched_items WHERE instance_id=? AND cache_key IN ({placeholders})",
-                [instance_id, *keys],
-            ).fetchone()
-        return row is not None
-
-
 def add(instance_id: int, cache_key: str, title: str, item_type: str) -> None:
     with get_db() as conn:
         conn.execute(
