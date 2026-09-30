@@ -67,6 +67,19 @@ def test_libraries_are_served_locally(client):
     assert client.get("/static/vendor/htmx-2.0.4.min.js").status_code == 200
 
 
+def test_pages_do_not_request_a_missing_favicon(client):
+    # Without an icon link the browser asks for /favicon.ico, which does not
+    # exist: a 404 in the console of every page (and a redirect before login).
+    dashboard = client.get("/").text
+    client.cookies.clear()
+    login = client.get("/login", follow_redirects=False)
+    assert login.status_code == 200
+    for path, page in (("/", dashboard), ("/login", login.text)):
+        icons = [attrs for tag, attrs in parse(page).tags
+                 if tag == "link" and attrs.get("rel") == "icon"]
+        assert icons and icons[0]["href"] == "data:,", path
+
+
 def test_logout_is_a_post_form(client):
     page = client.get("/").text
     forms = [attrs for tag, attrs in parse(page).tags if tag == "form"]
