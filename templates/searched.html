@@ -2,9 +2,117 @@
 {% block title %}Searched Items — {{ app_name }}{% endblock %}
 
 {% block content %}
-<div x-data="searchedPage()" x-init="init()">
+<script>
+function searchedPage() {
+    return {
+        activeInstance: null,
+        activeInstanceName: '',
+        items: [],
+        total: 0,
+        loading: false,
+        filterType: '',
+        tablePage: 0,
+        perPage: 20,
 
-    <!-- Header -->
+        async loadInstance(id, name) {
+            if (this.activeInstance === id) {
+                this.activeInstance = null;
+                return;
+            }
+            this.activeInstance = id;
+            this.activeInstanceName = name;
+            this.tablePage = 0;
+            this.filterType = '';
+            await this.fetchItems();
+        },
+
+        // Paged on the server: every cached key is reachable, not just 500 (C-L5).
+        async fetchItems() {
+            if (this.activeInstance === null) return;
+            this.loading = true;
+            const params = new URLSearchParams({
+                instance_id: this.activeInstance,
+                limit: this.perPage,
+                offset: this.tablePage * this.perPage,
+            });
+            if (this.filterType) params.set('item_type', this.filterType);
+            try {
+                const resp = await apiFetch(`/api/searched?${params}`);
+                this.items = resp.ok ? await resp.json() : [];
+                this.total = resp.ok ? Number(resp.headers.get('X-Total-Count') || this.items.length) : 0;
+            } catch (err) {
+                if (!isSessionExpired(err)) toast('Could not load items', 'error');
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        goTo(page) {
+            this.tablePage = Math.min(Math.max(0, page), this.pageCount() - 1);
+            return this.fetchItems();
+        },
+
+        pageCount() {
+            return Math.max(1, Math.ceil(this.total / this.perPage));
+        },
+
+        paginationLabel() {
+            if (!this.total) return '0 items';
+            const start = this.tablePage * this.perPage + 1;
+            const end = Math.min(start + this.perPage - 1, this.total);
+            return `${start}–${end} of ${this.total}`;
+        },
+
+        _setCount(id, value) {
+            const counter = document.getElementById(`count-${id}`);
+            if (counter) counter.textContent = value;
+        },
+
+        async reset(id, name) {
+            if (!confirm(`Reset searched cache for "${name}"? It will be re-searched on the next run.`)) return;
+            try {
+                const resp = await apiFetch(`/api/searched/${id}`, { method: 'DELETE' });
+                if (!resp.ok) {
+                    toast('Reset failed', 'error');
+                    return;
+                }
+                const data = await resp.json();
+                this._setCount(id, '0');
+                toast(`Reset ${data.deleted} items for ${name}`, 'info');
+                if (this.activeInstance === id) {
+                    this.items = [];
+                    this.total = 0;
+                    this.tablePage = 0;
+                }
+            } catch (err) {
+                if (!isSessionExpired(err)) toast('Reset failed', 'error');
+            }
+        },
+
+        async resetAll() {
+            if (!confirm('Reset ALL searched items? All instances will re-search everything on the next run.')) return;
+            try {
+                const resp = await apiFetch('/api/searched', { method: 'DELETE' });
+                if (!resp.ok) {
+                    toast('Reset failed', 'error');
+                    return;
+                }
+                const data = await resp.json();
+                document.querySelectorAll('[id^="count-"]').forEach(el => { el.textContent = '0'; });
+                toast(`Reset ${data.deleted} items total`, 'info');
+                this.items = [];
+                this.total = 0;
+                this.tablePage = 0;
+            } catch (err) {
+                if (!isSessionExpired(err)) toast('Reset failed', 'error');
+            }
+        },
+    };
+}
+</script>
+
+<div x-data="searchedPage()">
+
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:0.75rem;">
         <div>
             <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Progressed Items</h1>
@@ -13,11 +121,10 @@
             </p>
         </div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-            <button class="btn btn-danger btn-sm" onclick="clearAll()">Reset All</button>
+            <button class="btn btn-danger btn-sm" @click="resetAll()">Reset All</button>
         </div>
     </div>
 
-    <!-- Per-instance summary cards -->
     <div class="instance-grid" style="margin-bottom:1.5rem;">
         {% for inst in instances %}
         {% set inst_count = counts | selectattr('instance_id', 'equalto', inst.id) | list %}
@@ -29,16 +136,17 @@
                     <span style="font-weight:600;font-size:0.9rem;">{{ inst.name }}</span>
                 </div>
                 <button class="btn btn-secondary btn-sm"
-                        onclick="clearInstance({{ inst.id }}, '{{ inst.name|e }}')">
+                        data-id="{{ inst.id }}" data-name="{{ inst.name }}"
+                        @click="reset(Number($el.dataset.id), $el.dataset.name)">
                     Reset
                 </button>
             </div>
-            <div style="font-size:2rem;font-weight:700;color:var(--text-primary);"
-                 id="count-{{ inst.id }}">{{ total }}</div>
+            <div style="font-size:2rem;font-weight:700;color:var(--text-primary);" id="count-{{ inst.id }}">{{ total }}</div>
             <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.15rem;">items in cache</div>
             <div style="margin-top:0.75rem;">
                 <button class="btn btn-secondary btn-sm"
-                        @click="loadInstance({{ inst.id }})"
+                        data-id="{{ inst.id }}" data-name="{{ inst.name }}"
+                        @click="loadInstance(Number($el.dataset.id), $el.dataset.name)"
                         x-text="activeInstance === {{ inst.id }} ? 'Hide' : 'Show items'">
                     Show items
                 </button>
@@ -53,27 +161,24 @@
         {% endif %}
     </div>
 
-    <!-- Item table (shown when an instance is selected) -->
     <template x-if="activeInstance !== null">
         <div class="card" style="overflow:hidden;">
             <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border);">
                 <div style="display:flex;align-items:center;gap:0.75rem;">
                     <span style="font-weight:600;font-size:0.9rem;" x-text="activeInstanceName"></span>
-                    <span style="font-size:0.8rem;color:var(--text-muted);" x-text="`${filteredItems().length} items`"></span>
+                    <span style="font-size:0.8rem;color:var(--text-muted);" x-text="`${total} items`"></span>
                 </div>
                 <div style="display:flex;gap:0.5rem;align-items:center;">
-                    <!-- Type filter -->
                     <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
-                            x-model="filterType" @change="tablePage = 0">
+                            x-model="filterType" @change="goTo(0)">
                         <option value="">All types</option>
                         <option value="episode">Episode</option>
                         <option value="season">Season</option>
                         <option value="series">Series</option>
                         <option value="movie">Movie</option>
                     </select>
-                    <!-- Per page -->
                     <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
-                            x-model.number="perPage" @change="tablePage = 0">
+                            x-model.number="perPage" @change="goTo(0)">
                         <option value="20">20 / page</option>
                         <option value="50">50 / page</option>
                         <option value="100">100 / page</option>
@@ -96,7 +201,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <template x-for="(item, i) in pageItems()" :key="i">
+                        <template x-for="item in items" :key="item.id">
                             <tr>
                                 <td style="font-size:0.78rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;white-space:nowrap;"
                                     x-text="item.searched_at ? item.searched_at.replace('T',' ').substring(0,19) : '—'"></td>
@@ -107,7 +212,7 @@
                                     x-text="item.title" :title="item.title"></td>
                             </tr>
                         </template>
-                        <template x-if="filteredItems().length === 0 && !loading">
+                        <template x-if="items.length === 0 && !loading">
                             <tr>
                                 <td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;">
                                     No searched items yet.
@@ -125,107 +230,22 @@
                 </table>
             </div>
 
-            <!-- Pagination -->
             <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
                 <span x-text="paginationLabel()"></span>
                 <div style="display:flex;gap:0.4rem;">
-                    <button class="btn btn-secondary btn-sm" @click="tablePage--" :disabled="tablePage === 0">← Prev</button>
+                    <button class="btn btn-secondary btn-sm" @click="goTo(tablePage - 1)" :disabled="tablePage === 0">← Prev</button>
                     <template x-for="p in pageCount()" :key="p">
                         <button class="btn btn-sm"
                                 :class="tablePage === p - 1 ? 'btn-primary' : 'btn-secondary'"
-                                @click="tablePage = p - 1"
+                                @click="goTo(p - 1)"
                                 x-text="p"
                                 x-show="Math.abs(tablePage - (p-1)) <= 2">
                         </button>
                     </template>
-                    <button class="btn btn-secondary btn-sm" @click="tablePage++" :disabled="tablePage >= pageCount() - 1">Next →</button>
+                    <button class="btn btn-secondary btn-sm" @click="goTo(tablePage + 1)" :disabled="tablePage >= pageCount() - 1">Next →</button>
                 </div>
             </div>
         </div>
     </template>
 </div>
-
-<script>
-function searchedPage() {
-    return {
-        activeInstance: null,
-        activeInstanceName: '',
-        items: [],
-        loading: false,
-        filterType: '',
-        tablePage: 0,
-        perPage: 20,
-
-        init() {},
-
-        async loadInstance(id) {
-            if (this.activeInstance === id) {
-                this.activeInstance = null;
-                return;
-            }
-            this.activeInstance = id;
-            this.activeInstanceName = document.querySelector(`[data-iname="${id}"]`)?.textContent || '';
-            this.tablePage = 0;
-            this.filterType = '';
-            await this.fetchItems(id);
-        },
-
-        async fetchItems(id) {
-            this.loading = true;
-            try {
-                const resp = await fetch(`/api/searched?instance_id=${id}&limit=500`);
-                this.items = await resp.json();
-            } finally {
-                this.loading = false;
-            }
-        },
-
-        filteredItems() {
-            if (!this.filterType) return this.items;
-            return this.items.filter(i => i.item_type === this.filterType);
-        },
-
-        pageItems() {
-            const f = this.filteredItems();
-            return f.slice(this.tablePage * this.perPage, (this.tablePage + 1) * this.perPage);
-        },
-
-        pageCount() {
-            return Math.max(1, Math.ceil(this.filteredItems().length / this.perPage));
-        },
-
-        paginationLabel() {
-            const total = this.filteredItems().length;
-            const start = this.tablePage * this.perPage + 1;
-            const end = Math.min(start + this.perPage - 1, total);
-            return total === 0 ? '0 items' : `${start}–${end} of ${total}`;
-        },
-    };
-}
-
-async function clearInstance(id, name) {
-    if (!confirm(`Reset searched cache for "${name}"? It will be re-searched on the next run.`)) return;
-    const resp = await fetch(`/api/searched/${id}`, { method: 'DELETE' });
-    if (resp.ok) {
-        const data = await resp.json();
-        document.getElementById(`count-${id}`).textContent = '0';
-        Alpine.store('toasts').add(`Reset ${data.deleted} items for ${name}`, 'info');
-        // If currently viewing this instance, reload
-        const page = document.querySelector('[x-data]').__x.$data;
-        if (page && page.activeInstance === id) {
-            page.items = [];
-        }
-    }
-}
-
-async function clearAll() {
-    if (!confirm('Reset ALL searched items? All instances will re-search everything on the next run.')) return;
-    const resp = await fetch('/api/searched', { method: 'DELETE' });
-    if (resp.ok) {
-        const data = await resp.json();
-        document.querySelectorAll('[id^="count-"]').forEach(el => el.textContent = '0');
-        Alpine.store('toasts').add(`Reset ${data.deleted} items total`, 'info');
-    }
-}
-</script>
 {% endblock %}
