@@ -49,11 +49,16 @@ async def stream_activity(request: Request, debug: bool = False):
                 if shutdown is not None:
                     stopper = asyncio.ensure_future(shutdown.wait())
                     waiters.add(stopper)
-                done, pending = await asyncio.wait(
-                    waiters, timeout=KEEPALIVE_SECONDS, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in pending:
-                    task.cancel()
+                try:
+                    done, _ = await asyncio.wait(
+                        waiters, timeout=KEEPALIVE_SECONDS, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    # Also when the client leaves: Starlette cancels this
+                    # generator, and asyncio.wait does not cancel what it waits on.
+                    for task in waiters:
+                        if not task.done():
+                            task.cancel()
                 if stopper is not None and stopper in done:
                     break  # server is shutting down (C-L7)
                 if getter in done:

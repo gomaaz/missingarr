@@ -76,5 +76,29 @@ def test_stream_delivers_entries_and_ends_on_shutdown():
     asyncio.run(scenario())
 
 
+def test_client_leaving_mid_wait_leaves_no_pending_tasks():
+    # Starlette cancels the generator when the browser leaves the page. The
+    # queue and shutdown waiters must go with it: a forgotten queue.get() task
+    # is later logged as "Task was destroyed but it is pending!" on every page
+    # change, and a forgotten shutdown.wait() lives until the server stops.
+    async def scenario():
+        broadcaster = LogBroadcaster()
+        broadcaster.set_loop(asyncio.get_running_loop())
+        response = await activity.stream_activity(FakeRequest(broadcaster), debug=False)
+        stream = response.body_iterator
+        waiting = asyncio.ensure_future(stream.__anext__())
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        assert left == []
+        assert broadcaster._queues == []
+
+    asyncio.run(scenario())
+
+
 def test_request_shutdown_before_start_is_harmless():
     LogBroadcaster().request_shutdown()
