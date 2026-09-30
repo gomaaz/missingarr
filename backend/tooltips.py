@@ -10,11 +10,11 @@ TOOLTIPS = {
     "api_key": "API key of your *arr instance. Found under: Settings → General → API Key.",
     "enabled": "Enables or disables this instance. Disabled instances will not be searched automatically.",
     "search_missing_enabled": "Automatically searches for missing episodes (Sonarr) or movies (Radarr).",
-    "search_upgrades_enabled": "Automatically searches for quality upgrades of existing titles (Radarr only).",
-    "interval_minutes": "How often (in minutes) a search should be triggered. Recommended: 15–60 minutes.",
-    "retry_hours": "After how many hours a searched item becomes eligible to be searched again. Set to 0 to never re-search (recommended — use the Searched cache reset to retry manually).",
+    "search_upgrades_enabled": "Automatically searches for better releases of titles that already have a file (Sonarr: cutoff-unmet list, Radarr: see Upgrade Source).",
+    "interval_minutes": "How often (in minutes) a search runs. Between 1 and 10080 (one week). Recommended: 15–60 minutes. Upgrade searches run every 4× this interval.",
+    "retry_hours": "How long a searched title stays in the Searched cache. 0 = never search it again automatically (recommended — use the cache reset to retry). A season or series search only blocks episodes that were already out (air date plus hours after release) when it ran.",
     "rate_window_minutes": "Rolling time window (in minutes) for rate limiting. The rate cap applies within this window.",
-    "rate_cap": "Maximum number of search actions allowed within the rate window. Prevents API overload.",
+    "rate_cap": "Maximum number of search actions within the rate window (1 to 1,000,000,000). Prevents API overload.",
     "search_order": (
         "Order in which missing titles are searched:\n"
         "• Random: Shuffled — even distribution across your library\n"
@@ -29,8 +29,8 @@ TOOLTIPS = {
         "• Show Batch: Search for the entire series at once\n"
         "• Smart: Auto-selects Season Pack if ≥50% of a season is missing, otherwise Episode"
     ),
-    "missing_per_run": "Maximum number of missing titles processed per search run.",
-    "upgrades_per_run": "Maximum number of upgrade candidates processed per search run.",
+    "missing_per_run": "Maximum number of missing titles searched per run. Must be at least 1 while missing search is enabled.",
+    "upgrades_per_run": "Maximum number of upgrade candidates searched per run. Must be at least 1 while upgrade search is enabled.",
     "seconds_between_actions": "Delay in seconds between individual API calls. Prevents overloading the instance.",
     "hours_after_release": "Wait X hours after the release date before searching for a title. Set to 0 to search immediately.",
     "upgrade_source": (

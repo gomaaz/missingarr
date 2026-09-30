@@ -11,6 +11,20 @@
         </h1>
     </div>
 
+    <script>
+    function instanceForm(instanceType) {
+        return {
+            type: instanceType || 'sonarr',
+            enabledCheck: false,
+            missingEnabled: false,
+            upgradesEnabled: false,
+
+            showMissingMode() { return this.type === 'sonarr'; },
+            showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
+        };
+    }
+    </script>
+
     <div class="card" x-data="instanceForm('{{ instance.type if instance else 'sonarr' }}')"
          x-init="
              enabledCheck     = {{ 'true' if not instance or instance.enabled else 'false' }};
@@ -19,7 +33,10 @@
          ">
         <div class="card-body">
 
-            <form id="instance-form">
+            <!-- Not boosted: htmx would also send every field, the API key too, as a GET query. -->
+            <form id="instance-form" hx-boost="false"
+                  data-original-url="{{ instance.url if instance else '' }}"
+                  data-save-url="{{ action }}" data-save-method="{{ method }}">
 
             <!-- Skill toggles (top of card) -->
             <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0 1rem;border-bottom:1px solid var(--border);margin-bottom:1rem;flex-wrap:wrap;">
@@ -83,8 +100,10 @@
                     <input class="form-control" type="password" id="api_key" name="api_key"
                            placeholder="{% if instance %}Leave blank to keep unchanged{% else %}Paste your API key{% endif %}"
                            {% if not instance %}required{% endif %} autocomplete="off">
-                    {% if instance %}
-                    <div class="form-hint">Leave blank to keep the current API key unchanged.</div>
+                    {% if instance and instance.api_key_set %}
+                    <div class="form-hint">A key is stored. Leave the field blank to keep it — if you change the URL, enter the key again.</div>
+                    {% elif instance %}
+                    <div class="form-hint">No key stored yet.</div>
                     {% endif %}
                 </div>
                 {% if instance %}
@@ -106,6 +125,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.interval_minutes }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="interval_minutes" name="interval_minutes"
+                               min="{{ bounds.interval_minutes[0] }}" max="{{ bounds.interval_minutes[1] }}" step="1"
                                value="{{ instance.interval_minutes if instance else 15 }}">
                     </div>
                     <div class="form-group">
@@ -114,6 +134,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.retry_hours }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="retry_hours" name="retry_hours"
+                               min="{{ bounds.retry_hours[0] }}" max="{{ bounds.retry_hours[1] }}" step="1"
                                value="{{ instance.retry_hours if instance else 0 }}">
                     </div>
                 </div>
@@ -150,6 +171,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_window_minutes }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="rate_window_minutes" name="rate_window_minutes"
+                               min="{{ bounds.rate_window_minutes[0] }}" max="{{ bounds.rate_window_minutes[1] }}" step="1"
                                value="{{ instance.rate_window_minutes if instance else 60 }}">
                     </div>
                     <div class="form-group">
@@ -158,6 +180,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.rate_cap }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="rate_cap" name="rate_cap"
+                               min="{{ bounds.rate_cap[0] }}" max="{{ bounds.rate_cap[1] }}" step="1"
                                value="{{ instance.rate_cap if instance else 25 }}">
                     </div>
                 </div>
@@ -201,6 +224,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.hours_after_release }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="hours_after_release" name="hours_after_release"
+                               min="{{ bounds.hours_after_release[0] }}" max="{{ bounds.hours_after_release[1] }}" step="1"
                                value="{{ instance.hours_after_release if instance else 9 }}">
                     </div>
                     <div class="form-group">
@@ -209,6 +233,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.seconds_between_actions }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="seconds_between_actions" name="seconds_between_actions"
+                               min="{{ bounds.seconds_between_actions[0] }}" max="{{ bounds.seconds_between_actions[1] }}" step="1"
                                value="{{ instance.seconds_between_actions if instance else 2 }}">
                     </div>
                 </div>
@@ -219,6 +244,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.missing_per_run }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="missing_per_run" name="missing_per_run"
+                               min="{{ bounds.missing_per_run[0] }}" max="{{ bounds.missing_per_run[1] }}" step="1"
                                value="{{ instance.missing_per_run if instance else 5 }}">
                     </div>
                     <div class="form-group">
@@ -227,6 +253,7 @@
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.upgrades_per_run }}">?</span>
                         </label>
                         <input class="form-control" type="number" id="upgrades_per_run" name="upgrades_per_run"
+                               min="{{ bounds.upgrades_per_run[0] }}" max="{{ bounds.upgrades_per_run[1] }}" step="1"
                                value="{{ instance.upgrades_per_run if instance else 1 }}">
                     </div>
                 </div>
@@ -263,22 +290,11 @@
 </div>
 
 <script>
-// Track extra state for Alpine
-document.addEventListener('alpine:init', () => {});
-
-function instanceForm(instanceType) {
-    return {
-        type: instanceType || 'sonarr',
-        enabledCheck: false,
-        missingEnabled: false,
-        upgradesEnabled: false,
-
-        showMissingMode() { return this.type === 'sonarr'; },
-        showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
-    };
+function normalizedUrl(value) {
+    return String(value || '').trim().replace(/\/+$/, '');
 }
 
-// Form submission
+// Form submission (the handler needs the form, so this script stays below it)
 document.getElementById('instance-form').addEventListener('submit', async function(e) {
     e.preventDefault();
     const form = e.target;
@@ -311,54 +327,59 @@ document.getElementById('instance-form').addEventListener('submit', async functi
     const apiKey = form.api_key.value;
     if (apiKey) data.api_key = apiKey;
 
-    const method = '{{ method }}';
-    const action = '{{ action }}';
+    const method = form.dataset.saveMethod;
+    const action = form.dataset.saveUrl;
+
+    // The server keeps the stored key only while the URL stays the same (C1).
+    const originalUrl = form.dataset.originalUrl || '';
+    const urlChanged = originalUrl && normalizedUrl(data.url) !== normalizedUrl(originalUrl);
+    if (method === 'PUT' && urlChanged && !apiKey) {
+        toast('The URL changed — enter the API key again', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Save Instance';
+        return;
+    }
 
     try {
-        const resp = await fetch(action, {
+        const resp = await apiFetch(action, {
             method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         });
-        const result = await resp.json();
+        const result = await resp.json().catch(() => ({}));
         if (resp.ok) {
-            Alpine.store('toasts').add('Instance saved!', 'success');
-            btn.disabled = false;
-            btn.textContent = 'Save Instance';
+            if (method === 'PUT') form.dataset.originalUrl = normalizedUrl(data.url);
+            toast('Instance saved!', 'success');
         } else {
             const msg = result.detail?.[0]?.msg ?? result.detail ?? 'Save failed';
-            Alpine.store('toasts').add(msg, 'error');
-            btn.disabled = false;
-            btn.textContent = 'Save Instance';
+            toast(typeof msg === 'string' ? msg : 'Save failed', 'error');
         }
     } catch (err) {
-        Alpine.store('toasts').add('Network error', 'error');
+        if (!isSessionExpired(err)) toast('Network error', 'error');
+    } finally {
         btn.disabled = false;
         btn.textContent = 'Save Instance';
     }
 });
 
-{% if instance %}
-window._editInstanceId = {{ instance.id }};
 async function testExistingConnection(id) {
     const btn = event.target;
     btn.disabled = true;
     btn.textContent = 'Testing...';
     try {
-        const resp = await fetch(`/api/instances/${id}/test`);
-        const data = await resp.json();
+        const resp = await apiFetch(`/api/instances/${id}/test`);
+        const data = await resp.json().catch(() => ({}));
         if (resp.ok) {
-            Alpine.store('toasts').add(`Connected — ${data.appName} v${data.version}`, 'success');
+            toast(`Connected — ${data.appName} v${data.version}`, 'success');
         } else {
-            Alpine.store('toasts').add(data.detail || 'Connection failed', 'error');
+            toast(data.detail || 'Connection failed', 'error');
         }
-    } catch {
-        Alpine.store('toasts').add('Connection test failed', 'error');
+    } catch (err) {
+        if (!isSessionExpired(err)) toast('Connection test failed', 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = 'Test Connection';
     }
 }
-{% endif %}
 </script>
 {% endblock %}
