@@ -15,7 +15,7 @@ from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched
 from backend.tooltips import TOOLTIPS
 from backend.auth import (
-    AuthMiddleware, LazySessionMiddleware, verify_password, auth_enabled, init_auth,
+    AuthMiddleware, CSRFMiddleware, LazySessionMiddleware, verify_password, auth_enabled, init_auth,
     create_remember_token, _REMEMBER_COOKIE, _REMEMBER_MAX_AGE,
 )
 
@@ -73,6 +73,8 @@ app.add_middleware(
     session_cookie="ma_session",
     same_site="lax",
 )
+# Outermost: a cross-site write is refused before anything else runs (C3).
+app.add_middleware(CSRFMiddleware)
 
 # Static files & templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
