@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -18,6 +18,14 @@ logger = logging.getLogger("missingarr.agent")
 MIN_INTERVAL_MINUTES = 1
 MAX_INTERVAL_MINUTES = 10080
 UPGRADE_INTERVAL_FACTOR = 4
+
+TRIGGER_STARTED = "started"
+TRIGGER_BUSY = "busy"
+TRIGGER_UNKNOWN_SKILL = "unknown_skill"
+
+# Verification only reads command status from *arr; holding it back during
+# quiet hours just delayed verdicts and, near 24 h, lost them (B5).
+QUIET_HOURS_EXEMPT = ("health_check", "verify_commands")
 
 
 @dataclass
@@ -103,7 +111,12 @@ class BaseAgent(ABC):
         self._thread.start()
         # "Agent started" is logged by _run once the scheduler really runs (A1).
 
-    def stop(self):
+    def stop(self, abort_running: bool = True):
+        """Stop scheduling. With abort_running a search in progress ends at its
+        next check (A-L5); a reload passes False so saving the form does not
+        cut a long run short."""
+        if abort_running:
+            self._abort_event.set()
         self._stop_event.set()
         if self._scheduler and self._scheduler.running:
             self._scheduler.shutdown(wait=False)
@@ -113,8 +126,25 @@ class BaseAgent(ABC):
         self.state["next_run_at"] = None
         self.log("info", "system", f"Agent stopped — '{self.config['name']}'")
 
+    def request_abort(self) -> None:
+        """Only set the abort signal (throwaway force agents, tests)."""
+        self._abort_event.set()
+
+    def stop_requested(self) -> bool:
+        return self._abort_event.is_set()
+
+    def wait_or_stop(self, seconds: float) -> bool:
+        """Sleep between actions; returns True as soon as an abort is requested."""
+        if seconds <= 0:
+            return self._abort_event.is_set()
+        return self._abort_event.wait(seconds)
+
+    def wait_idle(self, timeout: float) -> bool:
+        """True once no skill of this instance holds its lock any more."""
+        return wait_runtime_idle(self.runtime, timeout)
+
     def reload(self, new_config: dict):
-        self.stop()
+        self.stop(abort_running=False)
         self.config = new_config
         self.state["connection_status"] = new_config.get("connection_status", "unknown")
         self.start()
@@ -223,29 +253,29 @@ class BaseAgent(ABC):
             self.config = fresh
 
         # Check skill-level enable flags — config already refreshed above
+        # Every early exit of a search job recomputes next_run_at; otherwise the
+        # card counted down to 00m 00s after a skipped run and stayed there
+        # until the next real run (A13).
         if not force and skill_name == "search_missing" and not self.config.get("search_missing_enabled"):
             self.log("debug", skill_name, "Skipping — missing search disabled")
+            self._update_next_run()
             return
         if not force and skill_name == "search_upgrades" and not self.config.get("search_upgrades_enabled"):
             self.log("debug", skill_name, "Skipping — upgrades search disabled")
+            self._update_next_run()
             return
 
-        # Check quiet hours — skipped for health_check and force runs
-        if skill_name != "health_check" and not force and self._in_quiet_hours():
+        if skill_name not in QUIET_HOURS_EXEMPT and not force and self._in_quiet_hours():
             self.log("debug", skill_name, "Skipping — quiet hours active")
             self.state["status"] = "quiet"
+            self._update_next_run()
             return
 
-        # Guard against concurrent runs of the same skill. Force triggers wait
-        # up to 90 s for an active run of that skill to finish; scheduled
-        # triggers are dropped immediately.
-        lock = self._skill_lock(skill_name)
-        deadline = time.monotonic() + (90 if force else 0)
-        acquired = lock.acquire(blocking=False)
-        while not acquired and time.monotonic() < deadline:
-            time.sleep(1)
-            acquired = lock.acquire(blocking=False)
-        if not acquired:
+        # One run per skill at a time. A second request is dropped at once —
+        # the API reports "busy" before it gets here (A11), so waiting would
+        # only turn a double click into a second, repeated run.
+        lock = self.runtime.skill_lock(skill_name)
+        if not lock.acquire(blocking=False):
             self.log("warn", skill_name, "Already running — skipping duplicate trigger")
             return
 
@@ -265,20 +295,34 @@ class BaseAgent(ABC):
                 self._update_next_run()
             lock.release()
 
-    def trigger_now(self, skill_name: str, force: bool = True):
-        """Manual trigger — runs in a separate thread to not block the caller."""
-        skill = self._get_skill(skill_name)
-        if not skill:
-            self.log("warn", "system", f"Force trigger ignored — skill '{skill_name}' not registered on this agent")
-            return
+    def trigger_now(self, skill_name: str, force: bool = True,
+                    on_done: Callable[["BaseAgent"], None] | None = None) -> str:
+        """Manual trigger — runs in its own thread. Returns TRIGGER_*.
 
-        self.log("info", "system", f"Force trigger received for '{skill_name}'")
-        t = threading.Thread(
-            target=self._run_skill,
-            args=[skill_name, force],
+        on_done(agent) is called in that thread once the run is over; the
+        orchestrator uses it to forget a throwaway agent (and its decrypted
+        config) as soon as it is finished."""
+        if not self._get_skill(skill_name):
+            self.log("warn", "system", f"Trigger ignored — skill '{skill_name}' not registered on this agent")
+            return TRIGGER_UNKNOWN_SKILL
+        if self.runtime.skill_lock(skill_name).locked():
+            self.log("info", "system", f"Trigger for '{skill_name}' rejected — it is already running")
+            return TRIGGER_BUSY
+        self.log("info", "system", f"{'Force' if force else 'Manual'} trigger received for '{skill_name}'")
+
+        def run():
+            try:
+                self._run_skill(skill_name, force)
+            finally:
+                if on_done is not None:
+                    on_done(self)
+
+        threading.Thread(
+            target=run,
+            name=f"trigger-{self.config['id']}-{skill_name}",
             daemon=True,
-        )
-        t.start()
+        ).start()
+        return TRIGGER_STARTED
 
     def _skill_lock(self, skill_name: str) -> threading.Lock:
         return self.runtime.skill_lock(skill_name)
