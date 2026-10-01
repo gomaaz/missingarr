@@ -10,6 +10,12 @@ ITEM_COMPLETED = "completed"
 ITEM_FAILED = "failed"
 ITEM_EXPIRED = "expired"
 ITEM_LEGACY = "legacy"
+# Checked search (0.9.0): settled when written, no command to ask about.
+ITEM_GRABBED = "grabbed"      # missingarr grabbed a release that passed the pre-filter
+ITEM_NO_HIT = "no_hit"        # searched, but no approved release passed (or none came back)
+
+# Items that count as done — confirmed by *arr or settled by the checked search.
+DONE_STATUSES = frozenset({ITEM_COMPLETED, ITEM_GRABBED, ITEM_NO_HIT})
 
 RUN_SUCCESS = "success"
 RUN_PENDING = "pending"
@@ -58,10 +64,16 @@ def aggregate_run_status(item_statuses: list[str]) -> str:
         return RUN_SUCCESS
     if ITEM_SUBMITTED in relevant:
         return RUN_PENDING
-    if all(s == ITEM_COMPLETED for s in relevant):
+    if all(s in DONE_STATUSES for s in relevant):
         return RUN_SUCCESS
-    if ITEM_COMPLETED in relevant:
+    if any(s in DONE_STATUSES for s in relevant):
         return RUN_PARTIAL
     if ITEM_FAILED in relevant:
         return RUN_FAILED
     return RUN_UNVERIFIED
+
+
+def count_verified(item_statuses: list[str]) -> int:
+    """The run's "confirmed" number: completed commands plus titles the
+    checked search settled (grabbed, no clean hit)."""
+    return sum(1 for s in item_statuses if s in DONE_STATUSES)

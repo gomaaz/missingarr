@@ -132,16 +132,21 @@ def lookup_many(instance_id: int, keys: Iterable[str], retry_hours: int = 0) -> 
     return found
 
 
-def purge_expired(instance_id: int, retry_hours: int) -> int:
+def purge_expired(instance_id: int, retry_hours: int, keep_grab_days: int = 0) -> int:
     """Delete entries outside the retry window. They no longer block anything,
-    they only pile up (B6). No window (0) means permanent — nothing expires."""
+    they only pile up (B6). No window (0) means permanent — nothing expires.
+
+    keep_grab_days (0.9.0): a grab of the checked search (grabbed_at) blocks
+    that many days whatever retry_hours says ("Search again if still missing
+    after"), so its row stays until then."""
     if retry_hours <= 0:
         return 0
     with get_db() as conn:
         cursor = conn.execute(
             "DELETE FROM searched_items WHERE instance_id=? "
-            "AND searched_at <= datetime('now', 'localtime', ? || ' hours')",
-            (instance_id, f"-{retry_hours}"),
+            "AND searched_at <= datetime('now', 'localtime', ? || ' hours') "
+            "AND NOT (grabbed_at IS NOT NULL AND grabbed_at > datetime('now', 'localtime', ? || ' days'))",
+            (instance_id, f"-{retry_hours}", f"-{max(0, keep_grab_days)}"),
         )
         return cursor.rowcount
 
