@@ -19,6 +19,9 @@ from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
 from backend.api import health, instances, activity, history, searched, checked_search
 from backend.api.instances import public_instance
+from backend.checked_search.settings import (
+    FIELD_LABELS, GENERAL_FIELDS, RADARR_FIELDS, SETTING_BOUNDS, SONARR_FIELDS, CheckedSearchSettings,
+)
 from backend.models.instance import FIELD_BOUNDS
 from backend.tooltips import TOOLTIPS
 from backend.auth import (
@@ -114,6 +117,26 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+def checked_search_form() -> dict:
+    """Field groups of the form section "Checked search". A rule both apps
+    have (skip_existing_file) is rendered once, outside the app groups."""
+    both = [f for f in RADARR_FIELDS if f in SONARR_FIELDS]
+    defaults = CheckedSearchSettings().model_dump()
+    return {
+        "general": list(GENERAL_FIELDS),
+        "radarr": [f for f in RADARR_FIELDS if f not in both],
+        "sonarr": [f for f in SONARR_FIELDS if f not in both],
+        "both": both,
+        "labels": FIELD_LABELS,
+        "bounds": SETTING_BOUNDS,
+        "defaults": defaults,
+        "kinds": {
+            name: "bool" if isinstance(value, bool) else "list" if isinstance(value, list) else "int"
+            for name, value in defaults.items()
+        },
+    }
+
+
 def template_ctx(request: Request, **extra) -> dict:
     """Base context passed to all templates."""
     return {
@@ -163,7 +186,8 @@ async def instances_list(request: Request):
 async def instance_new(request: Request):
     return templates.TemplateResponse(
         request, "instances/form.html",
-        template_ctx(request, instance=None, action="/api/instances", method="POST", bounds=FIELD_BOUNDS),
+        template_ctx(request, instance=None, action="/api/instances", method="POST", bounds=FIELD_BOUNDS,
+                     cs=checked_search_form()),
     )
 
 
@@ -189,7 +213,7 @@ async def instance_edit(instance_id: int, request: Request):
     return templates.TemplateResponse(
         request, "instances/form.html",
         template_ctx(request, instance=public_instance(inst), action=f"/api/instances/{instance_id}",
-                     method="PUT", bounds=FIELD_BOUNDS),
+                     method="PUT", bounds=FIELD_BOUNDS, cs=checked_search_form()),
     )
 
 

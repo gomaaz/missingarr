@@ -18,15 +18,20 @@
             enabledCheck: false,
             missingEnabled: false,
             upgradesEnabled: false,
+            checkedSearch: 'off',
 
             showMissingMode() { return this.type === 'sonarr'; },
+            // Checked search handles single episodes only (Sonarr).
+            packsLocked() { return this.type === 'sonarr' && this.checkedSearch !== 'off'; },
             showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
         };
     }
     </script>
 
     <div class="card" x-data="instanceForm('{{ instance.type if instance else 'sonarr' }}')"
+         data-checked-search="{{ instance.checked_search if instance else 'off' }}"
          x-init="
+             checkedSearch    = $el.dataset.checkedSearch || 'off';
              enabledCheck     = {{ 'true' if not instance or instance.enabled else 'false' }};
              missingEnabled   = {{ 'true' if not instance or instance.search_missing_enabled else 'false' }};
              upgradesEnabled  = {{ 'true' if instance and instance.search_upgrades_enabled else 'false' }};
@@ -138,6 +143,16 @@
                                value="{{ instance.retry_hours if instance else 0 }}">
                     </div>
                 </div>
+                <div class="form-group">
+                    <label class="form-label" for="search_again_after_profile_change"
+                           style="display:flex;align-items:center;gap:0.5rem;">
+                        <input type="checkbox" id="search_again_after_profile_change"
+                               name="search_again_after_profile_change"
+                               {% if not instance or instance.search_again_after_profile_change %}checked{% endif %}>
+                        Search again after profile changes
+                        <span class="tooltip-icon" data-tooltip="{{ tooltips.search_again_after_profile_change }}">?</span>
+                    </label>
+                </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label" for="quiet_start">
@@ -208,13 +223,15 @@
                             Missing Mode
                             <span class="tooltip-icon" data-tooltip="{{ tooltips.missing_mode }}">?</span>
                         </label>
-                        <select class="form-control" id="missing_mode" name="missing_mode">
+                        <select class="form-control" id="missing_mode" name="missing_mode" x-ref="missingMode"
+                                x-effect="if (packsLocked()) $refs.missingMode.value = 'episode'">
                             {% set mm = instance.missing_mode if instance else 'episode' %}
-                            <option value="smart" {% if mm == 'smart' %}selected{% endif %}>Smart</option>
-                            <option value="season_packs" {% if mm == 'season_packs' %}selected{% endif %}>Season Packs</option>
-                            <option value="show_batch" {% if mm == 'show_batch' %}selected{% endif %}>Show Batch</option>
+                            <option value="smart" :disabled="packsLocked()" {% if mm == 'smart' %}selected{% endif %}>Smart</option>
+                            <option value="season_packs" :disabled="packsLocked()" {% if mm == 'season_packs' %}selected{% endif %}>Season Packs</option>
+                            <option value="show_batch" :disabled="packsLocked()" {% if mm == 'show_batch' %}selected{% endif %}>Show Batch</option>
                             <option value="episode" {% if mm == 'episode' %}selected{% endif %}>Episode</option>
                         </select>
+                        <div class="form-hint" x-show="packsLocked()">Checked search works with single episodes only.</div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -278,6 +295,68 @@
                 </div>
             </div>
 
+            <!-- Checked search (0.9.0) -->
+            <div class="form-section">
+                <div class="form-section-title">Checked search</div>
+                <div class="form-group">
+                    <label class="form-label" for="checked_search">
+                        Checked search
+                        <span class="tooltip-icon" data-tooltip="{{ tooltips.checked_search }}">?</span>
+                    </label>
+                    <select class="form-control" id="checked_search" name="checked_search" x-model="checkedSearch">
+                        {% set csm = instance.checked_search if instance else 'off' %}
+                        <option value="off" {% if csm == 'off' %}selected{% endif %}>Off</option>
+                        <option value="dry_run" {% if csm == 'dry_run' %}selected{% endif %}>Dry run</option>
+                        <option value="active" {% if csm == 'active' %}selected{% endif %}>Active</option>
+                    </select>
+                    <div class="form-hint" x-show="checkedSearch === 'dry_run'">
+                        Dry run grabs nothing and remembers nothing — review the decisions on the Pre-filter page.
+                    </div>
+                </div>
+                {% set cs_values = instance.checked_search_settings if instance else cs.defaults %}
+                {% macro cs_field(name) %}
+                    {% set kind = cs.kinds[name] %}
+                    {% set value = cs_values.get(name, cs.defaults[name]) %}
+                    <div class="form-group">
+                        {% if kind == 'bool' %}
+                        <label class="form-label" for="cs_{{ name }}" style="display:flex;align-items:center;gap:0.5rem;">
+                            <input type="checkbox" id="cs_{{ name }}" data-cs-field="{{ name }}" data-cs-kind="bool"
+                                   {% if value %}checked{% endif %}>
+                            {{ cs.labels[name] }}
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips['cs_' ~ name] }}">?</span>
+                        </label>
+                        {% else %}
+                        <label class="form-label" for="cs_{{ name }}">
+                            {{ cs.labels[name] }}
+                            <span class="tooltip-icon" data-tooltip="{{ tooltips['cs_' ~ name] }}">?</span>
+                        </label>
+                        {% if kind == 'list' %}
+                        <input class="form-control" type="text" id="cs_{{ name }}" data-cs-field="{{ name }}"
+                               data-cs-kind="list" value="{{ value | join(', ') }}">
+                        {% else %}
+                        <input class="form-control" type="number" id="cs_{{ name }}" data-cs-field="{{ name }}"
+                               data-cs-kind="int" min="{{ cs.bounds[name][0] }}" max="{{ cs.bounds[name][1] }}"
+                               step="1" value="{{ value }}">
+                        {% endif %}
+                        {% endif %}
+                    </div>
+                {% endmacro %}
+                <div x-show="checkedSearch !== 'off'">
+                    <div class="form-row">
+                        {% for name in cs.general %}{{ cs_field(name) }}{% endfor %}
+                    </div>
+                    <div x-show="type === 'radarr'">
+                        <div class="form-hint" style="margin-bottom:0.5rem;">Radarr rules (pre-filter V6)</div>
+                        {% for name in cs.radarr %}{{ cs_field(name) }}{% endfor %}
+                    </div>
+                    <div x-show="type === 'sonarr'">
+                        <div class="form-hint" style="margin-bottom:0.5rem;">Sonarr rules (S1–S4, not measured yet — check them in a dry run)</div>
+                        {% for name in cs.sonarr %}{{ cs_field(name) }}{% endfor %}
+                    </div>
+                    {% for name in cs.both %}{{ cs_field(name) }}{% endfor %}
+                </div>
+            </div>
+
             <!-- Submit -->
             <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1rem;">
                 <a href="/instances" class="btn btn-secondary">Cancel</a>
@@ -290,6 +369,19 @@
 </div>
 
 <script>
+// Every field of the section, hidden ones too: the settings of the other
+// app keep their values.
+function checkedSearchSettings(form) {
+    const settings = {};
+    form.querySelectorAll('[data-cs-field]').forEach(function (el) {
+        const kind = el.dataset.csKind;
+        if (kind === 'bool') settings[el.dataset.csField] = el.checked;
+        else if (kind === 'list') settings[el.dataset.csField] = el.value.split(/[\s,;]+/).filter(Boolean);
+        else settings[el.dataset.csField] = parseInt(el.value, 10);
+    });
+    return settings;
+}
+
 function normalizedUrl(value) {
     return String(value || '').trim().replace(/\/+$/, '');
 }
@@ -322,6 +414,9 @@ document.getElementById('instance-form').addEventListener('submit', async functi
         upgrade_source: form.upgrade_source?.value ?? 'monitored_items_only',
         quiet_start: form.quiet_start.value || null,
         quiet_end: form.quiet_end.value || null,
+        search_again_after_profile_change: form.search_again_after_profile_change.checked,
+        checked_search: form.checked_search.value,
+        checked_search_settings: checkedSearchSettings(form),
     };
 
     const apiKey = form.api_key.value;

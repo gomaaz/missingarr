@@ -41,4 +41,45 @@ TOOLTIPS = {
     ),
     "quiet_start": "Start of quiet hours (HH:MM). No automatic searches will run during this period.",
     "quiet_end": "End of quiet hours (HH:MM). Force runs from the dashboard always bypass quiet hours.",
+    # Checked search (0.9.0)
+    "checked_search": (
+        "Instead of telling *arr to search and grab, missingarr fetches the search results itself, "
+        "checks every approved release with the pre-filter below and grabs only the first clean one.\n"
+        "• Off: searches as before (search command, *arr grabs its first approved release)\n"
+        "• Dry run: searches and checks, but grabs nothing and remembers nothing. Every title is checked "
+        "once per round (a Force Run too) and again after its quality profile or the rules below changed; "
+        "see the Pre-filter page, reset the round there.\n"
+        "• Active: grabs the first release that passes every rule, for exactly this title. No clean release: "
+        "the title counts as searched, Retry decides when it is searched again.\n"
+        "A run pauses (searches nothing) while an indexer has Automatic Search and Interactive Search set "
+        "differently in *arr.\n"
+        "Sonarr: single episodes only — the pack modes are locked while this is on."
+    ),
+    "cs_release_timeout_seconds": "How long to wait for *arr's release search (GET /release runs the indexer search before it answers). 10 to 600 seconds. A timeout counts as a failed search; the title is tried again next run.",
+    "cs_time_budget_minutes": "No new title is started once a run has been going this long (1 to 1440 minutes). The rest waits for the next run.",
+    "cs_dry_run_max_releases": "Dry run only: check at most this many approved releases per title (1 to 1000). The rest are listed as unchecked.",
+    "cs_search_again_after_days": "Active only: a title the checked search grabbed that is still in the Wanted list (missing, or cutoff unmet) after this many days is searched again, checked, whatever Retry says. 1 to 365 days. It takes the place of *arr's \"Redownload Failed from Interactive Search\" — switch that off in Radarr and Sonarr: a grab through the API counts as interactive.",
+    "cs_year_tolerance": "Radarr rule a: the year in the release name may be this many years away from a year of the movie (year, secondary year and — if switched on — the years of its release dates). 0 to 10.",
+    "cs_count_release_dates": "Radarr rule a: also accept the years of the cinema, digital and physical release as the movie's years.",
+    "cs_veto_other_movie": "Radarr rule b: reject a release with a year that Radarr's /parse assigns to another movie of your library.",
+    "cs_prefix_match": "Radarr rule c: a release title also fits when it starts with a name of the movie, or the other way round (both at least the minimum length).",
+    "cs_prefix_min_length": "Radarr rule c: minimum length (letters and digits) of both titles for the prefix match. 1 to 50.",
+    "cs_word_match": "Radarr rule c: a release title also fits when it contains every word of a name of the movie that has enough core words.",
+    "cs_word_min_core_words": "Radarr rule c: a name counts for the word match only with at least this many core words (words other than the, a, an, der, die, das, and, und, of, le, la, les, el, il). 1 to 10.",
+    "cs_no_year_needs_exact": "Radarr rule d: a release without a year must match a name of the movie exactly, or /parse must assign it to this movie.",
+    "cs_skip_existing_file": "Never grab the release the existing file came from again (same scene name or file name). Protects upgrades from grabbing the same release in a loop.",
+    "cs_veto_other_series": "Sonarr rule S1: reject a release that Sonarr's /parse assigns to another series of your library.",
+    "cs_check_suffix": "Sonarr rule S2: a year or country code at the end of the parsed series title must fit the series — the year within the tolerance of the series year, the country code also at the end of the series title or an alternate title.",
+    "cs_country_codes": "Sonarr rule S2: country codes that count as a suffix, separated by commas (two or three letters).",
+    "cs_suffix_year_tolerance": "Sonarr rule S2: how many years a year suffix may be away from the series year. 0 to 10.",
+    "cs_reject_days_before_air": "Sonarr rule S3: reject a release published more than this many days before the episode aired (a sign of a different numbering). 0 to 36500.",
+    "cs_note_days_before_air": "Sonarr rule S3: releases published at least this many days (but not more than the reject limit) before the episode aired are only noted in the log. 0 to 36500.",
+    "search_again_after_profile_change": (
+        "A searched title stays in the Searched cache (see Retry). With this on, it may be searched again as soon "
+        "as its quality profile changes in *arr — scores, qualities, custom formats or release profiles. "
+        "Every run compares a fingerprint of the profiles; a changed custom format or release profile counts as "
+        "a change of every profile. Titles searched before 0.9.0 are released only by the next change. "
+        "Off: cached titles stay blocked whatever the profile. A dry run always checks a title again after a "
+        "profile change."
+    ),
 }
