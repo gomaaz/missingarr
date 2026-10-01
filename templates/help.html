@@ -21,6 +21,17 @@
     </div>
 </div>
 
+<!-- Checked search -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header"><strong>Checked search (pre-filter)</strong></div>
+    <div class="card-body" style="font-size:0.9rem;line-height:1.7;color:var(--text-secondary);">
+        <p>Some indexers attach the searched movie's or series' ID to every result of an ID search, foreign titles included, and *arr then grabs a foreign title. With <strong>Checked search</strong> missingarr fetches the search results itself (<code>GET /api/v3/release</code>), checks every approved release with a pre-filter (name, year, <code>/parse</code>, release of the existing file; Sonarr: series, country/year suffix, publish date) and grabs only the first release that passes (<code>POST /api/v3/release</code>).</p>
+        <p><strong>Dry run</strong> searches and checks but grabs nothing and remembers nothing. Review the decisions on the <a href="/checked-search">Pre-filter</a> page — "only differences" shows where the filter would take something else than *arr — or download them as CSV. Every title is checked once per round (a Force Run does not change that) and again after its quality profile or the rules changed ("profile changed", "settings changed"); "Reset dry run" starts a new round.</p>
+        <p><strong>Active</strong> grabs the first clean release and names the title it is for, so a search for another title in between cannot redirect it. A title without a clean release counts as searched (Retry decides about the next attempt); a grabbed title that is still missing after <em>Search again if still missing after (days)</em> is searched again. A grab without a clear answer keeps the title blocked like a grab ("grab uncertain"). The History shows these titles as "geladen" or "kein sauberer Treffer". Sonarr: single episodes only.</p>
+        <p>A checked run <strong>pauses</strong> — searches and remembers nothing, also when there would be nothing to search — while an indexer has Automatic Search and Interactive Search set differently in *arr (the release search asks the interactive ones), or while the indexer list cannot be read. The run counts as a success with the note "Checked search paused"; the activity log warns and names the indexer, and Last sync on the card keeps the last run that searched.</p>
+    </div>
+</div>
+
 <!-- Fields reference -->
 <div class="card" style="margin-bottom:1rem;">
     <div class="card-header"><strong>Field Reference</strong></div>
@@ -30,7 +41,7 @@
         <tbody>
         {% for key, tip in tooltips.items() %}
         <tr>
-            <td style="font-weight:600;font-size:0.8rem;white-space:nowrap;color:var(--accent);">{{ key.replace('_', ' ').title() }}</td>
+            <td style="font-weight:600;font-size:0.8rem;white-space:nowrap;color:var(--accent);">{{ (('checked search ' ~ key[3:]) if key.startswith('cs_') else key).replace('_', ' ').title() }}</td>
             <td style="font-size:0.82rem;color:var(--text-secondary);white-space:pre-wrap;">{{ tip }}</td>
             <td style="font-size:0.8rem;color:var(--text-muted);">—</td>
         </tr>

@@ -17,6 +17,11 @@
     <div class="card-header">
         <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;">
             <span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span>
+            {% if inst.checked_search == 'dry_run' %}
+            <span class="badge badge-scheduled" data-checked-badge title="Checked search: dry run — nothing is grabbed, see Pre-filter">dry run</span>
+            {% elif inst.checked_search == 'active' %}
+            <span class="badge badge-online" data-checked-badge title="Checked search: only releases that pass the pre-filter are grabbed">checked</span>
+            {% endif %}
             <span style="font-weight:600;font-size:0.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ inst.name }}">
                 {{ inst.name }} <span style="color:var(--text-muted);font-weight:400;">(#{{ inst.id }})</span>
             </span>

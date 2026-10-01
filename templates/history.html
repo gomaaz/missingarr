@@ -83,8 +83,16 @@ function historyPage() {
                 completed: 'durchgelaufen',
                 failed: 'gescheitert',
                 submitted: 'offen',
-                expired: 'nicht prüfbar'
+                expired: 'nicht prüfbar',
+                grabbed: 'geladen',
+                no_hit: 'kein sauberer Treffer'
             }[s] || s;
+        },
+        itemTitle(row) {
+            if (row.command_id) return 'Befehl #' + row.command_id;
+            if (row.command_status === 'grabbed') return 'Geprüfte Suche: sauberes Release geladen';
+            if (row.command_status === 'no_hit') return 'Geprüfte Suche: kein Release hat den Vorfilter bestanden';
+            return row.command_status === 'failed' ? 'Nicht angenommen' : '';
         }
     };
 }
@@ -202,9 +210,10 @@ function historyPage() {
                                         'badge-online': row.command_status === 'completed',
                                         'badge-offline': row.command_status === 'failed',
                                         'badge-scheduled': row.command_status === 'submitted',
-                                        'badge-unknown': row.command_status === 'expired'
+                                        'badge-unknown': row.command_status === 'expired' || row.command_status === 'no_hit',
+                                        'badge-running': row.command_status === 'grabbed'
                                     }"
-                                    :title="row.command_id ? 'Befehl #' + row.command_id : (row.command_status === 'failed' ? 'Nicht angenommen' : '')"
+                                    :title="itemTitle(row)"
                                     x-text="itemLabel(row.command_status)">
                                 </span>
                             </template>

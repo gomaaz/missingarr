@@ -238,6 +238,15 @@ async def searched_page(request: Request):
     )
 
 
+@app.get("/checked-search", response_class=HTMLResponse)
+async def checked_search_page(request: Request):
+    instances = [public_instance(i) for i in db.instances.get_all()]
+    return templates.TemplateResponse(
+        request, "checked_search.html",
+        template_ctx(request, instances=instances, summary=db.checked_search_log.summary(current_round=True)),
+    )
+
+
 @app.get("/help", response_class=HTMLResponse)
 async def help_page(request: Request):
     return templates.TemplateResponse(
