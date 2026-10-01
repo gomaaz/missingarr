@@ -11,15 +11,15 @@
 ## Global Constraints
 
 - Live läuft 0.7.0 = `main` (1c05737). Gearbeitet wird auf Branch `fix/codex-review`. Am Ende steht Version `0.8.0` in `VERSION`.
-- Die Live-Datenbanken im Datenordner des Live-Stacks auf dem Server und in `/root/missingarr/data` werden **nie** geöffnet, gelesen oder kopiert. Der laufende Container wird nicht angesprochen (kein `exec`, kein `stop`, kein Request an Port 8000).
+- Die Live-Datenbanken im Datenordner des Live-Stacks auf dem Server und in `<repo>/data` werden **nie** geöffnet, gelesen oder kopiert. Der laufende Container wird nicht angesprochen (kein `exec`, kein `stop`, kein Request an Port 8000).
 - Jeder Test benutzt eine eigene SQLite-Datei unter `tmp_path`. Kein Test darf `backend.main` auf Modulebene importieren; der Import passiert erst in einer Fixture, nachdem `settings.database_url` auf `tmp_path` umgebogen ist (Grund: bis P4 fertig ist, öffnet `import backend.main` die Datenbank aus `settings.database_url`, und der Standardwert zeigt auf `./data/missingarr.db`).
 - In Tests nie `monkeypatch.undo()` aufrufen: das setzt auch `settings.database_url` auf `./data/missingarr.db` zurück, und die nächste Abfrage im selben Test träfe die echte Entwicklungs-DB. Einzelne Attribute werden mit einem zweiten `monkeypatch.setattr(…, original)` zurückgesetzt.
 - Tests nur in neuen Dateien `tests/test_<paket>_*.py` (z. B. `tests/test_p3_history.py`), jede Datei mit eigenen Fixtures. Keine `conftest.py`. Die vorhandenen Dateien `tests/test_database_regressions.py` und `tests/test_verification.py` bleiben unverändert und grün.
-- Testbefehl für alles: `cd /root/missingarr && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`. Vor Beginn: 22 grün.
+- Testbefehl für alles: `cd <repo> && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`. Vor Beginn: 22 grün.
 - **Worktrees in Welle 1 und 2.** Parallele Pakete teilen sich weder Arbeitsbaum noch Index: sonst wäre die Gesamtsuite rot, sobald das Nachbarpaket nach TDD-Step 1 einen absichtlich roten Test hat, und `git commit` nähme gestagte Dateien des Nachbarn mit (dazu `index.lock`-Kollisionen). Deshalb zu Beginn jeder Welle im Haupt-Arbeitsbaum, für jedes Paket `<p>` der Welle (Welle 1: `p1`, `p3a`, `p6`; Welle 2: `p2`, `p3b`, `p4`):
-  `git -C /root/missingarr worktree add /root/missingarr-wt/<p> -b fix/codex-review-<p> fix/codex-review`
-  Im Worktree gilt: jedes `cd /root/missingarr` in den Tasks heißt `cd /root/missingarr-wt/<p>`, und jedes `.venv/bin/…` heißt `/root/missingarr/.venv/bin/…` (eine gemeinsame `.venv`, nur Task 0 und Task Z installieren etwas hinein). Die Gesamtsuite im Worktree sieht nur die eigenen Änderungen auf dem Stand des Wellenbeginns und bleibt deshalb aussagekräftig. Commits nur im eigenen Worktree.
-- **Wellen-Abnahme.** Am Ende einer Welle im Haupt-Arbeitsbaum `/root/missingarr` (Zweig `fix/codex-review`) die Paketzweige nacheinander mergen (`git merge --no-ff fix/codex-review-<p>`; wegen der Dateizuständigkeit ohne Konflikte), dann die Gesamtsuite. Erst wenn sie grün ist: `git worktree remove /root/missingarr-wt/<p>` und `git branch -d fix/codex-review-<p>` je Paket. Welle 3 (nur P5), Task 0 und Task Z laufen direkt im Haupt-Arbeitsbaum.
+  `git -C <repo> worktree add <repo>-wt/<p> -b fix/codex-review-<p> fix/codex-review`
+  Im Worktree gilt: jedes `cd <repo>` in den Tasks heißt `cd <repo>-wt/<p>`, und jedes `.venv/bin/…` heißt `<repo>/.venv/bin/…` (eine gemeinsame `.venv`, nur Task 0 und Task Z installieren etwas hinein). Die Gesamtsuite im Worktree sieht nur die eigenen Änderungen auf dem Stand des Wellenbeginns und bleibt deshalb aussagekräftig. Commits nur im eigenen Worktree.
+- **Wellen-Abnahme.** Am Ende einer Welle im Haupt-Arbeitsbaum `<repo>` (Zweig `fix/codex-review`) die Paketzweige nacheinander mergen (`git merge --no-ff fix/codex-review-<p>`; wegen der Dateizuständigkeit ohne Konflikte), dann die Gesamtsuite. Erst wenn sie grün ist: `git worktree remove <repo>-wt/<p>` und `git branch -d fix/codex-review-<p>` je Paket. Welle 3 (nur P5), Task 0 und Task Z laufen direkt im Haupt-Arbeitsbaum.
 - **Scratchpad.** Befehle, die Wegwerf-Dateien brauchen, setzen am Anfang jedes Codeblocks selbst `SCRATCH=<scratchpad>` und prüfen `test -d "$SCRATCH"` (Umgebungsvariablen überleben zwischen zwei Bash-Aufrufen nicht; ein leeres `$SCRATCH` hieße Ordner unter `/` anlegen und dort löschen). Wer den Plan ausführt, ersetzt `<scratchpad>` in allen Blöcken durch den absoluten Pfad des eigenen Scratchpads.
 - Dateien schreiben nur mit dem Write- bzw. Edit-Werkzeug, nie per Heredoc (`cat <<EOF`).
 - Diese Live-Werte müssen nach dem Update ohne Änderung gültig sein und genauso wirken: Sonarr `interval_minutes=60`, `missing_mode=episode`, `missing_per_run=4`, `rate_cap=300`, `rate_window_minutes=60`, Upgrades aus, `retry_hours=0`. Radarr `interval_minutes=30`, `missing_per_run=600`, `rate_cap=999999999`, Upgrades aus, `retry_hours=0`. Unbekannte Felder können jeden bisher speicherbaren Wert haben, auch `0` bei `*_per_run` eines abgeschalteten Skills.
@@ -475,7 +475,7 @@ Tests mit Alt-DB (P3.1, `tests/test_p3_database.py`):
 
 - [ ] **Step 1: Fehlen belegen**
 
-Run: `cd /root/missingarr && .venv/bin/python -c "import fastapi.testclient"`
+Run: `cd <repo> && .venv/bin/python -c "import fastapi.testclient"`
 Expected: FAIL mit `RuntimeError: The starlette.testclient module requires the httpx2 package to be installed.`
 
 - [ ] **Step 2: Abhängigkeit eintragen**
@@ -490,7 +490,7 @@ httpx2>=2.13
 
 - [ ] **Step 3: Installieren und prüfen**
 
-Run: `cd /root/missingarr && .venv/bin/pip install "httpx2>=2.13" && .venv/bin/python -c "import fastapi.testclient; print('ok')" && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/pip install "httpx2>=2.13" && .venv/bin/python -c "import fastapi.testclient; print('ok')" && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: `ok`, danach `22 passed`.
 
 - [ ] **Step 4: Commit**
@@ -657,7 +657,7 @@ def test_names_with_quotes_and_brackets_stay_allowed():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_models.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_models.py -q -p no:cacheprovider`
 Expected: FAIL mit `ImportError: cannot import name 'FIELD_BOUNDS'`.
 
 - [ ] **Step 3: Implementierung**
@@ -818,7 +818,7 @@ class InstanceRead(InstanceBase):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_models.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_models.py -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -945,7 +945,7 @@ def test_stored_interval_outside_bounds_is_clamped(db_path, running_agent, store
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_scheduler.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_scheduler.py -q -p no:cacheprovider`
 Expected: FAIL (`job_ids` ohne `missing_…`/`upgrades_…`; `AttributeError: 'FakeAgent' object has no attribute 'refresh_config'`; Status bleibt `scheduled` beim Fehler).
 
 - [ ] **Step 3: Implementierung**
@@ -1117,7 +1117,7 @@ In `backend/agents/sonarr.py` und `radarr.py` den Kommentar in `build_skills` er
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_scheduler.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_scheduler.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1244,7 +1244,7 @@ def test_log_never_raises_and_still_broadcasts(db_path, monkeypatch):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_runtime.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_runtime.py -q -p no:cacheprovider`
 Expected: FAIL mit `ImportError: cannot import name 'InstanceRuntime'`.
 
 - [ ] **Step 3: Implementierung**
@@ -1419,7 +1419,7 @@ def wait_runtime_idle(runtime: InstanceRuntime, timeout: float) -> bool:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_runtime.py tests/test_p1_scheduler.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_runtime.py tests/test_p1_scheduler.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1610,7 +1610,7 @@ def test_refresh_config_updates_a_running_agent(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_control.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_control.py -q -p no:cacheprovider`
 Expected: FAIL mit `ImportError: cannot import name 'QUIET_HOURS_EXEMPT'`.
 
 - [ ] **Step 3: Implementierung**
@@ -1811,7 +1811,7 @@ Import in `orchestrator.py` zusätzlich `TRIGGER_STARTED` aus `backend.agents.ba
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_control.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_control.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1930,7 +1930,7 @@ def test_redirects_are_not_followed_and_the_key_stays_home(servers):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_http.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_http.py -q -p no:cacheprovider`
 Expected: FAIL — `Target.hits` enthält den weitergeleiteten Aufruf mit `SECRET`.
 
 - [ ] **Step 3: Implementierung**
@@ -1979,7 +1979,7 @@ In `http_get_raw` den Aufruf um `allow_redirects=False` ergänzen (der Rest blei
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p1_http.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p1_http.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2470,7 +2470,7 @@ def test_database_grown_through_real_releases_upgrades_cleanly(tmp_path, monkeyp
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_database.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_database.py -q -p no:cacheprovider`
 Expected: FAIL (u. a. `retry_hours` wird 0, `last_checked_at` fehlt, `_COLUMN_MIGRATIONS` existiert nicht).
 
 - [ ] **Step 3: Implementierung**
@@ -2660,7 +2660,7 @@ Die frühere Zeile `conn.execute("UPDATE instances SET retry_hours=0 WHERE retry
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_database.py tests/test_database_regressions.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_database.py tests/test_database_regressions.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2784,7 +2784,7 @@ def test_app_settings_roundtrip(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_searched.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_searched.py -q -p no:cacheprovider`
 Expected: FAIL mit `AttributeError: module 'backend.db.searched' has no attribute 'local_to_utc'`.
 
 - [ ] **Step 3: Implementierung**
@@ -2899,7 +2899,7 @@ from backend.db import instances, activity, history, searched, app_settings
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_searched.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_searched.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -3071,7 +3071,7 @@ def test_item_listing_filters_counts_and_pages(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_history.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_history.py -q -p no:cacheprovider`
 Expected: FAIL mit `AttributeError: module 'backend.db.history' has no attribute 'record_submission'`.
 
 - [ ] **Step 3: Implementierung**
@@ -3294,7 +3294,7 @@ def clear() -> dict:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_history.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_history.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -3386,7 +3386,7 @@ def test_searched_endpoint_reports_the_total(client):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_api.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_api.py -q -p no:cacheprovider`
 Expected: FAIL (negative Limits liefern 200, Header `X-Total-Count` fehlt).
 
 - [ ] **Step 3: Implementierung**
@@ -3488,7 +3488,7 @@ def clear_searched_for_instance(instance_id: int):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_api.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_api.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -3640,7 +3640,7 @@ def test_abort_stops_the_pass(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_verify.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_verify.py -q -p no:cacheprovider`
 Expected: FAIL (`orphaned` bleibt `submitted`, `resolve_item` fehlt, Rotation fragt dieselben 50).
 
 - [ ] **Step 3: Implementierung**
@@ -3825,7 +3825,7 @@ Bis P3.5 fertig ist, als Platzhalter-freie Minimalfassung in der Klasse:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_verify.py tests/test_verification.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_verify.py tests/test_verification.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -3928,7 +3928,7 @@ def test_permanent_cache_and_zero_retention_keep_everything(db_path, monkeypatch
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_housekeeping.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_housekeeping.py -q -p no:cacheprovider`
 Expected: FAIL (Zeilen bleiben stehen).
 
 - [ ] **Step 3: Implementierung**
@@ -3971,7 +3971,7 @@ Expected: FAIL (Zeilen bleiben stehen).
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p3_housekeeping.py tests/test_p3_verify.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p3_housekeeping.py tests/test_p3_verify.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -4044,7 +4044,7 @@ def test_vendor_script_pins_the_same_integrity():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_vendor.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p6_vendor.py -q -p no:cacheprovider`
 Expected: FAIL mit `FileNotFoundError` (`static/vendor/checksums.json`).
 
 - [ ] **Step 3: Skript schreiben**
@@ -4124,7 +4124,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Dateien erzeugen und Tests laufen lassen**
 
-Run: `cd /root/missingarr && .venv/bin/python scripts/vendor_assets.py && .venv/bin/python -m pytest tests/test_p6_vendor.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python scripts/vendor_assets.py && .venv/bin/python -m pytest tests/test_p6_vendor.py -q -p no:cacheprovider`
 Expected: `ok  alpinejs-3.14.1.min.js`, `ok  htmx-2.0.4.min.js`, dann PASS.
 
 - [ ] **Step 5: Commit**
@@ -4191,7 +4191,7 @@ def test_every_locked_package_is_pinned_with_hashes():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider`
 Expected: FAIL (`passlib` steht noch drin, `requirements.lock` fehlt).
 
 - [ ] **Step 3: `requirements.txt` ändern**
@@ -4219,7 +4219,7 @@ Run:
 ```bash
 SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
-cd /root/missingarr
+cd <repo>
 python3 -m venv "$SCRATCH/lockvenv"
 "$SCRATCH/lockvenv/bin/pip" install --quiet "pip-tools>=7.4"
 .venv/bin/pip freeze --exclude-editable > "$SCRATCH/venv-freeze.txt"
@@ -4233,7 +4233,7 @@ Expected: `requirements.lock` entsteht, die Hash-Zahl ist deutlich größer als 
 
 - [ ] **Step 5: Tests grün, Installation mit Hashprüfung trocken probieren**
 
-Run: `SCRATCH=<scratchpad> && test -d "$SCRATCH" && cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider && "$SCRATCH/lockvenv/bin/pip" install --dry-run --quiet --require-hashes -r requirements.lock`
+Run: `SCRATCH=<scratchpad> && test -d "$SCRATCH" && cd <repo> && .venv/bin/python -m pytest tests/test_p6_requirements.py -q -p no:cacheprovider && "$SCRATCH/lockvenv/bin/pip" install --dry-run --quiet --require-hashes -r requirements.lock`
 Expected: PASS, der Trockenlauf endet ohne Hash-Fehler.
 
 - [ ] **Step 6: Commit**
@@ -4400,7 +4400,7 @@ def test_non_numeric_ids_are_rejected(tmp_path):
 
 - [ ] **Step 3: Tests laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_build.py tests/test_p6_entrypoint.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p6_build.py tests/test_p6_entrypoint.py -q -p no:cacheprovider`
 Expected: FAIL (kein Digest, Skript fehlt).
 
 - [ ] **Step 4: Implementierung**
@@ -4513,7 +4513,7 @@ CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--wo
 
 - [ ] **Step 5: Tests grün**
 
-Run: `cd /root/missingarr && chmod 0755 docker-entrypoint.sh && .venv/bin/python -m pytest tests/test_p6_build.py tests/test_p6_entrypoint.py -q -p no:cacheprovider`
+Run: `cd <repo> && chmod 0755 docker-entrypoint.sh && .venv/bin/python -m pytest tests/test_p6_build.py tests/test_p6_entrypoint.py -q -p no:cacheprovider`
 Expected: PASS (als root; ohne root werden die Entrypoint-Tests übersprungen).
 
 - [ ] **Step 6: Image bauen (ohne Container)**
@@ -4521,7 +4521,7 @@ Expected: PASS (als root; ohne root werden die Entrypoint-Tests übersprungen).
 Run:
 
 ```bash
-cd /root/missingarr
+cd <repo>
 docker build -t missingarr:codex-review-test .
 docker image inspect missingarr:codex-review-test --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}} {{.Config.User}}'
 ```
@@ -4576,7 +4576,7 @@ def test_readme_explains_the_bcrypt_hash_and_the_upgrade():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_docs.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p6_docs.py -q -p no:cacheprovider`
 Expected: FAIL.
 
 - [ ] **Step 3: Dateien schreiben**
@@ -4711,7 +4711,7 @@ Front-end libraries are vendored in `static/vendor`. To update them, change vers
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p6_docs.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p6_docs.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -4975,7 +4975,7 @@ def test_run_status_rules(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_base.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_base.py -q -p no:cacheprovider`
 Expected: FAIL mit `ImportError: cannot import name 'SubmitOutcome'`.
 
 - [ ] **Step 3: Implementierung**
@@ -5167,7 +5167,7 @@ def finish_search_run(
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_base.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_base.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -5347,7 +5347,7 @@ def test_live_like_sonarr_settings_run_through(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_search_missing.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_search_missing.py -q -p no:cacheprovider`
 Expected: FAIL (`ImportError: cannot import name 'RANDOM_PAGE_BUDGET'`).
 
 - [ ] **Step 3: Implementierung**
@@ -5837,7 +5837,7 @@ class SearchMissingSkill(BaseSkill):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_search_missing.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_search_missing.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -6019,12 +6019,12 @@ def test_radarr_newest_first_uses_the_home_release(db_path):
 
 - [ ] **Step 2: Tests laufen lassen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_cache_rules.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_cache_rules.py -q -p no:cacheprovider`
 Expected: PASS mit der P2.2-Implementierung. Gegenprobe gegen den alten Stand: `git stash` ist hier nicht nötig — dieselben Tests auf 1c05737 schlagen fehl, weil dort `_check_keys` im Modus `episode` nur `ep:` prüft und `digitalRelease` nicht vorkommt. `test_series_keys_from_before_the_update_do_not_block` ist der Regressionstest für den Live-Stand vom 30.09.2026 (Modus `episode`, alte `ser:`-Zeilen); er muss auch dann grün bleiben, wenn jemand `_blocked` später vereinfacht. Schlägt ein Test fehl, liegt der Fehler in `_blocked`, `_density` oder `release_date`; dort korrigieren, nicht im Test.
 
 - [ ] **Step 3: Gesamtsuite**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 4: Commit**
@@ -6130,7 +6130,7 @@ def test_zero_per_run_does_nothing(db_path):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_search_upgrades.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_search_upgrades.py -q -p no:cacheprovider`
 Expected: FAIL (Seite 15 wird nie gelesen, Ausfall ergibt `success`).
 
 - [ ] **Step 3: Implementierung**
@@ -6363,7 +6363,7 @@ class SearchUpgradesSkill(BaseSkill):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_search_upgrades.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_search_upgrades.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -6426,7 +6426,7 @@ def test_http_errors_keep_their_status_code(db_path, status, expected, text):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_health.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_health.py -q -p no:cacheprovider`
 Expected: FAIL (`offline` statt `error`, Log „HTTP 0“).
 
 - [ ] **Step 3: Implementierung**
@@ -6455,7 +6455,7 @@ In `backend/skills/health_check.py` den `HTTPError`-Zweig ersetzen:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p2_health.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p2_health.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -6554,7 +6554,7 @@ def test_login_works_with_the_lazily_read_session_key(client):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_startup.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_startup.py -q -p no:cacheprovider`
 Expected: FAIL — `never.db` wird beim Import angelegt. (Der Subprozess schreibt nur in `tmp_path`, weil `DATABASE_URL` gesetzt ist.)
 
 - [ ] **Step 3: Implementierung**
@@ -6642,7 +6642,7 @@ app.add_middleware(
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -6778,7 +6778,7 @@ def test_lost_secret_key_recovery_path_works(db_path, monkeypatch):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_crypto.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_crypto.py -q -p no:cacheprovider`
 Expected: FAIL mit `AttributeError: module 'backend.crypto' has no attribute 'init_crypto'`.
 
 - [ ] **Step 3: Implementierung**
@@ -6959,7 +6959,7 @@ def decrypt(value: str) -> str:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_crypto.py tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_crypto.py tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -7075,7 +7075,7 @@ def test_origin_check_unit():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_middleware.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_middleware.py -q -p no:cacheprovider`
 Expected: FAIL (`ImportError: cannot import name 'is_same_origin_request'`).
 
 - [ ] **Step 3: Implementierung**
@@ -7182,7 +7182,7 @@ und `CSRFMiddleware` in den Import aus `backend.auth` aufnehmen.
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_middleware.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_middleware.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -7354,7 +7354,7 @@ def test_cookie_secure_flag(client, monkeypatch):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_auth.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_auth.py -q -p no:cacheprovider`
 Expected: FAIL (`AttributeError: … 'login_throttle'`).
 
 - [ ] **Step 3: Implementierung `backend/auth.py`**
@@ -7646,7 +7646,7 @@ Danach die Aliase `_REMEMBER_COOKIE`/`_REMEMBER_MAX_AGE` in `auth.py` löschen.
 
 - [ ] **Step 5: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_auth.py tests/test_p4_middleware.py tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_auth.py tests/test_p4_middleware.py tests/test_p4_startup.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -7856,7 +7856,7 @@ def test_connection_test_keeps_the_real_status(api, arr_server, status, expected
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_instances_api.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_instances_api.py -q -p no:cacheprovider`
 Expected: FAIL (Klartext-Schlüssel in der Antwort, `trigger` antwortet immer 200, `HTTP 0`).
 
 - [ ] **Step 3: Implementierung**
@@ -8052,7 +8052,7 @@ def toggle_instance(instance_id: int, enabled: bool, request: Request):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_instances_api.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_instances_api.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -8182,7 +8182,7 @@ def test_signal_hook_wakes_streams_and_chains(monkeypatch):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_pages.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_pages.py -q -p no:cacheprovider`
 Expected: FAIL (`KeyError: 'bounds'`, Lauf bleibt `running`, `install_shutdown_signal_hook` fehlt).
 
 - [ ] **Step 3: Implementierung**
@@ -8324,7 +8324,7 @@ async def searched_page(request: Request):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_pages.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_pages.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -8396,7 +8396,7 @@ def test_request_shutdown_before_start_is_harmless():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_activity.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_activity.py -q -p no:cacheprovider`
 Expected: FAIL (negative Limits → 200, Stream endet nicht → `TimeoutError`).
 
 - [ ] **Step 3: Implementierung**
@@ -8507,7 +8507,7 @@ async def stream_activity(request: Request, debug: bool = False):
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p4_activity.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p4_activity.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -8753,7 +8753,7 @@ out.toasts = toasts;
 
 - [ ] **Step 2: Tests laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_base.py tests/test_p5_js.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_base.py tests/test_p5_js.py -q -p no:cacheprovider`
 Expected: FAIL (CDN-Links, `href="/logout"`, `apiFetch is not defined`).
 
 - [ ] **Step 3: `templates/base.html` ändern**
@@ -9146,7 +9146,7 @@ async function toggleInstance(instanceId, enabled) {
 
 - [ ] **Step 5: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_base.py tests/test_p5_js.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_base.py tests/test_p5_js.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -9216,7 +9216,7 @@ def test_history_filters_are_server_side(client):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_lists.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_lists.py -q -p no:cacheprovider`
 Expected: FAIL (Name im `onclick`, kein Seed, Option `upgrade`).
 
 - [ ] **Step 3: `templates/instances/list.html`**
@@ -9569,7 +9569,7 @@ function historyPage() {
 
 - [ ] **Step 6: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_lists.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_lists.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -9639,7 +9639,7 @@ out.badge = [badge.className, badge.textContent];
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_card.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_card.py -q -p no:cacheprovider`
 Expected: FAIL (kein `:disabled`, Beschriftung „Next run · “, `updateCardState` ohne Erfolgsprüfung).
 
 - [ ] **Step 3: `templates/instances/card.html` ändern**
@@ -9689,7 +9689,7 @@ Countdown-Beschriftung ersetzen:
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_card.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_card.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -9770,7 +9770,7 @@ def test_searched_page_uses_component_methods_and_data_attributes(client):
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_searched.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_searched.py -q -p no:cacheprovider`
 Expected: FAIL.
 
 - [ ] **Step 3: `templates/searched.html` komplett**
@@ -10031,7 +10031,7 @@ function searchedPage() {
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_searched.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_searched.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -10090,7 +10090,7 @@ def test_tooltips_name_the_limits():
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_form.py -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_form.py -q -p no:cacheprovider`
 Expected: FAIL.
 
 - [ ] **Step 3: `templates/instances/form.html` ändern**
@@ -10184,7 +10184,7 @@ async function testExistingConnection(id) {
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cd /root/missingarr && .venv/bin/python -m pytest tests/test_p5_form.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/python -m pytest tests/test_p5_form.py -q -p no:cacheprovider && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -10207,12 +10207,12 @@ git commit -m "fix: form enforces the model bounds, explains the stored key and 
 
 - [ ] **Step 1: Übergangsfunktionen ohne Aufrufer finden**
 
-Run: `cd /root/missingarr && grep -rn "check_rate_cap\|record_action\|exists_any\|searched\.exists(\|\.insert_item(\|set_item_status(" backend/ tests/`
+Run: `cd <repo> && grep -rn "check_rate_cap\|record_action\|exists_any\|searched\.exists(\|\.insert_item(\|set_item_status(" backend/ tests/`
 Expected: nur noch die Definitionen (und ggf. Tests, die genau diese Funktionen prüfen). Was außer der Definition keinen Treffer hat, wird entfernt: `BaseAgent.check_rate_cap`, `BaseAgent.record_action`, `db.searched.exists`, `db.searched.exists_any`, `db.history.insert_item`, `db.history.set_item_status`. Hat eine Funktion noch einen Aufrufer, bleibt sie und der Aufrufer wird im Abschlussbericht genannt.
 
 - [ ] **Step 2: `passlib` aus der `.venv` entfernen und alles testen**
 
-Run: `cd /root/missingarr && .venv/bin/pip uninstall -y passlib && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
+Run: `cd <repo> && .venv/bin/pip uninstall -y passlib && .venv/bin/python -m pytest tests/ -q -p no:cacheprovider`
 Expected: alle Tests grün (22 alte + alle neuen), kein `ModuleNotFoundError: passlib`.
 
 - [ ] **Step 3: Lokaler Probelauf mit Scratch-Datenbank (nicht Live)**
@@ -10224,7 +10224,7 @@ SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
 PROBE="$SCRATCH/probe"
 rm -rf "$PROBE" && mkdir -p "$PROBE"
-cd /root/missingarr
+cd <repo>
 DATABASE_URL="$PROBE/missingarr.db" AUTH_PASSWORD=probe-pass \
   .venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 18766 --timeout-graceful-shutdown 5 \
   > "$PROBE/uvicorn.log" 2>&1 &
@@ -10261,7 +10261,7 @@ Run:
 ```bash
 SCRATCH=<scratchpad>
 test -d "$SCRATCH" || { echo "SCRATCH fehlt: $SCRATCH" >&2; exit 1; }
-cd /root/missingarr
+cd <repo>
 docker build -t missingarr:codex-review-test .
 rm -rf "$SCRATCH/smoke-data" && mkdir -p "$SCRATCH/smoke-data"
 chmod 755 "$SCRATCH/smoke-data"
@@ -10297,7 +10297,7 @@ Den Probelauf dafür mit dem Block aus Step 3 bis einschließlich `timeout 30 �
 - [ ] **Step 6: Commit und Push des Branches (kein Tag, kein Merge)**
 
 ```bash
-cd /root/missingarr
+cd <repo>
 git add backend/
 git commit -m "chore: drop transition helpers nothing calls any more"
 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider

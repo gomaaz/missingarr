@@ -658,7 +658,7 @@ def delete(instance_id: int, cache_key: str) -> int:
 - [x] **Step 8: Migration gegen eine Kopie der echten Datenbank prüfen**
 
 ```bash
-cp /root/docker/missingarr/data/missingarr.db /tmp/mig-test.db
+cp <datenordner>/missingarr.db /tmp/mig-test.db
 DATABASE_URL=/tmp/mig-test.db python -c "
 from backend.database import init_db; init_db()
 import sqlite3
@@ -1557,7 +1557,7 @@ Erwartung, jeweils gegen den Mitschnitt geprüft:
 Ein echtes `failed` von \*arr lässt sich nicht auf Zuruf erzeugen, und die Produktionsdaten sollen dabei unangetastet bleiben. Deshalb gegen eine **Kopie** mit einem gestellten Agenten, der `http_get_raw` fest beantwortet:
 
 ```bash
-cp /root/docker/missingarr/data/missingarr.db /tmp/verify-test.db
+cp <datenordner>/missingarr.db /tmp/verify-test.db
 docker cp /tmp/verify-test.db missingarr:/tmp/verify-test.db
 docker exec -w /app -e PYTHONPATH=/app -e DATABASE_URL=/tmp/verify-test.db missingarr python - <<'PY'
 from backend.database import init_db

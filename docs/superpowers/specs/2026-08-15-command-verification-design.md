@@ -12,8 +12,8 @@ Die Anzeige behauptet damit mehr, als sie belegen kann.
 
 ### Nachgewiesene Befunde
 
-Beide Befunde wurden am 2026-08-15 gegen die laufende Instanz (v0.6.13, Sonarr 172.20.10.33,
-Radarr 172.20.10.22) verifiziert, nicht aus dem Code abgeleitet.
+Beide Befunde wurden am 2026-08-15 gegen die laufende Instanz (v0.6.13 mit je einer Sonarr-
+und Radarr-Instanz) verifiziert, nicht aus dem Code abgeleitet.
 
 **B1 — Die gespeicherte Entitäts-ID ist bei Serien- und Staffelsuchen falsch.**
 
