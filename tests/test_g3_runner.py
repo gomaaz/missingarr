@@ -656,7 +656,7 @@ def test_a_grabbed_title_still_missing_is_searched_again_after_the_set_days(db_p
      "Checked search paused — could not read the indexer list: down"),
 ], ids=["interactive off", "automatic off", "list unreadable"])
 def test_differing_indexer_switches_pause_the_checked_search(db_path, indexers, errors, hint):
-    # A pause is no fault (decision Daniel 01.10.2026): the run is a success
+    # A pause is no fault (owner decision 01.10.2026): the run is a success
     # with the reason, a warning goes to the activity log, last_sync stays.
     inst = make_instance(checked_search="active")
     agent = the_thing_agent(inst, indexers=indexers, get_errors=errors)
@@ -851,7 +851,7 @@ DOUBLE = "The.Guest.S01E03E04.German.1080p.WEB.x264-GRP"
 
 @pytest.mark.parametrize("checked", ["active", "dry_run"])
 def test_a_multi_episode_release_is_never_taken(db_path, checked):
-    # 0.9.0 grabs single episodes only (decision Daniel 01.10.2026): a release
+    # 0.9.0 grabs single episodes only (owner decision 01.10.2026): a release
     # mapped to E03 and E04 would be checked and cached for E03 alone.
     # Sonarr approves it in a search for E03 (SingleEpisodeSearchMatchSpecification).
     inst = make_instance(name="Sonarr", type="sonarr", checked_search=checked)
@@ -1112,7 +1112,7 @@ def test_a_season_upgrade_cached_by_the_command_blocks_its_episodes_in_checked_m
 def test_an_episode_upgrade_without_a_grab_holds_only_itself(db_path):
     # A checked search without a grab (no_hit) blocks its own episode; a free
     # episode of the same season still brings the season search (decision
-    # Daniel 02.10.2026: only a grab holds the season).
+    # owner decision 02.10.2026: only a grab holds the season).
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True,
                          upgrades_per_run=1)
     run = history.start_run(inst["id"], "Sonarr", "search_upgrades")
@@ -1148,7 +1148,7 @@ def grab_e03_upgrade(inst, outcome="grabbed", then_off=True):
 
 @pytest.mark.parametrize("outcome", ["grabbed", "grab_uncertain"])
 def test_a_checked_episode_upgrade_holds_its_season_search_in_off_mode(db_path, outcome):
-    # Codex round 3, G3, decision Daniel 02.10.2026: SeasonSearch covers every
+    # Codex round 3, G3, owner decision 02.10.2026: SeasonSearch covers every
     # monitored episode, the grabbed one too, and *arr skips its history check
     # during searches. While the grab blocks, the command path leaves the
     # season alone — no single episode commands instead.

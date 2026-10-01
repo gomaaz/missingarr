@@ -120,7 +120,7 @@ class SearchUpgradesSkill(BaseSkill):
     def _hold_key(arr_type: str, item: dict) -> str | None:
         """Sonarr: the key a checked grab of this episode also writes, so the
         command path waits with the season search while the grab blocks
-        (decision Daniel 02.10.2026). Only the command path asks for it: in
+        (owner decision 02.10.2026). Only the command path asks for it: in
         the checked search each episode stands alone."""
         series_id, season_number = item.get("series_id"), item.get("season_number")
         if arr_type != "sonarr" or series_id is None or season_number is None:
@@ -219,7 +219,7 @@ class SearchUpgradesSkill(BaseSkill):
         in the checked search: the other path's key blocks as well, so
         switching the mode releases nothing early. On the command path a
         season also waits while a checked grab of one of its episodes blocks
-        (hold key, decision Daniel 02.10.2026): SeasonSearch would search
+        (hold key, owner decision 02.10.2026): SeasonSearch would search
         the grabbed episode again."""
         profiles = profiles or ProfileState()
         arr_type = cfg["type"]

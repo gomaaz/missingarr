@@ -192,7 +192,7 @@ def test_purge_old_keeps_recent_rows(db_path):
 
 def test_purge_old_keeps_the_rows_of_the_running_round(db_path):
     # The round lives in its rows: purging them would check the titles again
-    # without a reset (decision Daniel 01.10.2026).
+    # without a reset (owner decision 01.10.2026).
     inst = make_instance()
     log.insert(entry(inst, "Checked long ago", key="mov:1", profile_fingerprint="aaaa", settings_fingerprint="s1"))
     sql("UPDATE checked_search_log SET created_at=datetime('now','localtime','-400 days')")

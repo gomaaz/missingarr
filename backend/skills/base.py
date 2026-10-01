@@ -302,7 +302,7 @@ def finish_search_run(
         status = "error"
         notes.insert(0, f"Stopped: {outcome.store_error}")
     elif outcome.paused:
-        # A deliberate pause, no fault (decision Daniel 01.10.2026): the run
+        # A deliberate pause, no fault (owner decision 01.10.2026): the run
         # is a success carrying the reason; last_sync stays (see below).
         status = "success"
         notes.insert(0, outcome.paused)

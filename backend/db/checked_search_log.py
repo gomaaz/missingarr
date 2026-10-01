@@ -199,7 +199,7 @@ def purge_old(instance_id: int, days: int) -> int:
     """Same retention as the history (HISTORY_RETENTION_DAYS); 0 keeps all.
     Dry-run rows of the running round are kept until the next reset: the
     round lives in them, and purging them would check their titles again
-    without a reset (decision Daniel 01.10.2026)."""
+    without a reset (owner decision 01.10.2026)."""
     if days <= 0:
         return 0
     with get_db() as conn:
