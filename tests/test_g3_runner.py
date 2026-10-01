@@ -12,6 +12,7 @@ from backend.agents.base import BaseAgent
 from backend.config import settings
 from backend.db import history
 from backend.skills.search_missing import SearchMissingSkill
+from backend.skills.search_upgrades import SearchUpgradesSkill
 
 WANTED = "/api/v3/wanted/missing"
 CUTOFF = "/api/v3/wanted/cutoff"
@@ -1018,6 +1019,206 @@ def test_the_command_search_asks_for_the_series_when_the_list_fails(db_path):
     assert broken.commands == [{"name": "EpisodeSearch", "episodeIds": [3]}]
     assert ("/api/v3/series/10", {}) in broken.gets
     assert sql("SELECT profile_fingerprint FROM searched_items") == [(stored_fingerprint(inst),)]
+
+
+# ── Upgrades ─────────────────────────────────────────────────────────────────
+
+def test_radarr_upgrade_skips_the_release_of_the_existing_file(db_path):
+    inst = make_instance(checked_search="active", search_upgrades_enabled=True, upgrades_per_run=1,
+                         upgrade_source="monitored_items_only")
+    current = "The.Thing.1982.720p.BluRay.x264-OLD"
+    owned = movie(1, "The Thing", 1982, hasFile=True, movieFile={"sceneName": current})
+    agent = agent_for(inst, movies=[owned],
+                      releases={1: [release(current, "g1"), release(RIGHT, "g2")]},
+                      parses={current: radarr_parse("The Thing", 1982, 1), RIGHT: radarr_parse("The Thing", 1982, 1)})
+    SearchUpgradesSkill().execute(agent)
+    assert agent.posts == [movie_grab("g2")]
+    assert log_rows()[0]["candidates"][0]["reasons"] == ["existing file"]
+    assert sql("SELECT cache_key FROM searched_items") == [("upg:1",)]
+
+
+def test_sonarr_upgrade_works_per_episode(db_path):
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="dry_run", search_upgrades_enabled=True)
+    episode = {**guest_episode(), "hasFile": True}
+    agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[GUEST_SERIES],
+                      releases={3: [release("The.Guest.S01E03.1080p-GRP", "g1", series_id=10, episode_ids=(3,))]})
+    SearchUpgradesSkill().execute(agent)
+    [row] = log_rows()
+    assert (row["skill"], row["cache_key"]) == ("search_upgrades", "upg:3")
+    assert row["profile_fingerprint"] == stored_fingerprint(inst)
+
+
+def test_force_run_of_upgrades_in_dry_run_respects_the_round(db_path):
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="monitored_items_only")
+    owned = movie(1, "The Thing", 1982, hasFile=True)
+    SearchUpgradesSkill().execute(agent_for(inst, movies=[owned]), force=True)
+    forced = agent_for(inst, movies=[owned])
+    SearchUpgradesSkill().execute(forced, force=True)
+    assert [p for p, _ in forced.gets if p == RELEASE] == []
+    assert len(log_rows()) == 1
+
+
+@pytest.mark.parametrize("source,searched_again", [("wanted_list_only", 1), ("monitored_items_only", 0)])
+def test_a_grabbed_upgrade_is_searched_again_only_from_the_cutoff_list(db_path, source, searched_again):
+    # The cutoff list names the movie only while it is still below the
+    # cutoff; the movie list names every movie with a file.
+    inst = make_instance(checked_search="active", search_upgrades_enabled=True, upgrades_per_run=1,
+                         upgrade_source=source, checked_search_settings={"search_again_after_days": 1})
+    owned = movie(1, "The Thing", 1982, hasFile=True)
+    kwargs = dict(cutoff=[owned], movies=[owned], releases={1: [release(RIGHT, "g1")]}, parses=PARSES)
+    first = agent_for(inst, **kwargs)
+    SearchUpgradesSkill().execute(first)
+    assert first.posts == [movie_grab("g1")]
+    sql("UPDATE searched_items SET grabbed_at=datetime('now','localtime','-2 days')")
+    again = agent_for(inst, **kwargs)
+    SearchUpgradesSkill().execute(again)
+    assert len([p for p, _ in again.gets if p == RELEASE]) == searched_again
+
+
+def test_upgrade_cache_frees_a_movie_after_its_profile_changed(db_path):
+    inst = make_instance(checked_search="off", search_upgrades_enabled=True, upgrades_per_run=1,
+                         upgrade_source="monitored_items_only")
+    owned = movie(1, "The Thing", 1982, hasFile=True)
+    first = agent_for(inst, movies=[owned])
+    SearchUpgradesSkill().execute(first)
+    assert first.commands == [{"name": "MoviesSearch", "movieIds": [1]}]
+    assert sql("SELECT cache_key, profile_fingerprint FROM searched_items") == [("upg:1", stored_fingerprint(inst))]
+    same = agent_for(inst, movies=[owned])
+    SearchUpgradesSkill().execute(same)
+    assert same.commands == []
+    changed = agent_for(inst, movies=[owned], profiles=changed_profiles())
+    SearchUpgradesSkill().execute(changed)
+    assert changed.commands == [{"name": "MoviesSearch", "movieIds": [1]}]
+
+
+@pytest.mark.parametrize("search_again", [True, False])
+def test_a_season_upgrade_cached_by_the_command_blocks_its_episodes_in_checked_mode(db_path, search_again):
+    # Codex round 2, F5: 0.8.0 cached Sonarr upgrades per season; switching to
+    # the checked search (per episode) must not release them early.
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrades_per_run=1, search_again_after_profile_change=search_again)
+    db.searched.add(inst["id"], "upg:sea:10:1", "The Guest S01", "season")      # 0.8.0: no fingerprint
+    episode = {**guest_episode(), "hasFile": True}
+    kwargs = dict(cutoff=[episode], episodes=[episode], series=[GUEST_SERIES],
+                  releases={3: [release("The.Guest.S01E03.1080p-GRP", "g1", series_id=10, episode_ids=(3,))]})
+    first = agent_for(inst, **kwargs)
+    SearchUpgradesSkill().execute(first)
+    assert [p for p, _ in first.gets if p == RELEASE] == []                    # the update releases nothing
+    changed = agent_for(inst, profiles=changed_profiles(), **kwargs)
+    SearchUpgradesSkill().execute(changed)
+    assert len([p for p, _ in changed.gets if p == RELEASE]) == (1 if search_again else 0)
+
+
+def test_an_episode_upgrade_without_a_grab_holds_only_itself(db_path):
+    # A checked search without a grab (no_hit) blocks its own episode; a free
+    # episode of the same season still brings the season search (decision
+    # Daniel 02.10.2026: only a grab holds the season).
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True,
+                         upgrades_per_run=1)
+    run = history.start_run(inst["id"], "Sonarr", "search_upgrades")
+    history.record_checked(run, inst["id"], "The Guest S01E03", 3, "episode", "upg:3", "no_hit")
+    episode = {**guest_episode(), "hasFile": True}
+    agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[GUEST_SERIES])
+    SearchUpgradesSkill().execute(agent)
+    assert agent.commands == []
+    free = {**guest_episode(4), "hasFile": True}                                 # a second, uncached episode
+    other = agent_for(inst, cutoff=[episode, free], episodes=[episode, free], series=[GUEST_SERIES])
+    SearchUpgradesSkill().execute(other)
+    assert other.commands == [{"name": "SeasonSearch", "seriesId": 10, "seasonNumber": 1}]
+
+
+E03_UPGRADE = "The.Guest.S01E03.German.1080p.WEB.x264-GRP"
+
+
+def grab_e03_upgrade(inst, outcome="grabbed", then_off=True):
+    """The checked search upgrades E03 (grabbed, or sent without a clear
+    answer); then, if asked, the instance goes back to the command path."""
+    episode = {**guest_episode(), "hasFile": True}
+    kwargs = dict(cutoff=[episode], episodes=[episode], series=[GUEST_SERIES],
+                  releases={3: [release(E03_UPGRADE, "g1", series_id=10, episode_ids=(3,))]},
+                  parses={E03_UPGRADE: {"parsedEpisodeInfo": {"seriesTitle": "The Guest"}, "series": {"id": 10}}})
+    if outcome == "grab_uncertain":
+        kwargs["post_error"] = requests.exceptions.ReadTimeout("no answer")
+    SearchUpgradesSkill().execute(agent_for(inst, **kwargs))
+    assert [r["outcome"] for r in log_rows()] == [outcome]
+    if then_off:
+        sql("UPDATE instances SET checked_search='off'")
+    return episode, {**guest_episode(4), "hasFile": True}
+
+
+@pytest.mark.parametrize("outcome", ["grabbed", "grab_uncertain"])
+def test_a_checked_episode_upgrade_holds_its_season_search_in_off_mode(db_path, outcome):
+    # Codex round 3, G3, decision Daniel 02.10.2026: SeasonSearch covers every
+    # monitored episode, the grabbed one too, and *arr skips its history check
+    # during searches. While the grab blocks, the command path leaves the
+    # season alone — no single episode commands instead.
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrades_per_run=1, checked_search_settings={"search_again_after_days": 3})
+    episode, free = grab_e03_upgrade(inst, outcome)
+    left = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES])   # E03 off the list
+    SearchUpgradesSkill().execute(left)
+    assert left.commands == []
+    both = agent_for(inst, cutoff=[episode, free], episodes=[episode, free], series=[GUEST_SERIES])
+    SearchUpgradesSkill().execute(both)
+    assert both.commands == []
+    sql("UPDATE searched_items SET grabbed_at=datetime('now','localtime','-4 days') WHERE grabbed_at IS NOT NULL")
+    later = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES])
+    SearchUpgradesSkill().execute(later)
+    assert later.commands == [{"name": "SeasonSearch", "seriesId": 10, "seasonNumber": 1}]
+
+
+def test_a_held_season_upgrade_is_free_after_a_profile_change(db_path):
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrades_per_run=1)
+    episode, free = grab_e03_upgrade(inst)
+    changed = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES],
+                        profiles=changed_profiles())
+    SearchUpgradesSkill().execute(changed)
+    assert changed.commands == [{"name": "SeasonSearch", "seriesId": 10, "seasonNumber": 1}]
+
+
+def test_a_checked_episode_upgrade_does_not_hold_its_siblings_in_checked_mode(db_path):
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrades_per_run=1)
+    episode, free = grab_e03_upgrade(inst, then_off=False)
+    sibling = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES])
+    SearchUpgradesSkill().execute(sibling)
+    assert [params for p, params in sibling.gets if p == RELEASE] == [{"episodeId": 4}]
+
+
+def test_an_unsaved_checked_upgrade_grab_holds_its_season(db_path, monkeypatch):
+    # The database refuses the grab's bookkeeping: until a later run stores
+    # it, the grab in memory holds its season for the command path as well.
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrades_per_run=1)
+    episode, free = {**guest_episode(), "hasFile": True}, {**guest_episode(4), "hasFile": True}
+    agent = agent_for(inst, cutoff=[episode], episodes=[episode, free], series=[GUEST_SERIES],
+                      releases={3: [release(E03_UPGRADE, "g1", series_id=10, episode_ids=(3,))]},
+                      parses={E03_UPGRADE: {"parsedEpisodeInfo": {"seriesTitle": "The Guest"}, "series": {"id": 10}}})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_checked", broken)
+    SearchUpgradesSkill().execute(agent)
+    assert len(agent.posts) == 1 and len(agent.runtime.unsaved_submissions) == 1
+    agent.config = {**agent.config, "checked_search": "off"}
+    agent.cutoff = [free]
+    SearchUpgradesSkill().execute(agent)
+    assert agent.commands == []
+
+
+def test_an_empty_checked_upgrade_run_still_checks_the_indexers(db_path):
+    # Codex round 3, G4: no candidates, but an indexer's switches differ.
+    inst = make_instance(checked_search="active", search_upgrades_enabled=True, upgrades_per_run=1,
+                         upgrade_source="monitored_items_only")
+    agent = agent_for(inst, indexers=WEEKLY_CHECK)
+    agent.state["last_sync"] = "2000-01-01 00:00"
+    SearchUpgradesSkill().execute(agent)
+    run = last_run()
+    assert run["status"] == "success"
+    assert run["error_message"].startswith("Checked search paused — indexer Weekly check")
+    assert agent.state["last_sync"] == "2000-01-01 00:00"
 
 
 # ── Secrets ──────────────────────────────────────────────────────────────────

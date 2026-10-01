@@ -1,7 +1,12 @@
 import math
 import random
+import time
 
 from backend import db
+from backend.checked_search.runner import CheckedTask, indexer_pause, run_checked
+from backend.checked_search.settings import CheckedSearchSettings
+from backend.skills.profiles import ProfileState
+from backend.skills.profiles import refresh as refresh_profiles
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, store_unsaved_submissions,
     submit_candidates, unsaved_cache_keys,
@@ -28,6 +33,8 @@ class SearchUpgradesSkill(BaseSkill):
 
     def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
+        # The checked search's time budget counts from here.
+        started = time.monotonic()
         run_id = db.history.start_run(cfg["id"], cfg["name"], self.name)
         wanted_count = 0
         outcome = SubmitOutcome()
@@ -41,7 +48,24 @@ class SearchUpgradesSkill(BaseSkill):
                 return
 
             agent.log("info", self.name, "Searching for upgrade candidates...")
-            candidates, failures, notes, requested = self._collect_candidates(agent, cfg, per_run, force)
+            checked = cfg.get("checked_search") or "off"
+            # Fingerprints of the quality profiles: a cached title whose
+            # profile changed may be searched again (spec addendum).
+            profiles = refresh_profiles(self.name, agent)
+            if checked != "off":
+                # Before collecting: a run without candidates pauses visibly too.
+                pause = indexer_pause(agent)
+                if pause:
+                    agent.log("warn", self.name, pause)
+                    finish_search_run(self.name, agent, run_id, 0, SubmitOutcome(paused=pause))
+                    return
+            # Dry run: once per round, a force run as well.
+            round_keys = (
+                db.checked_search_log.dry_run_keys(cfg["id"], int(cfg.get("dry_run_round") or 0))
+                if checked == "dry_run" else None
+            )
+            candidates, failures, notes, requested = self._collect_candidates(
+                agent, cfg, per_run, force, checked != "off", round_keys, profiles)
             for failure in failures:
                 agent.log("warn", self.name, f"Could not load {failure}")
             if failures and len(failures) == requested:
@@ -57,11 +81,19 @@ class SearchUpgradesSkill(BaseSkill):
                 finish_search_run(self.name, agent, run_id, 0, outcome, notes)
                 return
 
+            if checked != "off":
+                tasks = [self._checked_task(cfg["type"], item, profiles) for item in candidates]
+                outcome = run_checked(self.name, agent, run_id, tasks, checked,
+                                      profiles=profiles, started=started, config=cfg, check_indexers=False)
+                finish_search_run(self.name, agent, run_id, wanted_count, outcome, notes + outcome.notes)
+                return
+
             delay = cfg.get("seconds_between_actions", 2) or 0
             outcome = submit_candidates(
                 self.name, agent, run_id, candidates,
                 lambda item: self._fire_upgrade(agent, cfg["type"], item),
                 delay,
+                fingerprint_of=profiles.stored_fingerprint,
             )
             agent.log("info", self.name,
                       f"Done — candidates: {wanted_count}, triggered: {outcome.triggered}, "
@@ -72,8 +104,10 @@ class SearchUpgradesSkill(BaseSkill):
             agent.log("error", self.name, f"Upgrade search failed: {exc}")
             db.history.finish_run(run_id, wanted_count, outcome.triggered, "error", str(exc))
 
-    def _cache_key(self, arr_type: str, item: dict) -> str:
-        if arr_type == "radarr":
+    def _cache_key(self, arr_type: str, item: dict, checked: bool = False) -> str:
+        """checked: the checked search works per episode, so a Sonarr
+        upgrade is keyed by its episode, not by the season."""
+        if arr_type == "radarr" or checked:
             return f"upg:{item['id']}"
         # Sonarr: season level when known (SeasonSearch deduplication)
         series_id = item.get("series_id")
@@ -81,6 +115,29 @@ class SearchUpgradesSkill(BaseSkill):
         if series_id is not None and season_number is not None:
             return f"upg:sea:{series_id}:{season_number}"
         return f"upg:{item['id']}"
+
+    @staticmethod
+    def _hold_key(arr_type: str, item: dict) -> str | None:
+        """Sonarr: the key a checked grab of this episode also writes, so the
+        command path waits with the season search while the grab blocks
+        (decision Daniel 02.10.2026). Only the command path asks for it: in
+        the checked search each episode stands alone."""
+        series_id, season_number = item.get("series_id"), item.get("season_number")
+        if arr_type != "sonarr" or series_id is None or season_number is None:
+            return None
+        return f"upg:sea-hold:{series_id}:{season_number}"
+
+    def _checked_task(self, arr_type: str, item: dict, profiles: ProfileState | None = None) -> CheckedTask:
+        profiles = profiles or ProfileState()
+        return CheckedTask(
+            arr_id=item["id"],
+            title=item.get("label") or f"#{item['id']}",
+            item_type="movie" if arr_type == "radarr" else "episode",
+            cache_key=self._cache_key(arr_type, item, checked=True),
+            series_id=item.get("series_id"),
+            profile_fingerprint=profiles.fingerprint(profiles.profile_of(item)),
+            hold_key=self._hold_key(arr_type, item),
+        )
 
     def _trigger_upgrade(self, agent, arr_type: str, item: dict) -> SearchResult:
         """Fire the upgrade search and report what was actually addressed.
@@ -123,7 +180,7 @@ class SearchUpgradesSkill(BaseSkill):
 
     # ── Candidates ───────────────────────────────────────────────────────────
 
-    def _collect_candidates(self, agent, cfg, per_run, force):
+    def _collect_candidates(self, agent, cfg, per_run, force, checked=False, round_keys=None, profiles=None):
         """Returns (candidates, failed sources, notes, number of sources asked)."""
         if cfg["type"] == "radarr":
             sources = self.SOURCES.get(cfg.get("upgrade_source", "monitored_items_only"), ("monitored",))
@@ -137,33 +194,65 @@ class SearchUpgradesSkill(BaseSkill):
         for source in sources:
             try:
                 if source == "cutoff":
-                    self._collect_cutoff(agent, cfg, per_run, force, found, seen, notes)
+                    self._collect_cutoff(agent, cfg, per_run, force, found, seen, notes,
+                                         checked, round_keys, profiles)
                 else:
-                    self._collect_monitored(agent, cfg, per_run, force, found, seen)
+                    self._collect_monitored(agent, cfg, per_run, force, found, seen, checked, round_keys, profiles)
             except Exception as exc:
                 failures.append(f"{self.SOURCE_LABELS[source]}: {exc}")
 
         random.shuffle(found)
         return found[:per_run], failures, notes, len(sources)
 
-    def _keep_uncached(self, agent, cfg, items, force, found, seen, limit) -> None:
-        """Commands still waiting to be stored count as cached."""
-        keyed = [(self._cache_key(cfg["type"], item), item) for item in items]
-        hits = {} if force else {
-            **db.searched.lookup_many(
-                cfg["id"], [key for key, _ in keyed], int(cfg.get("retry_hours", 0) or 0)
-            ),
-            **unsaved_cache_keys(agent),
-        }
-        for key, item in keyed:
+    def _keep_uncached(self, agent, cfg, items, force, found, seen, limit, checked=False, round_keys=None,
+                       profiles=None, wanted_list=False) -> None:
+        """Commands still waiting to be stored count as cached. A cache entry
+        blocks only under the current fingerprint of the item's quality
+        profile (spec addendum, unless switched off). wanted_list (the cutoff
+        list): a grab of the checked search blocks only "Search again if
+        still missing after (days)" — the movie list cannot tell whether a
+        grab is still missing. In a checked-search dry run (round_keys, force
+        run too) only this round's log counts, under the current profile
+        fingerprint and rule settings.
+
+        Sonarr keys an upgrade by season on the command path and by episode
+        in the checked search: the other path's key blocks as well, so
+        switching the mode releases nothing early. On the command path a
+        season also waits while a checked grab of one of its episodes blocks
+        (hold key, decision Daniel 02.10.2026): SeasonSearch would search
+        the grabbed episode again."""
+        profiles = profiles or ProfileState()
+        arr_type = cfg["type"]
+        keyed = [(self._cache_key(arr_type, item, checked), item) for item in items]
+        other = [self._cache_key(arr_type, item, not checked) for item in items]
+        held = [None if checked else self._hold_key(arr_type, item) for item in items]
+        grab_days = (CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
+                     if wanted_list else 0)
+        if round_keys is not None:
+            hits = {key: True for key, item in keyed if profiles.round_blocks(round_keys, key, item)}
+            other = [None] * len(keyed)
+            held = [None] * len(keyed)
+        elif force:
+            hits = {}
+        else:
+            asked = (keyed + [(key, item) for key, (own, item) in zip(other, keyed) if key != own]
+                     + [(key, item) for key, (_, item) in zip(held, keyed) if key])
+            hits = {
+                **db.searched.lookup_many(
+                    cfg["id"], [key for key, _ in asked], int(cfg.get("retry_hours", 0) or 0),
+                    fingerprints=profiles.cache_filter(asked), grab_release_days=grab_days,
+                ),
+                **unsaved_cache_keys(agent),
+            }
+        for (key, item), other_key, held_key in zip(keyed, other, held):
             if len(found) >= limit:
                 return
-            if key in hits or key in seen:
+            if key in hits or other_key in hits or held_key in hits or key in seen:
                 continue
             seen.add(key)
             found.append(item)
 
-    def _collect_cutoff(self, agent, cfg, per_run, force, found, seen, notes) -> None:
+    def _collect_cutoff(self, agent, cfg, per_run, force, found, seen, notes, checked=False, round_keys=None, profiles=None) -> None:
         arr_type = cfg["type"]
         limit = len(found) + per_run
         pool = max(per_run * 5, 50)
@@ -188,7 +277,8 @@ class SearchUpgradesSkill(BaseSkill):
             items = [self._cutoff_item(arr_type, r) for r in resp.get("records") or []]
             items = [item for item in items if item is not None]
             random.shuffle(items)
-            self._keep_uncached(agent, cfg, items, force, found, seen, limit)
+            self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
+                                wanted_list=True)
 
     @staticmethod
     def _cutoff_item(arr_type: str, record: dict):
@@ -199,7 +289,8 @@ class SearchUpgradesSkill(BaseSkill):
                 return None
             year = record.get("year", "")
             title = record.get("title") or f"Movie #{record['id']}"
-            return {"id": record["id"], "label": f"{title} ({year})" if year else title}
+            return {"id": record["id"], "label": f"{title} ({year})" if year else title,
+                    "qualityProfileId": record.get("qualityProfileId")}
         series = record.get("series") or {}
         series_title = series.get("title") or record.get("seriesTitle", "") or f"Series #{record.get('seriesId', '?')}"
         season_number = record.get("seasonNumber")
@@ -213,7 +304,7 @@ class SearchUpgradesSkill(BaseSkill):
         return {"id": record["id"], "label": label,
                 "series_id": record.get("seriesId"), "season_number": season_number}
 
-    def _collect_monitored(self, agent, cfg, per_run, force, found, seen) -> None:
+    def _collect_monitored(self, agent, cfg, per_run, force, found, seen, checked=False, round_keys=None, profiles=None) -> None:
         limit = len(found) + per_run
         movies = agent.http_get(MOVIES_PATH, params={"monitored": "true"})
         items = []
@@ -224,6 +315,7 @@ class SearchUpgradesSkill(BaseSkill):
                 continue
             year = movie.get("year", "")
             title = movie.get("title") or f"Movie #{movie['id']}"
-            items.append({"id": movie["id"], "label": f"{title} ({year})" if year else title})
+            items.append({"id": movie["id"], "label": f"{title} ({year})" if year else title,
+                          "qualityProfileId": movie.get("qualityProfileId")})
         random.shuffle(items)
-        self._keep_uncached(agent, cfg, items, force, found, seen, limit)
+        self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles)
