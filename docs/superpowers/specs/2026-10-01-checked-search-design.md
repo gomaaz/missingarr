@@ -109,6 +109,18 @@ Die Einstellungen liegen als eine JSON-Spalte `checked_search_settings` in `inst
 - Laufstatus: `grabbed` und `no_hit` zählen als erledigt; der Lauf endet ohne Wartezeit auf die Verifikation. Die History zeigt neue Plaketten „geladen“ und „kein sauberer Treffer“.
 - Upgrades (Cutoff-Liste) laufen genauso; dort ist Regel 1a bzw. S4 wichtig.
 
+## Profiländerungen erkennen (Nachtrag, Daniel 01.10.2026)
+
+Radarr und Sonarr bewerten die Treffer bei jeder Suche mit dem gerade gültigen Profil; dafür muss missingarr nichts wissen. Zwei Folgen einer Profiländerung fängt missingarr aber selbst ab: Titel, die vorher schon gesucht wurden, und veraltete Probelauf-Einträge.
+
+- **Fingerabdruck:** Zu Beginn jedes Suchlaufs holt missingarr `GET /api/v3/qualityprofile`, `GET /api/v3/customformat` und `GET /api/v3/releaseprofile` (keine Indexer-Last). Pro Qualitätsprofil bildet es einen Fingerabdruck: SHA-256 über das kanonische JSON (sortierte Schlüssel) aus dem Profil, allen Custom Formats und allen Release-Profilen, gekürzt auf 16 Hex-Zeichen. Jede Änderung an Punkten, Qualitäten, Formaten oder Release-Profilen ändert ihn (bewusst grob: eine Formatänderung trifft alle Profile). Die aktuelle Zuordnung Profil-ID → Fingerabdruck steht pro Instanz in `instances.profile_fingerprints` (JSON). Scheitert der Abruf, gilt der zuletzt gespeicherte Stand, und es wird nichts freigegeben.
+- **Profil eines Titels:** Radarr `movie.qualityProfileId`, Sonarr `series.qualityProfileId` (beide stehen schon in den Wanted- bzw. Cutoff-Listen).
+- **Such-Cache:** `searched_items` bekommt die Spalte `profile_fingerprint`. Beim Merken eines Titels wird der Fingerabdruck seines Profils mitgeschrieben (alter und geprüfter Suchweg). Ein Eintrag sperrt nur, solange sein Fingerabdruck dem aktuellen Fingerabdruck des Profils des Titels entspricht. Einträge ohne Fingerabdruck (aus der Zeit vor 0.9.0) gelten als unter dem Stand gesucht, der beim ersten Lauf von 0.9.0 gespeichert wird (`instances.profile_fingerprints_baseline`, einmal gesetzt). Das Update allein gibt also nichts frei, erst die nächste Profiländerung.
+- **Probelauf:** Das Vorfilter-Protokoll speichert den Fingerabdruck je Eintrag (`profile_fingerprint`). Ein Titel gilt in der laufenden Runde nur als geprüft, wenn sein Eintrag den aktuellen Fingerabdruck trägt; nach einer Profiländerung prüft der Probelauf ihn also erneut. Die Seite „Vorfilter“ zeigt bei Einträgen mit veraltetem Fingerabdruck die Plakette „profile changed“.
+- **Einstellung:** „Search again after profile changes“ (an), mit Info-Symbol: Ist sie aus, sperren Cache-Einträge wie bisher unabhängig vom Profil; der Probelauf berücksichtigt Profiländerungen immer.
+- **Protokoll:** Erkennt ein Lauf einen geänderten Fingerabdruck, schreibt er ins Aktivitätslog, welche Profile sich geändert haben (Name, alt → neu gekürzt).
+- **Tests:** Fingerabdruck stabil bei gleicher Reihenfolge und anderer Schlüsselreihenfolge, anders bei geänderter Punktzahl; Cache sperrt bei gleichem und gibt frei bei geändertem Profil; Alt-Einträge sperren bis zur ersten Änderung nach der Grundlinie; Einstellung aus sperrt immer; Probelauf prüft nach Änderung erneut; Abruf-Fehler gibt nichts frei.
+
 ## Oberfläche
 
 - **Menüpunkt „Vorfilter“:** oben Zähler je Ergebnis und Instanz; darunter eine Tabelle je Titel (Zeit, Instanz, Modus, Titel, Ergebnis, „\*arr would grab“, „Filter grabs“, Zahl verworfener Kandidaten), serverseitig gefiltert und geblättert wie die History. Filter: Instanz, Modus, Ergebnis, Text, „only differences“ (Filter nimmt etwas anderes als \*arr oder verwirft). Eine Zeile klappt die Kandidaten mit Urteil, Gründen und Hinweisen auf. Knopf „Reset dry run“ je Instanz.
