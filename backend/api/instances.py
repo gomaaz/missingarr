@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Request
 from backend import db
 from backend.agents.base import TRIGGER_BUSY, TRIGGER_UNKNOWN_SKILL
 from backend.agents.orchestrator import TRIGGER_NOT_FOUND
-from backend.models.instance import InstanceCreate, InstanceUpdate
+from backend.checked_search.settings import CheckedSearchSettings
+from backend.models.instance import InstanceCreate, InstanceUpdate, checked_mode_conflict
 
 router = APIRouter(prefix="/instances")
 
@@ -22,6 +23,11 @@ def public_instance(inst: dict) -> dict:
     out = {key: value for key, value in inst.items() if key != "api_key"}
     out["api_key_set"] = bool(inst.get("api_key"))
     out["api_key"] = API_KEY_MASK if out["api_key_set"] else ""
+    # Every setting with its effective value, defaults filled in.
+    out["checked_search"] = inst.get("checked_search") or "off"
+    out["checked_search_settings"] = CheckedSearchSettings.from_stored(
+        inst.get("checked_search_settings")).model_dump()
+    out["search_again_after_profile_change"] = bool(inst.get("search_again_after_profile_change", 1))
     return out
 
 
@@ -68,6 +74,11 @@ def update_instance(instance_id: int, data: InstanceUpdate, request: Request):
     if not new_key and _normalized_url(payload["url"]) != _normalized_url(existing["url"]):
         # Otherwise the stored key could be sent to any new address (C1/C4).
         raise HTTPException(400, "The URL changed — enter the API key again so it is not sent to a new address.")
+    # Left out of the request: the stored mode counts for the Sonarr check.
+    effective = payload.get("checked_search") or existing.get("checked_search") or "off"
+    conflict = checked_mode_conflict(payload["type"], effective, payload["missing_mode"])
+    if conflict:
+        raise HTTPException(422, conflict)
     inst = db.instances.update(instance_id, payload)
     _get_orchestrator(request).reload_agent(instance_id)
     return public_instance(inst)
@@ -75,7 +86,8 @@ def update_instance(instance_id: int, data: InstanceUpdate, request: Request):
 
 @router.delete("/{instance_id}", status_code=204)
 def delete_instance(instance_id: int, request: Request):
-    if not db.instances.get_by_id(instance_id):
+    inst = db.instances.get_by_id(instance_id)
+    if not inst:
         raise HTTPException(404, "Instance not found")
     # Abort a running search and wait for it before the row (and its foreign
     # keys) disappear (A-L5). If it does not stop in time, keep the instance:
@@ -84,7 +96,12 @@ def delete_instance(instance_id: int, request: Request):
     orchestrator = _get_orchestrator(request)
     if not orchestrator.forget_instance(instance_id, wait_seconds=DELETE_WAIT_SECONDS):
         orchestrator.reload_agent(instance_id)
-        raise HTTPException(409, "A search of this instance is still stopping — try deleting again in a moment.")
+        message = "A search of this instance is still stopping — try deleting again in a moment."
+        if (inst.get("checked_search") or "off") != "off":
+            # GET /release cannot be interrupted; it ends with the release search timeout.
+            message += (" A checked search waits for *arr's release search to finish "
+                        "(up to the release search timeout) before it stops.")
+        raise HTTPException(409, message)
     db.instances.delete(instance_id)
 
 
@@ -102,6 +119,18 @@ def toggle_skill(instance_id: int, request: Request, skill: str, enabled: bool):
     # The job exists already; the agent only needs the new flag (A2).
     _get_orchestrator(request).refresh_config(instance_id)
     return {"status": "ok", "skill": skill, "enabled": enabled}
+
+
+@router.post("/{instance_id}/checked-search/reset-dry-run")
+def reset_dry_run(instance_id: int):
+    """Start a new dry-run round: every title is checked once more."""
+    inst = db.instances.get_by_id(instance_id)
+    if not inst:
+        raise HTTPException(404, "Instance not found")
+    started = db.instances.reset_dry_run(instance_id)
+    db.activity.insert(instance_id, inst["name"], "info",
+                       "Dry run reset — every title will be checked again", "checked_search")
+    return {"status": "reset", "dry_run_round_started_at": started}
 
 
 @router.post("/{instance_id}/trigger")

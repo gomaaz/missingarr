@@ -17,7 +17,7 @@ from backend.database import init_db
 from backend.crypto import get_session_secret, init_crypto
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
-from backend.api import health, instances, activity, history, searched
+from backend.api import health, instances, activity, history, searched, checked_search
 from backend.api.instances import public_instance
 from backend.models.instance import FIELD_BOUNDS
 from backend.tooltips import TOOLTIPS
@@ -132,6 +132,7 @@ app.include_router(instances.router, prefix="/api")
 app.include_router(activity.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(searched.router, prefix="/api")
+app.include_router(checked_search.router, prefix="/api")
 
 
 # ─── UI routes ─────────────────────────────────────────────────────────────────

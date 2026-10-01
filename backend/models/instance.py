@@ -1,7 +1,9 @@
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from backend.checked_search.settings import CheckedSearchMode, CheckedSearchSettings
 
 
 SearchOrder = Literal["random", "smart", "newest_first", "oldest_first"]
@@ -24,6 +26,18 @@ FIELD_BOUNDS: dict[str, tuple[int, int]] = {
     "hours_after_release": (0, 87600),
 }
 NAME_MAX_LENGTH = 100
+
+CHECKED_SEARCH_MODE_MESSAGE = (
+    "Checked search works with single episodes only — set Missing Mode to Episode "
+    "or switch checked search off"
+)
+
+
+def checked_mode_conflict(arr_type: str, checked_search: str | None, missing_mode: str) -> str | None:
+    """Sonarr with checked search on allows only missing_mode 'episode'."""
+    if arr_type == "sonarr" and checked_search not in (None, "off") and missing_mode != "episode":
+        return CHECKED_SEARCH_MODE_MESSAGE
+    return None
 
 
 class InstanceBase(BaseModel):
@@ -101,9 +115,16 @@ class _InstanceWrite(InstanceBase):
     """Bounds for values a user saves. Deliberately not on InstanceBase:
     rows already in the database are never rejected when they are read."""
 
+    checked_search: Optional[CheckedSearchMode] = None
+    checked_search_settings: Optional[CheckedSearchSettings] = None
+    search_again_after_profile_change: Optional[bool] = None
+
     @model_validator(mode="after")
     def _check_bounds(self):
         errors = []
+        conflict = checked_mode_conflict(self.type, self.checked_search, self.missing_mode)
+        if conflict:
+            errors.append(conflict)
         for field, (low, high) in FIELD_BOUNDS.items():
             value = getattr(self, field)
             if not low <= value <= high:
@@ -119,6 +140,12 @@ class _InstanceWrite(InstanceBase):
 
 class InstanceCreate(_InstanceWrite):
     api_key: str
+    checked_search: CheckedSearchMode = "off"
+    checked_search_settings: CheckedSearchSettings = Field(default_factory=CheckedSearchSettings)
+    # Spec addendum: a cached title may be searched again after its quality
+    # profile changed. Applies to the command search as well, hence not part
+    # of checked_search_settings.
+    search_again_after_profile_change: bool = True
 
     @field_validator("api_key")
     @classmethod
@@ -129,6 +156,10 @@ class InstanceCreate(_InstanceWrite):
 
 
 class InstanceUpdate(_InstanceWrite):
+    """checked_search / checked_search_settings / search_again_after_profile_change
+    left out (None): the stored values stay. The Sonarr mode check then runs
+    against the stored mode in the API (update_instance)."""
+
     api_key: Optional[str] = None
 
     @field_validator("api_key")
