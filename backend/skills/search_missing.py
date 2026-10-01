@@ -1,10 +1,15 @@
 import math
 import random
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from backend import db
+from backend.checked_search.runner import CheckedTask, indexer_pause, run_checked
+from backend.checked_search.settings import CheckedSearchSettings
 from backend.database import ANCESTOR_RULE_SINCE_SETTING
+from backend.skills.profiles import ProfileState
+from backend.skills.profiles import refresh as refresh_profiles
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, parse_arr_date,
     release_date, store_unsaved_submissions, submit_candidates, unsaved_cache_keys,
@@ -56,6 +61,9 @@ class SearchMissingSkill(BaseSkill):
 
     def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
+        # The checked search's time budget counts from here (profiles and
+        # candidate collection included).
+        started = time.monotonic()
         run_id = db.history.start_run(cfg["id"], cfg["name"], self.name)
         wanted_count = 0
         outcome = SubmitOutcome()
@@ -69,7 +77,29 @@ class SearchMissingSkill(BaseSkill):
                 return
 
             order = cfg.get("search_order", "random")
-            mode = cfg.get("missing_mode", "episode")
+            checked = cfg.get("checked_search") or "off"
+            # The checked search handles single episodes only; the form and
+            # the API refuse other modes while it is on (spec: Sonarr).
+            mode = "episode" if checked != "off" else cfg.get("missing_mode", "episode")
+            # Fingerprints of the quality profiles: a cached title whose
+            # profile changed may be searched again (spec addendum).
+            profiles = refresh_profiles(self.name, agent)
+            if checked != "off":
+                # Every checked run reads the indexer list before it collects,
+                # also one that will find nothing to search: a lasting pause
+                # must show in the History and keep last_sync (spec).
+                pause = indexer_pause(agent)
+                if pause:
+                    agent.log("warn", self.name, pause)
+                    finish_search_run(self.name, agent, run_id, 0, SubmitOutcome(paused=pause))
+                    return
+            # A dry run ignores the search cache: titles searched long ago
+            # are checked too. Instead each title is checked once per round
+            # (the round this run begins in) — a force run as well.
+            round_keys = (
+                db.checked_search_log.dry_run_keys(cfg["id"], int(cfg.get("dry_run_round") or 0))
+                if checked == "dry_run" else None
+            )
             hours = int(cfg.get("hours_after_release", 9) or 0)
             cutoff = (
                 datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -79,9 +109,11 @@ class SearchMissingSkill(BaseSkill):
             agent.log("info", self.name,
                       f"Searching for missing content (order={order}, per_run={per_run})...")
             if order == "random":
-                candidates, stats = self._collect_random(agent, cfg, per_run, mode, cutoff, force)
+                candidates, stats = self._collect_random(agent, cfg, per_run, mode, cutoff, force,
+                                                         round_keys, profiles)
             else:
-                candidates, stats = self._collect_ordered(agent, cfg, per_run, mode, order, cutoff, force)
+                candidates, stats = self._collect_ordered(agent, cfg, per_run, mode, order, cutoff, force,
+                                                          round_keys, profiles)
             wanted_count = len(candidates)
             agent.log("debug", self.name, stats.describe())
 
@@ -91,11 +123,19 @@ class SearchMissingSkill(BaseSkill):
                 return
 
             series_lookup = self._series_lookup(agent, cfg, candidates)
+            if checked != "off":
+                tasks = [self._checked_task(cfg["type"], record, series_lookup, profiles) for record in candidates]
+                outcome = run_checked(self.name, agent, run_id, tasks, checked,
+                                      profiles=profiles, started=started, config=cfg, check_indexers=False)
+                finish_search_run(self.name, agent, run_id, wanted_count, outcome, stats.notes + outcome.notes)
+                return
+
             delay = cfg.get("seconds_between_actions", 2) or 0
             outcome = submit_candidates(
                 self.name, agent, run_id, candidates,
                 lambda record: self._trigger_search(agent, cfg, record, mode, series_lookup),
                 delay,
+                fingerprint_of=profiles.stored_fingerprint,
             )
             agent.log(
                 "info", self.name,
@@ -110,7 +150,7 @@ class SearchMissingSkill(BaseSkill):
 
     # ── Collecting candidates ────────────────────────────────────────────────
 
-    def _collect_random(self, agent, cfg, per_run, mode, cutoff, force):
+    def _collect_random(self, agent, cfg, per_run, mode, cutoff, force, round_keys=None, profiles=None):
         stats = _Stats()
         page_size = min(max(per_run * 10, 50), 250)
         probe = agent.http_get(WANTED_PATH, params={"page": 1, "pageSize": 1, "monitored": "true"})
@@ -137,10 +177,11 @@ class SearchMissingSkill(BaseSkill):
             stats.pages += 1
             records = list(resp.get("records") or [])
             random.shuffle(records)
-            self._take_eligible(agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats)
+            self._take_eligible(agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats,
+                                round_keys, profiles)
         return candidates, stats
 
-    def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force):
+    def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force, round_keys=None, profiles=None):
         """Read the whole wanted list, sort it here, then walk it in order (A3/A4)."""
         stats = _Stats()
         records: list = []
@@ -172,14 +213,27 @@ class SearchMissingSkill(BaseSkill):
 
         ordered = self._apply_order(records, order, cfg["type"])
         candidates: list = []
-        self._take_eligible(agent, cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats)
+        self._take_eligible(agent, cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats,
+                            round_keys, profiles)
         return candidates, stats
 
-    def _take_eligible(self, agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats):
+    def _take_eligible(self, agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats,
+                       round_keys=None, profiles=None):
         """Append records, in the given order, that are missing, released and
         not in the cache, until per_run candidates exist. The cache is asked
         once per chunk, not once per record (A-L3). Commands still waiting to
-        be stored count as cached."""
+        be stored count as cached.
+
+        profiles: a cache entry blocks only under the current fingerprint of
+        the record's quality profile (spec addendum), unless the instance
+        switched that off. A grab of the checked search blocks only "Search
+        again if still missing after (days)": the records come from the
+        wanted list, so a listed grab is still missing. round_keys
+        (checked-search dry run, force run too): the cache is not asked at
+        all; a record is skipped only when its own key was checked in this
+        round under its current fingerprint and the current rule settings."""
+        profiles = profiles or ProfileState()
+        grab_days = CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
         arr_type = cfg["type"]
         retry_hours = int(cfg.get("retry_hours", 0) or 0)
         # For season/series keys: a search inside the release window proves
@@ -202,16 +256,27 @@ class SearchMissingSkill(BaseSkill):
                         continue
                 pool.append(record)
 
-            hits = {} if force else {
-                **db.searched.lookup_many(
-                    cfg["id"], [key for r in pool for key in self._check_keys(arr_type, r)], retry_hours
-                ),
-                **unsaved_cache_keys(agent),
-            }
+            if round_keys is not None:
+                now = datetime.now(timezone.utc)
+                hits = {
+                    self._own_key(arr_type, r): now for r in pool
+                    if profiles.round_blocks(round_keys, self._own_key(arr_type, r), r)
+                }
+            elif force:
+                hits = {}
+            else:
+                keyed = [(key, r) for r in pool for key in self._check_keys(arr_type, r)]
+                hits = {
+                    **db.searched.lookup_many(
+                        cfg["id"], [key for key, _ in keyed], retry_hours,
+                        fingerprints=profiles.cache_filter(keyed), grab_release_days=grab_days,
+                    ),
+                    **unsaved_cache_keys(agent),
+                }
             for record in pool:
                 if len(candidates) >= per_run:
                     return
-                if not force and self._blocked(arr_type, record, hits, window, since):
+                if (not force or round_keys is not None) and self._blocked(arr_type, record, hits, window, since):
                     stats.skipped_cache += 1
                     continue
                 dedup = self._cache_key(arr_type, record, mode)
@@ -248,6 +313,10 @@ class SearchMissingSkill(BaseSkill):
         return keys
 
     @staticmethod
+    def _own_key(arr_type: str, record: dict) -> str:
+        return f"mov:{record.get('id')}" if arr_type == "radarr" else f"ep:{record.get('id')}"
+
+    @staticmethod
     def _ancestor_rule_since() -> datetime | None:
         """First start of 0.8.0 (aware UTC), written once by init_db()."""
         value = db.app_settings.get_value(ANCESTOR_RULE_SINCE_SETTING)
@@ -270,7 +339,7 @@ class SearchMissingSkill(BaseSkill):
         episode: they come from show_batch runs under the old rules and would
         lock most of the live backlog again (A9). Without an air date a
         broader key from after `since` blocks, as before."""
-        own = f"mov:{record.get('id')}" if arr_type == "radarr" else f"ep:{record.get('id')}"
+        own = self._own_key(arr_type, record)
         if own in hits:
             return True
         if arr_type == "radarr":
@@ -380,6 +449,21 @@ class SearchMissingSkill(BaseSkill):
             return (f"{series_title} S{(record.get('seasonNumber') or 0):02d}"
                     f"E{(record.get('episodeNumber') or 0):02d} – {episode_title}")
         return episode_title or f"Episode #{record.get('id')}"
+
+    def _checked_task(self, arr_type: str, record: dict, series_lookup: dict,
+                      profiles: ProfileState | None = None) -> CheckedTask:
+        """The title as the checked search sees it: always one movie or one
+        episode, keyed like the commands it replaces. profile_fingerprint is
+        the fallback; the runner takes the one of the movie or series it loads."""
+        profiles = profiles or ProfileState()
+        return CheckedTask(
+            arr_id=record.get("id"),
+            title=self._label(arr_type, record, series_lookup or {}),
+            item_type="movie" if arr_type == "radarr" else "episode",
+            cache_key=self._own_key(arr_type, record),
+            series_id=record.get("seriesId") if arr_type == "sonarr" else None,
+            profile_fingerprint=profiles.fingerprint(profiles.profile_of(record)),
+        )
 
     def _trigger_search(self, agent, cfg, record, mode, series_lookup) -> SearchResult:
         arr_type = cfg["type"]

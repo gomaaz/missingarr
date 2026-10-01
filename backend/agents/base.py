@@ -496,25 +496,27 @@ class BaseAgent(ABC):
             )
         resp.raise_for_status()
 
-    def http_get(self, path: str, params: Optional[dict] = None) -> dict:
+    def http_get(self, path: str, params: Optional[dict] = None, timeout: float = 10) -> dict:
+        """timeout: seconds; the checked search waits longer for /release,
+        which runs the indexer search before it answers."""
         url = self.config["url"].rstrip("/") + path
         resp = requests.get(
             url,
             headers={"X-Api-Key": self.config["api_key"]},
             params=params or {},
-            timeout=10,
+            timeout=timeout,
             allow_redirects=False,
         )
         self._check_response(resp)
         return resp.json()
 
-    def http_post(self, path: str, body: dict) -> dict:
+    def http_post(self, path: str, body: dict, timeout: float = 10) -> dict:
         url = self.config["url"].rstrip("/") + path
         resp = requests.post(
             url,
             headers={"X-Api-Key": self.config["api_key"], "Content-Type": "application/json"},
             json=body,
-            timeout=10,
+            timeout=timeout,
             allow_redirects=False,
         )
         self._check_response(resp)
