@@ -14,15 +14,24 @@ def local_to_utc(value: str) -> datetime:
     return naive.astimezone(timezone.utc)
 
 
-def add(instance_id: int, cache_key: str, title: str, item_type: str) -> None:
+def add(instance_id: int, cache_key: str, title: str, item_type: str,
+        profile_fingerprint: Optional[str] = None) -> None:
+    """profile_fingerprint: the title's quality profile when it was searched
+    (0.9.0). A new search of a cached title takes the new one over, never
+    NULL over a known one; it is no grab of the checked search (grabbed_at
+    cleared) and no history item wrote it (history_item_id cleared)."""
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO searched_items (instance_id, cache_key, title, item_type)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(instance_id, cache_key) DO UPDATE SET searched_at=datetime('now','localtime')
+            INSERT INTO searched_items (instance_id, cache_key, title, item_type, profile_fingerprint)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(instance_id, cache_key) DO UPDATE SET
+                searched_at=datetime('now','localtime'),
+                profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),
+                grabbed_at=NULL,
+                history_item_id=NULL
             """,
-            (instance_id, cache_key, title, item_type),
+            (instance_id, cache_key, title, item_type, profile_fingerprint),
         )
 
 
@@ -105,11 +114,32 @@ def clear(instance_id: Optional[int] = None) -> int:
         return cursor.rowcount
 
 
-def lookup_many(instance_id: int, keys: Iterable[str], retry_hours: int = 0) -> dict[str, datetime]:
+def lookup_many(
+    instance_id: int,
+    keys: Iterable[str],
+    retry_hours: int = 0,
+    fingerprints: Optional[dict] = None,
+    grab_release_days: int = 0,
+) -> dict[str, datetime]:
     """cache_key -> searched_at (UTC) for every key in the cache.
 
     One connection for a whole page of candidates instead of one per record
     (A-L3). With retry_hours > 0 only entries inside the window count.
+
+    fingerprints (0.9.0, "Search again after profile changes"): cache_key ->
+    (current, baseline) fingerprint of the title's quality profile. An entry
+    then blocks only while it was searched under the current fingerprint; an
+    entry from before 0.9.0 (no fingerprint) counts as searched under the
+    baseline. Without a current fingerprint (profile unknown) the entry keeps
+    blocking. None: every entry blocks, as before.
+
+    grab_release_days (0.9.0, "Search again if still missing after"): an
+    entry of a checked-search grab (grabbed_at) blocks exactly that many
+    days — also when retry_hours is shorter — and is released afterwards,
+    also under the same fingerprint (a changed profile releases it earlier,
+    like any entry). Pass it only for candidates from a wanted list — there
+    a grab that is still listed is still missing. 0: off, a grab keeps the
+    plain retry window.
     """
     wanted = list(dict.fromkeys(k for k in keys if k))
     found: dict[str, datetime] = {}
@@ -120,16 +150,34 @@ def lookup_many(instance_id: int, keys: Iterable[str], retry_hours: int = 0) -> 
             chunk = wanted[start:start + LOOKUP_CHUNK]
             placeholders = ",".join("?" * len(chunk))
             statement = (
-                "SELECT cache_key, searched_at FROM searched_items "
+                "SELECT cache_key, searched_at, profile_fingerprint, "
+                "(grabbed_at IS NOT NULL AND grabbed_at <= datetime('now', 'localtime', ? || ' days')) "
+                "AS grab_due FROM searched_items "
                 f"WHERE instance_id=? AND cache_key IN ({placeholders})"
             )
-            params: list = [instance_id, *chunk]
+            params: list = [f"-{max(0, grab_release_days)}", instance_id, *chunk]
             if retry_hours > 0:
-                statement += " AND searched_at > datetime('now', 'localtime', ? || ' hours')"
-                params.append(f"-{retry_hours}")
+                # A grab's own days decide when it is released, not the window.
+                statement += (" AND (searched_at > datetime('now', 'localtime', ? || ' hours')"
+                              " OR (? > 0 AND grabbed_at IS NOT NULL))")
+                params += [f"-{retry_hours}", grab_release_days]
             for row in conn.execute(statement, params):
+                if grab_release_days > 0 and row["grab_due"]:
+                    continue
+                if fingerprints is not None and not _same_profile(row, fingerprints):
+                    continue
                 found[row["cache_key"]] = local_to_utc(row["searched_at"])
     return found
+
+
+def _same_profile(row, fingerprints: dict) -> bool:
+    """Was this entry searched under the current fingerprint of its title's
+    profile? Unknown current fingerprint: yes (nothing is released)."""
+    current, baseline = fingerprints.get(row["cache_key"], (None, None))
+    if current is None:
+        return True
+    stored = row["profile_fingerprint"] if row["profile_fingerprint"] is not None else baseline
+    return stored == current
 
 
 def purge_expired(instance_id: int, retry_hours: int, keep_grab_days: int = 0) -> int:
