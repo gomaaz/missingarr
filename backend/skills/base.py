@@ -1,6 +1,6 @@
 import sqlite3
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
@@ -27,6 +27,9 @@ class SearchResult:
     arr_id: int | None = None
     command_id: int | None = None
     error: str = ""
+    # Quality profile the title was searched under (0.9.0); stored with the
+    # cache entry so a later profile change can release it.
+    profile_fingerprint: str | None = None
 
 
 class BaseSkill(ABC):
@@ -77,6 +80,12 @@ class SubmitOutcome:
     rate_capped: bool = False
     # A command *arr accepted could not be stored; the run stopped there.
     store_error: str = ""
+    # Titles that ended without an error but are not counted in `triggered`
+    # (a checked-search dry run grabs nothing, so its triggered_count stays 0).
+    handled: int = 0
+    # The checked search did not start (an indexer's search switches differ,
+    # or the indexer list could not be read): the message closes the run.
+    paused: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,11 +98,44 @@ class UnsavedSubmission:
     sent_at: datetime
 
 
+@dataclass(frozen=True)
+class UnsavedCheckedGrab:
+    """A grab of the checked search (or one without a clear answer) whose
+    history item, cache entry and log row could not be written. Kept in the
+    same list as the unsaved commands: it blocks its title until a later run
+    stores it. Like them it lives in memory only."""
+
+    run_id: int
+    instance_id: int
+    title: str
+    arr_id: int | None
+    item_type: str
+    cache_key: str
+    status: str
+    log_entry: dict
+    profile_fingerprint: str | None
+    sent_at: datetime
+    hold_key: str | None = None      # Sonarr upgrade: the season it holds for the command path
+
+
 def _record(agent, run_id: int, result: SearchResult) -> None:
     db.history.record_submission(
         run_id, agent.config["id"], result.title, result.arr_id,
         result.item_type, result.cache_key, result.command_id,
+        profile_fingerprint=result.profile_fingerprint,
     )
+
+
+def _store_unsaved(agent, run_id: int, entry) -> None:
+    """Store one entry of runtime.unsaved_submissions under run_id."""
+    if isinstance(entry, UnsavedCheckedGrab):
+        db.history.record_checked(
+            run_id, entry.instance_id, entry.title, entry.arr_id, entry.item_type, entry.cache_key,
+            entry.status, {**entry.log_entry, "run_id": run_id},
+            profile_fingerprint=entry.profile_fingerprint, cache=True, hold_key=entry.hold_key,
+        )
+    else:
+        _record(agent, run_id, entry.result)
 
 
 def _store_submission(skill_name: str, agent, run_id: int, result: SearchResult) -> str:
@@ -137,16 +179,22 @@ def store_unsaved_submissions(skill_name: str, agent, run_id: int) -> None:
             entry = runtime.unsaved_submissions[0]
             try:
                 try:
-                    _record(agent, entry.run_id, entry.result)
+                    _store_unsaved(agent, entry.run_id, entry)
                 except sqlite3.IntegrityError:
-                    _record(agent, run_id, entry.result)
+                    _store_unsaved(agent, run_id, entry)
             except Exception as exc:
-                failure = f"{len(runtime.unsaved_submissions)} sent command(s) still could not be stored: {exc}"
+                failure = (f"{len(runtime.unsaved_submissions)} sent command(s) or checked grab(s) "
+                           f"still could not be stored: {exc}")
                 break
             runtime.unsaved_submissions.pop(0)
-            stored.append(entry.result)
-    for result in stored:
-        agent.log("info", skill_name, f"Stored command {result.command_id} for {result.title}, sent earlier")
+            stored.append(entry)
+    for entry in stored:
+        if isinstance(entry, UnsavedCheckedGrab):
+            agent.log("info", skill_name, f"Stored the checked search for {entry.title} ({entry.status}), "
+                                          f"grabbed earlier")
+        else:
+            agent.log("info", skill_name,
+                      f"Stored command {entry.result.command_id} for {entry.result.title}, sent earlier")
     if failure:
         agent.log("error", skill_name, failure)
 
@@ -156,11 +204,17 @@ def unsaved_cache_keys(agent) -> dict[str, datetime]:
     block their titles like cache entries. Without a command id nothing is
     cached (A12), so such entries block nothing."""
     with agent.runtime.unsaved_lock:
-        return {
-            entry.result.cache_key: entry.sent_at
-            for entry in agent.runtime.unsaved_submissions
-            if entry.result.command_id is not None and entry.result.cache_key
-        }
+        keys: dict[str, datetime] = {}
+        for entry in agent.runtime.unsaved_submissions:
+            if isinstance(entry, UnsavedCheckedGrab):
+                # A grab (or one without a clear answer) always blocks its
+                # title, and the season it holds for the command path.
+                for key in (entry.cache_key, entry.hold_key):
+                    if key:
+                        keys[key] = entry.sent_at
+            elif entry.result.command_id is not None and entry.result.cache_key:
+                keys[entry.result.cache_key] = entry.sent_at
+        return keys
 
 
 def submit_candidates(
@@ -170,6 +224,7 @@ def submit_candidates(
     candidates: Iterable,
     fire: Callable[[object], SearchResult],
     delay: float,
+    fingerprint_of: Optional[Callable[[object], Optional[str]]] = None,
 ) -> SubmitOutcome:
     """Send one search per candidate, shared by missing and upgrade searches.
 
@@ -193,6 +248,8 @@ def submit_candidates(
 
         result = fire(candidate)
         if result.ok:
+            if fingerprint_of is not None:
+                result = replace(result, profile_fingerprint=fingerprint_of(candidate))
             outcome.triggered += 1
             outcome.store_error = _store_submission(skill_name, agent, run_id, result)
             if outcome.store_error:
@@ -212,6 +269,14 @@ def submit_candidates(
     return outcome
 
 
+def _verified_now(agent, run_id: int) -> int:
+    try:
+        latest = db.history.get_latest_run_verification(agent.config["id"])
+    except Exception:
+        return 0
+    return int(latest["verified_count"] or 0) if latest and latest["id"] == run_id else 0
+
+
 def finish_search_run(
     skill_name: str,
     agent,
@@ -229,30 +294,39 @@ def finish_search_run(
     """
     notes = list(notes)
     failed = len(outcome.errors)
+    succeeded = outcome.triggered + outcome.handled
     if outcome.stopped:
         notes.append("Stopped early: instance disabled or deleted")
 
     if outcome.store_error:
         status = "error"
         notes.insert(0, f"Stopped: {outcome.store_error}")
-    elif failed and outcome.triggered == 0:
+    elif outcome.paused:
+        # A deliberate pause, no fault (decision Daniel 01.10.2026): the run
+        # is a success carrying the reason; last_sync stays (see below).
+        status = "success"
+        notes.insert(0, outcome.paused)
+    elif failed and succeeded == 0:
         status = "error"
         notes.insert(0, f"All {failed} submission(s) failed — first error: {outcome.errors[0]}")
-    elif outcome.stopped and outcome.triggered == 0:
+    elif outcome.stopped and succeeded == 0:
         status = "error"
     else:
         status = "success"
         if failed:
-            notes.insert(0, f"{failed} of {failed + outcome.triggered} submission(s) failed "
+            notes.insert(0, f"{failed} of {failed + succeeded} submission(s) failed "
                             f"— first error: {outcome.errors[0]}")
 
     db.history.finish_run(run_id, wanted, outcome.triggered, status, "; ".join(notes) or None)
 
-    # last_triggered and last_verified always describe the same run (B-L4):
-    # a run that just ended has nothing verified yet.
+    # last_triggered and last_verified always describe the same run (B-L4).
+    # A command run that just ended has nothing verified yet (0); a checked
+    # search settles its titles at once, finish_run stored them already.
     agent.state["last_wanted"] = wanted
     agent.state["last_triggered"] = outcome.triggered
-    agent.state["last_verified"] = 0
-    if status != "error":
+    agent.state["last_verified"] = _verified_now(agent, run_id)
+    # A paused checked search searched nothing: the card's "Last sync" keeps
+    # the last run that did, so a pause that lasts shows there.
+    if status != "error" and not outcome.paused:
         agent.state["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return status
