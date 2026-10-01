@@ -71,6 +71,15 @@ _SCHEMA = """
                 upgrade_source           TEXT NOT NULL DEFAULT 'monitored_items_only'
                                          CHECK(upgrade_source IN ('wanted_list_only','monitored_items_only','both')),
 
+                checked_search           TEXT NOT NULL DEFAULT 'off'
+                                         CHECK(checked_search IN ('off','dry_run','active')),
+                checked_search_settings  TEXT NOT NULL DEFAULT '{}',
+                dry_run_round            INTEGER NOT NULL DEFAULT 0,
+                dry_run_round_started_at TEXT,
+                search_again_after_profile_change INTEGER NOT NULL DEFAULT 1,
+                profile_fingerprints     TEXT NOT NULL DEFAULT '{}',
+                profile_fingerprints_baseline TEXT,
+
                 quiet_start              TEXT,
                 quiet_end                TEXT,
 
@@ -136,6 +145,9 @@ _SCHEMA = """
                 title       TEXT NOT NULL,
                 item_type   TEXT NOT NULL,
                 searched_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                profile_fingerprint TEXT,
+                grabbed_at  TEXT,
+                history_item_id INTEGER,
                 UNIQUE(instance_id, cache_key)
             );
 
@@ -146,6 +158,36 @@ _SCHEMA = """
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS checked_search_log (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id   INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+                run_id        INTEGER REFERENCES search_history(id) ON DELETE SET NULL,
+                mode          TEXT NOT NULL CHECK(mode IN ('dry_run','active')),
+                skill         TEXT NOT NULL CHECK(skill IN ('search_missing','search_upgrades')),
+                arr_id        INTEGER,
+                cache_key     TEXT NOT NULL DEFAULT '',
+                title         TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now','localtime')),
+                outcome       TEXT NOT NULL CHECK(outcome IN ('grabbed','would_grab','no_clean_hit',
+                                                              'no_results','error','grab_failed',
+                                                              'grab_uncertain')),
+                arr_pick      TEXT,
+                pick          TEXT,
+                pick_indexer  TEXT,
+                pick_score    INTEGER,
+                pick_size     INTEGER,
+                pick_quality  TEXT,
+                candidates    TEXT NOT NULL DEFAULT '[]',
+                error_message TEXT,
+                profile_fingerprint TEXT,
+                profile_id    INTEGER,
+                dry_run_round INTEGER,
+                settings_fingerprint TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cs_log_instance_created ON checked_search_log(instance_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_cs_log_instance_mode_key ON checked_search_log(instance_id, mode, cache_key);
 """
 
 # (table, column, definition) for every column added after a table was first
@@ -165,6 +207,25 @@ _COLUMN_MIGRATIONS = [
     ("search_history", "verified_count", "INTEGER NOT NULL DEFAULT 0"),
     # Fair rotation and "expire only after asking" in verify_commands (B4, B5).
     ("search_history_items", "last_checked_at", "TEXT"),
+    # Checked search (0.9.0).
+    ("instances", "checked_search",
+     "TEXT NOT NULL DEFAULT 'off' CHECK(checked_search IN ('off','dry_run','active'))"),
+    ("instances", "checked_search_settings", "TEXT NOT NULL DEFAULT '{}'"),
+    ("instances", "dry_run_round", "INTEGER NOT NULL DEFAULT 0"),
+    ("instances", "dry_run_round_started_at", "TEXT"),
+    # Notice profile changes (0.9.0): a cache entry blocks only under the
+    # fingerprint of the profile it was searched with. Rows without one
+    # were searched before 0.9.0 and count under the baseline.
+    ("instances", "search_again_after_profile_change", "INTEGER NOT NULL DEFAULT 1"),
+    ("instances", "profile_fingerprints", "TEXT NOT NULL DEFAULT '{}'"),
+    ("instances", "profile_fingerprints_baseline", "TEXT"),
+    ("searched_items", "profile_fingerprint", "TEXT"),
+    # A grab of the checked search: "Search again if still missing" (0.9.0).
+    ("searched_items", "grabbed_at", "TEXT"),
+    # The history item that wrote the entry last: a failed command releases
+    # only its own entry, even after the history was cleared (0.9.0). No
+    # foreign key on purpose — clearing the history must not blank it.
+    ("searched_items", "history_item_id", "INTEGER"),
 ]
 
 
