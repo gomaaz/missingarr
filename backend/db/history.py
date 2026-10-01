@@ -1,6 +1,10 @@
 from typing import Optional
 from backend.database import get_db
-from backend.verification import ITEM_SUBMITTED, ITEM_EXPIRED, ITEM_FAILED
+from backend.db import checked_search_log
+from backend.verification import (
+    ITEM_SUBMITTED, ITEM_EXPIRED, ITEM_FAILED, ITEM_GRABBED, ITEM_NO_HIT,
+    aggregate_run_status, count_verified,
+)
 
 _INSERT_ITEM = """
     INSERT INTO search_history_items
@@ -44,27 +48,33 @@ def finish_run(
 
     A run that sent commands is not finished when the HTTP calls returned — it
     is finished when *arr reported what became of them. Such a run is therefore
-    closed as 'pending'; verify_commands derives the final verdict. Only a run
-    that sent nothing (or that threw) gets its verdict here.
+    closed as 'pending'; verify_commands derives the final verdict. A run
+    whose items are all settled already (the checked search writes grabbed /
+    no_hit, nothing to ask *arr about) gets its verdict right here, and so
+    does a run that sent nothing (or that threw).
     """
+    verified_count = None
     with get_db() as conn:
         if status == "success":
-            has_items = conn.execute(
-                "SELECT 1 FROM search_history_items WHERE run_id=? LIMIT 1",
-                (run_id,),
-            ).fetchone()
-            if has_items:
-                status = "pending"
+            statuses = [
+                r[0] for r in conn.execute(
+                    "SELECT command_status FROM search_history_items WHERE run_id=?", (run_id,)
+                )
+            ]
+            if statuses:
+                status = aggregate_run_status(statuses)
+                verified_count = count_verified(statuses)
 
         conn.execute(
             """
             UPDATE search_history SET
                 wanted_count=?, triggered_count=?,
                 status=?, error_message=?,
+                verified_count=COALESCE(?, verified_count),
                 finished_at=datetime('now','localtime')
             WHERE id=?
             """,
-            (wanted_count, triggered_count, status, error_message, run_id),
+            (wanted_count, triggered_count, status, error_message, verified_count, run_id),
         )
 
 
@@ -109,6 +119,24 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+# Retry-cache upsert of every search path. A new search of a cached title
+# also takes over the fingerprint it was searched under (0.9.0) — but never
+# replaces one with NULL (the profile was unknown this time). grabbed_at
+# (1/0 parameter) marks a grab of the checked search; any other search
+# clears it. history_item_id (last parameter): the item that wrote the
+# entry last — a failed command releases only an entry it still owns.
+_UPSERT_SEARCHED = """
+    INSERT INTO searched_items
+        (instance_id, cache_key, title, item_type, profile_fingerprint, grabbed_at, history_item_id)
+    VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now','localtime') END, ?)
+    ON CONFLICT(instance_id, cache_key) DO UPDATE SET
+        searched_at=datetime('now','localtime'),
+        profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),
+        grabbed_at=excluded.grabbed_at,
+        history_item_id=excluded.history_item_id
+"""
+
+
 def record_submission(
     run_id: int,
     instance_id: int,
@@ -117,6 +145,7 @@ def record_submission(
     item_type: str,
     cache_key: str,
     command_id: Optional[int],
+    profile_fingerprint: Optional[str] = None,
 ) -> int:
     """Store a command *arr accepted — history item and retry-cache entry in
     one transaction, so a crash or lock between the two cannot leave a sent
@@ -135,14 +164,8 @@ def record_submission(
             (run_id, title, arr_id, item_type, cache_key, command_id, status, verified),
         )
         if command_id is not None and cache_key:
-            conn.execute(
-                """
-                INSERT INTO searched_items (instance_id, cache_key, title, item_type)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(instance_id, cache_key) DO UPDATE SET searched_at=datetime('now','localtime')
-                """,
-                (instance_id, cache_key, title, item_type),
-            )
+            conn.execute(_UPSERT_SEARCHED,
+                         (instance_id, cache_key, title, item_type, profile_fingerprint, 0, cursor.lastrowid))
         return cursor.lastrowid
 
 
@@ -156,6 +179,56 @@ def record_failed_submission(run_id: int, title: str, arr_id: Optional[int], ite
             (run_id, title, arr_id, item_type, "", None, ITEM_FAILED, "now"),
         )
         return cursor.lastrowid
+
+
+def record_checked(
+    run_id: int,
+    instance_id: int,
+    title: str,
+    arr_id: Optional[int],
+    item_type: str,
+    cache_key: str,
+    status: str,
+    log_entry: Optional[dict] = None,
+    profile_fingerprint: Optional[str] = None,
+    cache: Optional[bool] = None,
+    hold_key: Optional[str] = None,
+) -> int:
+    """Store what the checked search did with one title — history item,
+    retry-cache entry and pre-filter log row in one transaction.
+
+    status 'grabbed' or 'no_hit': item settled at once (no command id, POST
+    /release answers synchronously) and the title is cached as searched,
+    under the fingerprint of its quality profile.
+    status 'failed': item only, no cache entry — the next run tries again.
+    cache=True with 'failed': a grab whose answer got lost. It may be
+    downloading, so the title is cached like after a grab.
+    A grab (and such a failed one) also sets grabbed_at: "Search again if
+    still missing" releases the title after the set days. hold_key: a second
+    key such a grab holds the same way (a Sonarr upgrade holds its season,
+    so the command path does not search the season meanwhile).
+    The cache entry names this item as its writer (history_item_id).
+    """
+    if status not in (ITEM_GRABBED, ITEM_NO_HIT, ITEM_FAILED):
+        raise ValueError(f"unexpected checked-search status {status!r}")
+    if cache is None:
+        cache = status != ITEM_FAILED
+    grabbed = status == ITEM_GRABBED or (status == ITEM_FAILED and cache)
+    with get_db() as conn:
+        cursor = conn.execute(
+            _INSERT_ITEM,
+            (run_id, title, arr_id, item_type, cache_key if cache else "", None, status, "now"),
+        )
+        item_id = cursor.lastrowid
+        if cache and cache_key:
+            conn.execute(_UPSERT_SEARCHED,
+                         (instance_id, cache_key, title, item_type, profile_fingerprint, int(grabbed), item_id))
+            if grabbed and hold_key:
+                conn.execute(_UPSERT_SEARCHED,
+                             (instance_id, hold_key, title, "season", profile_fingerprint, 1, item_id))
+        if log_entry is not None:
+            checked_search_log.insert_with(conn, log_entry)
+        return item_id
 
 
 def close_interrupted_runs() -> int:
@@ -338,6 +411,11 @@ def mark_checked(item_ids: list[int]) -> None:
         )
 
 
+# Items of the checked search that wrote the retry cache (a failed one only
+# when it carries its key: a grab without a clear answer).
+_CACHED_CHECKED = f"'{ITEM_GRABBED}', '{ITEM_NO_HIT}', '{ITEM_FAILED}'"
+
+
 def resolve_item(item_id: int, status: str, instance_id: int, cache_key: str) -> bool:
     """Write a verdict and, for a failed command, release its cache key — in
     one transaction (B3). Returns True when a cache entry was released."""
@@ -352,9 +430,24 @@ def resolve_item(item_id: int, status: str, instance_id: int, cache_key: str) ->
             (status, item_id),
         )
         if status == ITEM_FAILED and cache_key:
+            # Only this command's own entry: a newer search of the same title
+            # (a command, or a grab / no-hit of the checked search, which has
+            # no command to verify) wrote the entry since and still holds it.
+            # The entry names its writer (history_item_id), so this holds
+            # after the history was cleared or purged as well. Entries from
+            # before 0.9.0 name none: there a newer item that wrote the cache
+            # decides (compared by item id, created_at only has seconds).
             cursor = conn.execute(
-                "DELETE FROM searched_items WHERE instance_id=? AND cache_key=?",
-                (instance_id, cache_key),
+                f"""
+                DELETE FROM searched_items WHERE instance_id=? AND cache_key=?
+                AND (history_item_id = ? OR (history_item_id IS NULL AND grabbed_at IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM search_history_items si
+                    JOIN search_history h ON h.id = si.run_id
+                    WHERE h.instance_id=? AND si.cache_key=? AND si.id > ?
+                      AND (si.command_id IS NOT NULL OR si.command_status IN ({_CACHED_CHECKED}))
+                )))
+                """,
+                (instance_id, cache_key, item_id, instance_id, cache_key, item_id),
             )
             return cursor.rowcount > 0
     return False

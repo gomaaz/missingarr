@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 
@@ -7,9 +8,28 @@ from backend.config import settings
 from backend.verification import (
     map_command_status,
     aggregate_run_status,
+    count_verified,
     ITEM_SUBMITTED,
-    ITEM_COMPLETED,
 )
+
+
+GRAB_DAYS_DEFAULT = 7          # CheckedSearchSettings.search_again_after_days (1–365)
+
+
+def _grab_days(config: dict) -> int:
+    """'Search again if still missing after (days)' of an instance, read raw
+    from its stored checked_search_settings (dict or JSON text): housekeeping
+    must not depend on the settings model. Missing or invalid: the default."""
+    raw = config.get("checked_search_settings")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            raw = {}
+    value = raw.get("search_again_after_days") if isinstance(raw, dict) else None
+    if type(value) is int and 1 <= value <= 365:
+        return value
+    return GRAB_DAYS_DEFAULT
 
 
 class VerifyCommandsSkill(BaseSkill):
@@ -86,7 +106,7 @@ class VerifyCommandsSkill(BaseSkill):
             db.history.update_run_verification(
                 run_id,
                 aggregate_run_status(statuses),
-                statuses.count(ITEM_COMPLETED),
+                count_verified(statuses),
             )
 
         # Read the card's numbers back rather than counting this pass: one pass
@@ -126,17 +146,23 @@ class VerifyCommandsSkill(BaseSkill):
 
         try:
             retry_hours = int(agent.config.get("retry_hours") or 0)
-            cache = db.searched.purge_expired(instance_id, retry_hours)
+            # A checked-search grab blocks "Search again if still missing
+            # after (days)", also past a shorter retry window: keep its row.
+            cache = db.searched.purge_expired(instance_id, retry_hours, keep_grab_days=_grab_days(agent.config))
             runs = db.history.purge_old_runs(instance_id, settings.history_retention_days)
+            # The pre-filter log keeps the history's retention (rows of the
+            # running dry-run round stay, see checked_search_log.purge_old).
+            log_rows = db.checked_search_log.purge_old(instance_id, settings.history_retention_days)
         except Exception as exc:
             agent.log("warn", self.name, f"Housekeeping failed: {exc}")
             return
 
-        if cache or runs:
+        if cache or runs or log_rows:
             agent.log(
                 "info",
                 self.name,
                 f"Housekeeping: removed {runs} run(s) older than "
                 f"{settings.history_retention_days} days and {cache} expired cache entr"
-                f"{'y' if cache == 1 else 'ies'}",
+                f"{'y' if cache == 1 else 'ies'}"
+                + (f"; {log_rows} pre-filter log row(s)" if log_rows else ""),
             )
