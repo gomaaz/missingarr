@@ -1914,7 +1914,7 @@ git commit -m "test: hold the Radarr rules to the measured corpus numbers (local
 Rein, wie die Spec es seit 01.10.2026 beschreibt (Daniel, nach Codex K6): SHA-256 über das kanonische JSON (sortierte Schlüssel) einer **Auswahl der bewertungsrelevanten Felder**, gekürzt auf 16 Hex-Zeichen. Die ganzen Ressourcen taugen nicht: `GET /customformat` liefert je Spezifikation `implementationName`, `infoLink` und die Felder mit übersetzten `label`/`helpText`/`selectOptions` (Radarr `CustomFormatSpecificationSchema.cs`, `SchemaBuilder.cs:119–130`, Sprache aus `UILanguage`); die Sprach-Spezifikation listet alle Sprachen als Auswahl (`LanguageFieldConverter`), ein Update mit einer neuen Sprache änderte jeden Fingerabdruck; `tags` eines Release-Profils ist ein `HashSet`. Ausgewählt werden:
 - Profil: `items` rekursiv als `{id, quality.id, allowed, items}` **in ihrer Reihenfolge** (Rangfolge der Qualitäten), `cutoff`, `upgradeAllowed`, `minFormatScore`, `cutoffFormatScore`, `minUpgradeFormatScore` (fehlt: `None`), `language.id` (nur Radarr), `formatItems` als `[format, score]` sortiert.
 - Custom Formats: sortiert, je `{id, specifications}`; jede Spezifikation `{implementation, negate, required, fields: {name: value}}`, die Spezifikationen sortiert (\*arr wertet sie ohne Reihenfolge aus).
-- Release-Profile: sortiert, je `{enabled, indexerId, required, ignored, tags}` (ohne `id`, wie in der Spec; Codex-Runde 2, F9: upstream entscheidet die ID nichts, `ReleaseProfileService.EnabledForTags` wählt nach Tags, `Enabled` und `IndexerId`, `ReleaseRestrictionsSpecification` liest nur `Required`/`Ignored`, kein Qualitätsprofil verweist auf eine Release-Profil-ID; ein gelöschtes und gleich neu angelegtes Release-Profil gibt so nichts frei); `required`/`ignored` als sortierte Menge (als Text: an Kommas getrennt wie upstream `ParseArray`), `tags` sortiert. Die ID eines Custom Formats bleibt dagegen drin: `formatItems.format` verweist auf sie.
+- Release-Profile: sortiert, je `{enabled, indexerId, required, ignored, tags}` (ohne `id`, wie in der Spec; Codex-Runde 2, F9: upstream entscheidet die ID nichts, `ReleaseProfileService.EnabledForTags` wählt nach Tags, `Enabled` und `IndexerId`, `ReleaseRestrictionsSpecification` liest nur `Required`/`Ignored`, kein Qualitätsprofil verweist auf eine Release-Profil-ID; ein gelöschtes und gleich neu angelegtes Release-Profil gibt so nichts frei); `required`/`ignored` als sortierte Menge der Einträge, wörtlich und ungetrimmt (Nachtrag 02.10.2026, Codex: `ReleaseProfileResource.ToResource` gibt die gespeicherte `List<string>` unverändert zurück, `CaseInsensitiveTermMatcher` sucht den Begriff als Teiltext, `RegexTermMatcher` als Regex, beide mit Leerzeichen; `['GROUP ']` und `['GROUP']` sind verschiedene Regeln, ein leerer Eintrag passt auf jeden Titel); nur als Text an Kommas getrennt, getrimmt und ohne leere Begriffe wie upstream `ParseArray` (`TrimEntries | RemoveEmptyEntries`, nur bei POST/PUT angenommen), `tags` sortiert. Die ID eines Custom Formats bleibt dagegen drin: `formatItems.format` verweist auf sie.
 - Weg fallen alle Namen, `implementationName`, `infoLink`, `presets`, `includeCustomFormatWhenRenaming` und bei Feldern alles außer `name`/`value`.
 
 Bewusste Lücke: Ein Regel-Feld, das ein künftiges \*arr-Update neu einführt, zählt erst, wenn es in die Auswahl aufgenommen wird (Docstring, README). Antwortet \*arr nicht mit drei Listen, löst `fingerprints` `ValueError` aus — G3 behandelt das wie einen gescheiterten Abruf (gespeicherter Stand bleibt, nichts wird freigegeben).
@@ -2041,6 +2041,22 @@ def test_unordered_collections_do_not_count():
 
 def test_terms_as_text_count_like_a_list():
     assert changed(lambda p, f, r: r[0].update(required="German, DL")) == base()
+
+
+@pytest.mark.parametrize("field", ["required", "ignored"])
+def test_whitespace_inside_a_listed_term_counts(field):
+    """*arr returns the list entries as stored and matches them literally
+    ('GROUP ' needs a space after GROUP), so a trailing or leading space
+    is a different rule."""
+    def profiles(terms):
+        return [{"id": 1, "enabled": True, "required": [], "ignored": [], "indexerId": 0, "tags": [], field: terms}]
+    plain = fingerprint(PROFILE, FORMATS, profiles(["GROUP"]), DEFINITIONS, INDEXER_CONFIG)
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP "]), DEFINITIONS, INDEXER_CONFIG) != plain
+    assert fingerprint(PROFILE, FORMATS, profiles([" GROUP"]), DEFINITIONS, INDEXER_CONFIG) != plain
+    # an empty entry matches every title (substring of everything): no change to drop
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP", ""]), DEFINITIONS, INDEXER_CONFIG) != plain
+    # duplicates and order still decide nothing: any one term is enough
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP", "GROUP"]), DEFINITIONS, INDEXER_CONFIG) == plain
 
 
 def test_a_recreated_release_profile_with_a_new_id_does_not_count():
@@ -2174,12 +2190,19 @@ def _custom_format(custom_format: dict) -> dict:
 
 
 def _terms(value) -> list:
-    """required / ignored: a list, or (as *arr accepts it) one text split at commas."""
+    """required / ignored as *arr matches them. GET returns the stored list
+    entries unchanged, and *arr matches each one literally (a regex, or a
+    case-insensitive substring): 'GROUP ' needs a space after GROUP and an
+    empty entry is part of every title. So list entries are kept as they
+    are; only duplicates and the order drop out (any one term decides).
+    One text split at commas is the older form *arr still accepts on POST
+    and PUT; there it trims each term and drops empty ones, and so does
+    this."""
     if isinstance(value, str):
-        value = value.split(",")
+        value = [term.strip() for term in value.split(",") if term.strip()]
     if not isinstance(value, list):
         return []
-    return sorted({str(term).strip() for term in value if str(term).strip()})
+    return sorted({term for term in value if isinstance(term, str)})
 
 
 def _release_profile(profile: dict) -> dict:

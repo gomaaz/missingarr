@@ -95,12 +95,19 @@ def _custom_format(custom_format: dict) -> dict:
 
 
 def _terms(value) -> list:
-    """required / ignored: a list, or (as *arr accepts it) one text split at commas."""
+    """required / ignored as *arr matches them. GET returns the stored list
+    entries unchanged, and *arr matches each one literally (a regex, or a
+    case-insensitive substring): 'GROUP ' needs a space after GROUP and an
+    empty entry is part of every title. So list entries are kept as they
+    are; only duplicates and the order drop out (any one term decides).
+    One text split at commas is the older form *arr still accepts on POST
+    and PUT; there it trims each term and drops empty ones, and so does
+    this."""
     if isinstance(value, str):
-        value = value.split(",")
+        value = [term.strip() for term in value.split(",") if term.strip()]
     if not isinstance(value, list):
         return []
-    return sorted({str(term).strip() for term in value if str(term).strip()})
+    return sorted({term for term in value if isinstance(term, str)})
 
 
 def _release_profile(profile: dict) -> dict:

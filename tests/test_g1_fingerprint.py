@@ -136,6 +136,22 @@ def test_terms_as_text_count_like_a_list():
     assert changed(lambda p, f, r: r[0].update(required="German, DL")) == base()
 
 
+@pytest.mark.parametrize("field", ["required", "ignored"])
+def test_whitespace_inside_a_listed_term_counts(field):
+    """*arr returns the list entries as stored and matches them literally
+    ('GROUP ' needs a space after GROUP), so a trailing or leading space
+    is a different rule."""
+    def profiles(terms):
+        return [{"id": 1, "enabled": True, "required": [], "ignored": [], "indexerId": 0, "tags": [], field: terms}]
+    plain = fingerprint(PROFILE, FORMATS, profiles(["GROUP"]), DEFINITIONS, INDEXER_CONFIG)
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP "]), DEFINITIONS, INDEXER_CONFIG) != plain
+    assert fingerprint(PROFILE, FORMATS, profiles([" GROUP"]), DEFINITIONS, INDEXER_CONFIG) != plain
+    # an empty entry matches every title (substring of everything): no change to drop
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP", ""]), DEFINITIONS, INDEXER_CONFIG) != plain
+    # duplicates and order still decide nothing: any one term is enough
+    assert fingerprint(PROFILE, FORMATS, profiles(["GROUP", "GROUP"]), DEFINITIONS, INDEXER_CONFIG) == plain
+
+
 def test_a_recreated_release_profile_with_a_new_id_does_not_count():
     assert changed(lambda p, f, r: r[0].update(id=7)) == base()
 
