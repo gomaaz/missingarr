@@ -35,6 +35,11 @@ from backend.checked_search.fingerprint import changes, fingerprints, short
 from backend.checked_search.settings import CheckedSearchSettings
 
 # In the order fingerprints() takes the answers.
+# Radarr and Sonarr both serve /api/v3/releaseprofile: each has a
+# ReleaseProfileController marked [V3ApiController] without a resource name,
+# so the route is api/v3/[controller] (Radarr.Api.V3/Profiles/Release and
+# Sonarr.Api.V3/Profiles/Release). Radarr has it since version 5, which
+# renamed its Restrictions to ReleaseProfiles (migration 229).
 PROFILE_PATHS = ("/api/v3/qualityprofile", "/api/v3/customformat", "/api/v3/releaseprofile",
                  "/api/v3/qualitydefinition", "/api/v3/config/indexer")
 SERIES_PATH = "/api/v3/series"

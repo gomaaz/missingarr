@@ -10696,6 +10696,7 @@ Jeder Befund wurde am Plan-Code, am Bestand von 0.8.0 und am Quellcode von Radar
 | Punkt | Ergebnis |
 |---|---|
 | Codex mittel: Zustand vor dem Grab nicht neu geprüft (`runner.py`, Grab nach den `/parse`-Aufrufen) | **Bestätigt (Quellcode Radarr 6.4 / Sonarr 4.0: `DownloadRelease` → `DownloadService.DownloadReport` ohne Spezifikationen; im Runner keine Abfrage zwischen Suche und POST außer `/parse`), übernommen.** Nachlesen von Warteschlange und Datei direkt vor dem POST, Ergebnis `changed_meanwhile` ohne Item und Cache, Nachlesen scheitert → Fehler ohne Cache; Einzelheiten unter G3.1 „Nachlesen vor dem Grab“. Restfenster und der bewusst fehlende Stand vor der Suche stehen unter Risiken bzw. Bewusst nicht gemacht. |
+| Codex (zweimal): Radarr kenne `/api/v3/releaseprofile` nicht | **Widerlegt.** Radarr hat `ReleaseProfileController` mit `[V3ApiController]` ohne Ressourcennamen (Route `api/v3/[controller]` → `/api/v3/releaseprofile`; seit Radarr 5, Migration 229 benennt `Restrictions` in `ReleaseProfiles` um), Sonarr ebenso. Kommentar mit Beleg an `PROFILE_PATHS` in `skills/profiles.py`, kein Verhaltenswechsel. |
 
 ## Selbstprüfung
 
