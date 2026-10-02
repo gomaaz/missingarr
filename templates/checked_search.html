@@ -71,8 +71,16 @@ function checkedSearchPage() {
             if (!confirm(`Start a new dry-run round for ${name}? Every title will be checked again.`)) return;
             try {
                 const resp = await apiFetch(`/api/instances/${id}/checked-search/reset-dry-run`, { method: 'POST' });
-                if (resp.ok) toast(`Dry run reset for ${name}`, 'success');
-                else toast('Reset failed', 'error');
+                if (!resp.ok) {
+                    toast('Reset failed', 'error');
+                    return;
+                }
+                toast(`Dry run reset for ${name}`, 'success');
+                // The page does not poll. The new round has no dry-run verdicts yet:
+                // drop the old round's counters and reload the list.
+                document.querySelectorAll(`[data-summary-instance="${id}"][data-summary-mode="dry_run"]`)
+                    .forEach(row => row.remove());
+                await this.reload();
             } catch (err) {
                 if (!isSessionExpired(err)) toast('Reset failed', 'error');
             }
@@ -106,7 +114,7 @@ function checkedSearchPage() {
         <thead><tr><th>Instance</th><th>Mode</th><th>Outcome</th><th title="Dry run: the current round only">Titles</th></tr></thead>
         <tbody>
         {% for s in summary %}
-        <tr>
+        <tr data-summary-instance="{{ s.instance_id }}" data-summary-mode="{{ s.mode }}">
             <td>{{ s.instance_name }}</td>
             <td>{{ 'dry run' if s.mode == 'dry_run' else 'active' }}</td>
             <td>{{ s.outcome.replace('_', ' ') }}</td>

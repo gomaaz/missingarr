@@ -107,7 +107,7 @@ Welle 2 startet erst, wenn G1 und G2 gemergt sind und die Gesamtsuite auf `feat/
 | Laufstatus: `grabbed`/`no_hit` erledigt, keine Wartezeit; Fehler vor der Suche → `failed`-Item, gemischter Lauf → `partial` (Codex K4) | `aggregate_run_status`, `count_verified`, `finish_run` | G2.3, G3.1 |
 | Upgrades über denselben Runner, Regel 1a/S4 | `search_upgrades` → `run_checked` | G3.2 |
 | History-Plaketten „geladen“, „kein sauberer Treffer“ | `history.html` | G5.2 |
-| Seite „Vorfilter“ (Pre-filter): Zähler, Tabelle, Filter, „only differences“, aufklappbar, Reset; Filter „current round only“ (voreingestellt an), Zähler der laufenden Runde; Plaketten „profile changed“, „settings changed“ | `checked_search.html`, `checked_search_log.query/count/summary(current_round=…)` | G2.2, G4.2, G5.2 |
+| Seite „Vorfilter“ (Pre-filter): Zähler, Tabelle, Filter, „only differences“, aufklappbar, Reset (danach Liste neu, Probelauf-Zähler der Instanz weg; Codex-Prüfung 0.9.0); Filter „current round only“ (voreingestellt an), Zähler der laufenden Runde; Plaketten „profile changed“, „settings changed“ | `checked_search.html`, `checked_search_log.query/count/summary(current_round=…)` | G2.2, G4.2, G5.2 |
 | CSV mit Filter, eine Zeile pro Kandidat, aus einem Datenbankstand (Codex-Runde 3, G5) | `checked_search_log.iter_csv` (eine Lesetransaktion, `fetchmany`), `GET /api/checked-search.csv` | G2.2, G4.2 |
 | Karte: Plakette „dry run“/„checked“ | `card.html` | G5.2 |
 | Nie gespeichert/geloggt: `downloadUrl`, `guid`, `infoUrl` (dazu `magnetUrl`) | `runner._approved`, Test mit Schlüssel-Suche, auch in den Fehlerpfaden | G3.1 |
@@ -9086,7 +9086,7 @@ git commit -m "feat: add the Checked search section with info icons to the insta
 - Consumes: G2 (`db.checked_search_log.summary`), G4 (`GET /api/checked-search`, `GET /api/checked-search.csv`, `POST /api/instances/{id}/checked-search/reset-dry-run`, `public_instance`)
 - Produces: Seite `/checked-search` mit Alpine-Komponente `checkedSearchPage()` (`load`, `reload`, `goTo`, `csvHref`, `resetDryRun(id, name)`, `toggle(id)`); Menüpunkt „Pre-filter“; Karten-Plakette „dry run“/„checked“ (`data-checked-badge`); History-Labels `grabbed: 'geladen'`, `no_hit: 'kein sauberer Treffer'`.
 
-Die Seite zeigt oben die Zähler je Instanz, Modus und Ergebnis der **laufenden Runde** (serverseitig gerendert, `summary(current_round=True)`; aktive Zeilen zählen immer) und Knöpfe „Reset dry run“ für jede Instanz mit Checked search ≠ Off (Name nur in `data-name`). Darunter Filter (Text, Instanz, Modus, Ergebnis, „only differences“, „current round only“ — voreingestellt an), Tabelle (Time, Instance, Mode, Title, Outcome, *arr would grab, Filter grabs, Rejected), serverseitig geblättert wie die History; ein Titel, dessen Zeile unter einem inzwischen geänderten Profil geprüft wurde, trägt die Plakette „profile changed“ (Spec-Nachtrag); ein Klick auf eine Zeile klappt die Kandidaten auf (Release, Indexer, Score, Size, Quality, Verdict, Reasons, Notes, Markierung „*arr“ und „filter“). Der CSV-Link trägt den aktuellen Filter und hat `hx-boost="false"` (sonst lädt htmx die Datei per AJAX).
+Die Seite zeigt oben die Zähler je Instanz, Modus und Ergebnis der **laufenden Runde** (serverseitig gerendert, `summary(current_round=True)`; aktive Zeilen zählen immer) und Knöpfe „Reset dry run“ für jede Instanz mit Checked search ≠ Off (Name nur in `data-name`). Die Seite fragt nicht regelmäßig nach: Nach einem erfolgreichen Reset entfernt `resetDryRun` die Zählerzeilen dieser Instanz im Modus Probelauf (`data-summary-instance`/`data-summary-mode` an jeder Zeile; die neue Runde hat noch keine) und lädt die Liste ab Seite 1 neu (`reload()`), sonst blieben Zeilen, Summe und Zähler der alten Runde stehen (Codex-Prüfung 0.9.0). Ein gescheiterter Reset ändert nichts. Darunter Filter (Text, Instanz, Modus, Ergebnis, „only differences“, „current round only“ — voreingestellt an), Tabelle (Time, Instance, Mode, Title, Outcome, *arr would grab, Filter grabs, Rejected), serverseitig geblättert wie die History; ein Titel, dessen Zeile unter einem inzwischen geänderten Profil geprüft wurde, trägt die Plakette „profile changed“ (Spec-Nachtrag); ein Klick auf eine Zeile klappt die Kandidaten auf (Release, Indexer, Score, Size, Quality, Verdict, Reasons, Notes, Markierung „*arr“ und „filter“). Der CSV-Link trägt den aktuellen Filter und hat `hx-boost="false"` (sonst lädt htmx die Datei per AJAX).
 
 - [ ] **Step 1: Failing test schreiben**
 
@@ -9167,7 +9167,8 @@ def run_node(tmp_path, script, body):
     case = tmp_path / "case.js"
     case.write_text(
         "const vm = require('vm');\n"
-        "const calls = []; const toasts = [];\n"
+        "const calls = []; const toasts = []; const removed = [];\n"
+        "globalThis.document = { querySelectorAll: s => [{ remove: () => removed.push(s) }] };\n"
         "globalThis.toast = (m, t) => toasts.push([m, t]);\n"
         "globalThis.isSessionExpired = () => false;\n"
         "globalThis.confirm = () => true;\n"
@@ -9252,6 +9253,38 @@ out.reset = calls[1];
     assert out["csv"] == ("/api/checked-search.csv?instance_id=2&mode=dry_run&q=Thing&only_differences=true"
                           "&current_round=true")
     assert out["reset"] == ["/api/instances/2/checked-search/reset-dry-run", "POST"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_reset_refreshes_the_list_and_drops_the_old_rounds_counters(client, tmp_path):
+    # The page does not poll: without a refresh the old round's rows, total
+    # and counters would stay on screen after "Reset dry run".
+    inst = make_instance(checked_search="dry_run")
+    entry = {"instance_id": inst["id"], "skill": "search_missing", "cache_key": "mov:1", "title": "A"}
+    db.checked_search_log.insert({**entry, "mode": "active", "outcome": "grabbed"})
+    db.checked_search_log.insert({**entry, "mode": "dry_run", "outcome": "would_grab",
+                                  "dry_run_round": inst["dry_run_round"]})
+    page = client.get("/checked-search").text
+    counters = [(a["data-summary-instance"], a["data-summary-mode"])
+                for t, a in tags(page) if t == "tr" and "data-summary-instance" in a]
+    assert counters == [(str(inst["id"]), "active"), (str(inst["id"]), "dry_run")]
+    out = run_node(tmp_path, component_script(page, "function checkedSearchPage()"), """
+const page = checkedSearchPage();
+page.page = 4; page.total = 500; page.rows = [{ id: 7 }];
+await page.resetDryRun(""" + str(inst["id"]) + """, 'Radarr');
+out.calls = calls.slice(); out.removed = removed.slice();
+out.page = page.page; out.total = page.total; out.rows = page.rows;
+calls.length = 0; removed.length = 0;
+globalThis.apiFetch = async (url, options) => { calls.push([url, options.method]); return { ok: false }; };
+await page.resetDryRun(""" + str(inst["id"]) + """, 'Radarr');
+out.failed = calls.slice(); out.failedRemoved = removed.slice(); out.toasts = toasts;
+""")
+    reset = [f"/api/instances/{inst['id']}/checked-search/reset-dry-run", "POST"]
+    assert out["calls"] == [reset, ["/api/checked-search?current_round=true&limit=50&offset=0", "GET"]]
+    assert out["removed"] == [f'[data-summary-instance="{inst["id"]}"][data-summary-mode="dry_run"]']
+    assert (out["page"], out["total"], out["rows"]) == (1, 3, [{"id": 1}])
+    assert out["failed"] == [reset] and out["failedRemoved"] == []
+    assert out["toasts"] == [["Dry run reset for Radarr", "success"], ["Reset failed", "error"]]
 ```
 
 - [ ] **Step 2: Test laufen lassen, er muss scheitern**
@@ -9355,8 +9388,16 @@ function checkedSearchPage() {
             if (!confirm(`Start a new dry-run round for ${name}? Every title will be checked again.`)) return;
             try {
                 const resp = await apiFetch(`/api/instances/${id}/checked-search/reset-dry-run`, { method: 'POST' });
-                if (resp.ok) toast(`Dry run reset for ${name}`, 'success');
-                else toast('Reset failed', 'error');
+                if (!resp.ok) {
+                    toast('Reset failed', 'error');
+                    return;
+                }
+                toast(`Dry run reset for ${name}`, 'success');
+                // The page does not poll. The new round has no dry-run verdicts yet:
+                // drop the old round's counters and reload the list.
+                document.querySelectorAll(`[data-summary-instance="${id}"][data-summary-mode="dry_run"]`)
+                    .forEach(row => row.remove());
+                await this.reload();
             } catch (err) {
                 if (!isSessionExpired(err)) toast('Reset failed', 'error');
             }
@@ -9390,7 +9431,7 @@ function checkedSearchPage() {
         <thead><tr><th>Instance</th><th>Mode</th><th>Outcome</th><th title="Dry run: the current round only">Titles</th></tr></thead>
         <tbody>
         {% for s in summary %}
-        <tr>
+        <tr data-summary-instance="{{ s.instance_id }}" data-summary-mode="{{ s.mode }}">
             <td>{{ s.instance_name }}</td>
             <td>{{ 'dry run' if s.mode == 'dry_run' else 'active' }}</td>
             <td>{{ s.outcome.replace('_', ' ') }}</td>

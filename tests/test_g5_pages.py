@@ -72,7 +72,8 @@ def run_node(tmp_path, script, body):
     case = tmp_path / "case.js"
     case.write_text(
         "const vm = require('vm');\n"
-        "const calls = []; const toasts = [];\n"
+        "const calls = []; const toasts = []; const removed = [];\n"
+        "globalThis.document = { querySelectorAll: s => [{ remove: () => removed.push(s) }] };\n"
         "globalThis.toast = (m, t) => toasts.push([m, t]);\n"
         "globalThis.isSessionExpired = () => false;\n"
         "globalThis.confirm = () => true;\n"
@@ -157,3 +158,35 @@ out.reset = calls[1];
     assert out["csv"] == ("/api/checked-search.csv?instance_id=2&mode=dry_run&q=Thing&only_differences=true"
                           "&current_round=true")
     assert out["reset"] == ["/api/instances/2/checked-search/reset-dry-run", "POST"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_reset_refreshes_the_list_and_drops_the_old_rounds_counters(client, tmp_path):
+    # The page does not poll: without a refresh the old round's rows, total
+    # and counters would stay on screen after "Reset dry run".
+    inst = make_instance(checked_search="dry_run")
+    entry = {"instance_id": inst["id"], "skill": "search_missing", "cache_key": "mov:1", "title": "A"}
+    db.checked_search_log.insert({**entry, "mode": "active", "outcome": "grabbed"})
+    db.checked_search_log.insert({**entry, "mode": "dry_run", "outcome": "would_grab",
+                                  "dry_run_round": inst["dry_run_round"]})
+    page = client.get("/checked-search").text
+    counters = [(a["data-summary-instance"], a["data-summary-mode"])
+                for t, a in tags(page) if t == "tr" and "data-summary-instance" in a]
+    assert counters == [(str(inst["id"]), "active"), (str(inst["id"]), "dry_run")]
+    out = run_node(tmp_path, component_script(page, "function checkedSearchPage()"), """
+const page = checkedSearchPage();
+page.page = 4; page.total = 500; page.rows = [{ id: 7 }];
+await page.resetDryRun(""" + str(inst["id"]) + """, 'Radarr');
+out.calls = calls.slice(); out.removed = removed.slice();
+out.page = page.page; out.total = page.total; out.rows = page.rows;
+calls.length = 0; removed.length = 0;
+globalThis.apiFetch = async (url, options) => { calls.push([url, options.method]); return { ok: false }; };
+await page.resetDryRun(""" + str(inst["id"]) + """, 'Radarr');
+out.failed = calls.slice(); out.failedRemoved = removed.slice(); out.toasts = toasts;
+""")
+    reset = [f"/api/instances/{inst['id']}/checked-search/reset-dry-run", "POST"]
+    assert out["calls"] == [reset, ["/api/checked-search?current_round=true&limit=50&offset=0", "GET"]]
+    assert out["removed"] == [f'[data-summary-instance="{inst["id"]}"][data-summary-mode="dry_run"]']
+    assert (out["page"], out["total"], out["rows"]) == (1, 3, [{"id": 1}])
+    assert out["failed"] == [reset] and out["failedRemoved"] == []
+    assert out["toasts"] == [["Dry run reset for Radarr", "success"], ["Reset failed", "error"]]
