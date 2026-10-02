@@ -1051,13 +1051,92 @@ def test_a_title_skipped_as_changed_is_decided_again_by_the_next_run(db_path):
     assert [r["outcome"] for r in log_rows()] == ["grabbed", "changed_meanwhile"]
 
 
-def test_a_title_already_downloading_is_not_grabbed_a_second_time(db_path):
-    # *arr approves a release over a queued one when it is an upgrade of it;
-    # the runner does not add a second download while one is in the queue.
-    inst = make_instance(checked_search="active")
-    agent = the_thing_agent(inst, queue=[queued(movie_id=1)])
+def assert_not_searched(agent, reason):
+    """Skipped before the release search: no indexer search, the rate slot
+    went back, nothing remembered, no failure."""
+    assert [p for p, _ in agent.gets if p == RELEASE] == []
+    assert [p for p, _ in agent.gets if p == PARSE] == []
+    assert agent.posts == []
+    assert agent.get_rate_used() == 0
+    assert sql("SELECT COUNT(*) FROM search_history_items")[0][0] == 0
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    row = log_rows()[0]
+    assert (row["mode"], row["outcome"], row["pick"], row["arr_pick"]) == ("active", "changed_meanwhile", None, None)
+    assert reason in row["error_message"]
+    run = last_run()
+    assert (run["status"], run["triggered_count"]) == ("success", 0)
+    assert "1 title(s) skipped" in run["error_message"]
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_a_title_already_downloading_is_not_searched(db_path, arr):
+    # *arr approves a release over a queued one when it is an upgrade of it,
+    # but the runner never adds a second download: a search could only end
+    # as "changed meanwhile" and would cost the indexers for nothing.
+    inst = checked_instance(arr)
+    entry = queued(movie_id=1) if arr == "radarr" else queued(episode_id=3)
+    agent = missing_agent(arr, inst, queue=[entry])
     SearchMissingSkill().execute(agent)
-    assert_skipped(agent, "in the *arr queue")
+    assert_not_searched(agent, "not searched, the title is in the *arr queue (Grabbed.By.RSS.1080p-GRP)")
+    messages = activity_messages()
+    assert any("not searched" in m and "next run" in m and "None" not in m for m in messages)
+    assert any("1 skipped" in m for m in messages)
+
+
+def test_a_download_stuck_in_the_queue_costs_no_indexer_search_on_any_run(db_path):
+    # A download *arr cannot import stays in the queue until someone clears
+    # it, and the title stays a candidate (no cache entry): every run reads
+    # the queue again, none asks the indexers. Once the queue is clear the
+    # title is searched and grabbed.
+    inst = make_instance(checked_search="active")
+    stuck = queued(movie_id=1, status="warning", state="importBlocked")
+    for _ in range(3):
+        agent = the_thing_agent(inst, queue=[stuck])
+        SearchMissingSkill().execute(agent)
+        assert [p for p, _ in agent.gets if p == RELEASE] == []
+        assert agent.get_rate_used() == 0
+    cleared = the_thing_agent(inst)
+    SearchMissingSkill().execute(cleared)
+    assert cleared.posts == [movie_grab("guid-right")]
+    assert [r["outcome"] for r in log_rows()] == ["grabbed"] + ["changed_meanwhile"] * 3
+
+
+@pytest.mark.parametrize("arr,reads", [
+    ("radarr", [("/api/v3/movie/1", {}), (QUEUE, {"movieId": 1}), (RELEASE, {"movieId": 1})]),
+    ("sonarr", [("/api/v3/episode/3", {}), ("/api/v3/series/10", {}), (QUEUE, {"episodeIds": [3]}),
+                (RELEASE, {"episodeId": 3})]),
+])
+def test_the_queue_is_read_before_the_release_search(db_path, arr, reads):
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst)
+    SearchMissingSkill().execute(agent)
+    start = agent.gets.index(reads[0])
+    assert agent.gets[start:start + len(reads)] == reads
+    assert agent.posts == ([movie_grab("guid-right")] if arr == "radarr" else [episode_grab("g-guest")])
+
+
+@pytest.mark.parametrize("arr,kwargs", [
+    ("radarr", dict(get_errors={QUEUE: requests.exceptions.ConnectionError("down")})),
+    ("radarr", dict(get_errors={QUEUE: http_error(500)})),
+    ("radarr", dict(queue={"page": 1, "records": []})),
+    ("sonarr", dict(get_errors={QUEUE: http_error(404)})),
+], ids=["queue down", "queue 5xx", "queue no list", "sonarr queue 404"])
+def test_an_unreadable_queue_searches_nothing(db_path, arr, kwargs):
+    # In doubt, no search: without the queue the runner cannot grab anyway,
+    # and a search it cannot use costs the indexers on every run. A failed
+    # item without a cache entry, like a title that could not be loaded.
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst, **kwargs)
+    SearchMissingSkill().execute(agent)
+    assert [p for p, _ in agent.gets if p == RELEASE] == []
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error" and row["pick"] is None
+    assert row["error_message"].startswith("could not read the *arr queue before the search")
+    assert last_run()["status"] == "error"
+    assert agent.get_rate_used() == 0
 
 
 @pytest.mark.parametrize("arr,entry", [
@@ -1090,13 +1169,24 @@ def drop_title(fake):
     fake.episodes[3] = None
 
 
+def fail_queue(error):
+    """The queue answered before the search and fails right before the grab."""
+    def hook(fake):
+        fake.get_errors[QUEUE] = error
+    return hook
+
+
+def garble_queue(fake):
+    fake.queue = {"page": 1, "records": []}
+
+
 @pytest.mark.parametrize("arr,kwargs", [
-    ("radarr", dict(get_errors={QUEUE: requests.exceptions.ConnectionError("down")})),
-    ("radarr", dict(get_errors={QUEUE: http_error(500)})),
-    ("radarr", dict(queue={"page": 1, "records": []})),
+    ("radarr", dict(on_get={PARSE: fail_queue(requests.exceptions.ConnectionError("down"))})),
+    ("radarr", dict(on_get={PARSE: fail_queue(http_error(500))})),
+    ("radarr", dict(on_get={PARSE: garble_queue})),
     ("radarr", dict(on_get={PARSE: fail_title_reads})),
     ("radarr", dict(on_get={PARSE: drop_title})),
-    ("sonarr", dict(get_errors={QUEUE: http_error(404)})),
+    ("sonarr", dict(on_get={PARSE: fail_queue(http_error(404))})),
     ("sonarr", dict(on_get={PARSE: fail_title_reads})),
 ], ids=["queue down", "queue 5xx", "queue no list", "title down", "title no object", "sonarr queue 404",
         "sonarr episode down"])

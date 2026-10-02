@@ -32,6 +32,13 @@ error, not cached. This narrows the window to the last two reads; a grab
 *arr makes in the second before the POST can still show in the queue too
 late.
 
+Active mode reads the queue once more before the release search: a title
+already downloading would end the same way, so it is not searched at all
+("changed meanwhile" without a pick, the rate slot goes back). Otherwise a
+download stuck in the queue (import blocked) cost an indexer search on
+every run until someone cleared it. A queue that cannot be read there
+searches nothing either: an error, not cached, the rate slot goes back.
+
 A POST that failed was either refused (never sent, or 3xx/4xx: nothing was
 grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
@@ -89,8 +96,9 @@ OUTCOME_NO_RESULTS = "no_results"
 OUTCOME_ERROR = "error"
 OUTCOME_GRAB_FAILED = "grab_failed"
 OUTCOME_GRAB_UNCERTAIN = "grab_uncertain"
-# Queue or file of the title changed between the release search and the
-# grab: nothing grabbed, nothing remembered, no failure.
+# A download of the title in the queue before the release search (not
+# searched), or queue or file changed between the search and the grab:
+# nothing grabbed, nothing remembered, no failure.
 OUTCOME_CHANGED = "changed_meanwhile"
 
 RELEASE_PATH = "/api/v3/release"
@@ -140,7 +148,7 @@ class CheckedRunOutcome(SubmitOutcome):
     would_grab: int = 0
     grabbed: int = 0
     no_hit: int = 0           # no clean hit or no results (active)
-    skipped: int = 0          # changed in *arr meanwhile, not grabbed (active)
+    skipped: int = 0          # in the queue or changed in *arr meanwhile, not grabbed (active)
     budget_exhausted: bool = False
     notes: list = field(default_factory=list)
 
@@ -355,13 +363,10 @@ class _TitleCheck:
         return (sonarr_rules.episode_from_resources(episode, series), series.get("qualityProfileId"),
                 series.get("tags"), _file_state(self.arr_type, episode))
 
-    def changed_meanwhile(self, task: CheckedTask, loaded_file: tuple) -> str:
-        """'' when the title is as it was loaded, else what changed. *arr
-        checked queue and file during GET /release; POST /release checks
-        neither again, so a grab by RSS or another search, or an import, in
-        the meantime would be doubled. Queue first: an import takes the
-        download out of the queue only after the file is in place, so one of
-        the two reads sees it. Raises when either cannot be read."""
+    def queued(self, task: CheckedTask) -> str:
+        """'' or the name of a download of the title in the *arr queue
+        (held-back releases and failed downloads aside). Raises when the
+        queue cannot be read."""
         if self.arr_type == "radarr":
             key, params = "movieId", {"movieId": task.arr_id}
         else:
@@ -373,7 +378,19 @@ class _TitleCheck:
             if (isinstance(item, dict) and item.get(key) == task.arr_id
                     and item.get("status") not in QUEUE_HELD_BACK
                     and item.get("trackedDownloadState") not in QUEUE_FAILED):
-                return f"in the *arr queue now ({item.get('title') or 'unnamed download'})"
+                return str(item.get("title") or "unnamed download")
+        return ""
+
+    def changed_meanwhile(self, task: CheckedTask, loaded_file: tuple) -> str:
+        """'' when the title is as it was loaded, else what changed. *arr
+        checked queue and file during GET /release; POST /release checks
+        neither again, so a grab by RSS or another search, or an import, in
+        the meantime would be doubled. Queue first: an import takes the
+        download out of the queue only after the file is in place, so one of
+        the two reads sees it. Raises when either cannot be read."""
+        download = self.queued(task)
+        if download:
+            return f"in the *arr queue now ({download})"
         has_file, file_id = _file_state(self.arr_type, self.agent.http_get(self.title_path(task)))
         had_file, loaded_id = loaded_file
         if has_file and not had_file:
@@ -517,6 +534,22 @@ class _TitleCheck:
             # The row names the profile it was checked under: the page's
             # "profile changed" compares with this very profile.
             return self.entry(task, outcome, fingerprint, profile_id=_int(profile_id), **extra)
+
+        if self.mode == MODE_ACTIVE:
+            # A title with a download in the queue is never grabbed (see
+            # changed_meanwhile), so it is not searched either: the search
+            # would cost the indexers on every run until the download leaves
+            # the queue. Nothing searched: the rate slot goes back.
+            try:
+                download = self.queued(task)
+            except Exception as exc:
+                error = f"could not read the *arr queue before the search: {exc}"
+                return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error), ITEM_FAILED,
+                               searched=False)
+            if download:
+                reason = f"not searched, the title is in the *arr queue ({download})"
+                return _Result(OUTCOME_CHANGED, reason, entry(OUTCOME_CHANGED, error_message=reason), None,
+                               searched=False)
 
         try:
             releases = self.search(task)
@@ -677,12 +710,12 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
         # Skipped titles ended without an error: they count as handled, not failed.
         outcome.handled = outcome.skipped
         if outcome.skipped:
-            outcome.notes.append(f"{outcome.skipped} title(s) skipped — changed in *arr during the check, "
-                                 f"the next run decides again")
+            outcome.notes.append(f"{outcome.skipped} title(s) skipped — in the *arr queue or changed in *arr "
+                                 f"during the check, the next run decides again")
         agent.log("info", skill_name,
                   f"Checked search: {outcome.grabbed} grabbed, {outcome.no_hit} without a clean hit, "
                   f"{len(outcome.errors)} failed"
-                  + (f", {outcome.skipped} skipped (changed meanwhile)" if outcome.skipped else ""))
+                  + (f", {outcome.skipped} skipped (in the queue or changed meanwhile)" if outcome.skipped else ""))
     return outcome
 
 
@@ -725,7 +758,7 @@ def _log_title(agent, skill_name, mode, task, result, entry, error) -> None:
     elif result == OUTCOME_ERROR:
         agent.log("warn", skill_name, f"Checked search for {task.title} failed: {error}")
     elif result == OUTCOME_CHANGED:
-        agent.log("info", skill_name, f"{task.title}: {pick} {error} — the next run decides again")
+        agent.log("info", skill_name, f"{task.title}: {f'{pick} ' if pick else ''}{error} — the next run decides again")
     elif result == OUTCOME_WOULD_GRAB:
         agent.log("debug", skill_name, f"Dry run — {task.title}: would grab {pick} (*arr: {entry.get('arr_pick')})")
     elif result == OUTCOME_NO_CLEAN_HIT:
