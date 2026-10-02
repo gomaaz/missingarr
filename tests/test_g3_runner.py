@@ -392,6 +392,7 @@ def test_dry_run_checks_a_title_again_after_an_error(db_path):
     inst = make_instance()
     SearchMissingSkill().execute(the_thing_agent(inst, get_errors={RELEASE: requests.exceptions.ReadTimeout("slow")}))
     assert log_rows()[0]["outcome"] == "error"
+    end_pauses()                         # the error pause is over (see "Error pause")
     second = the_thing_agent(inst)
     SearchMissingSkill().execute(second)
     assert len([p for p, _ in second.gets if p == RELEASE]) == 1
@@ -648,6 +649,7 @@ def test_a_title_is_searched_again_once_parse_answers(db_path, mode, recovered):
     inst = make_instance(checked_search=mode)
     SearchMissingSkill().execute(the_thing_agent(inst, parses={WRONG: PARSE_TIMEOUT, RIGHT: PARSE_TIMEOUT}))
     assert [r["outcome"] for r in log_rows()] == ["error"]
+    end_pauses()                         # the error pause is over (see "Error pause")
     again = the_thing_agent(inst)
     SearchMissingSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == 1
@@ -707,6 +709,7 @@ def test_a_title_is_searched_again_once_the_indexers_answer(db_path, mode, recov
     inst = make_instance(checked_search=mode)
     SearchMissingSkill().execute(the_thing_agent(inst, releases={}, health=indexer_down()))
     assert [r["outcome"] for r in log_rows()] == ["error"]
+    end_pauses()                         # the error pause is over (see "Error pause")
     again = the_thing_agent(inst)
     SearchMissingSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == 1
@@ -867,6 +870,7 @@ def test_a_refused_grab_leaves_the_title_free(db_path, error):
     assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
     assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
     assert log_rows()[0]["outcome"] == "grab_failed"
+    end_pauses()                         # the error pause is over (see "Error pause")
     again = the_thing_agent(inst)
     SearchMissingSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == 1
@@ -1364,6 +1368,241 @@ def test_dry_run_reads_nothing_again(db_path):
     assert log_rows()[0]["outcome"] == "would_grab"
     assert [p for p, _ in agent.gets if p == QUEUE] == []
     assert len([p for p, _ in agent.gets if p == "/api/v3/movie/1"]) == 1
+
+
+# ── Error pause ──────────────────────────────────────────────────────────────
+# A title whose checked search ends in an error is not remembered (no cache
+# entry, no place in the dry-run round). Without a pause an oldest-first run
+# with per run 1 picked it on every run while the error lasted (an indexer
+# only it shares a tag with is down, /parse fails for its releases …), and
+# the next title never came up. Now such a title sits out 6 hours (12, then
+# 24 when it fails again) before it is picked again.
+
+ALIEN_TAGGED = movie(2, "Alien", 1979, tags=[5])     # oldest; shares its tag with TAGGED only
+THING_OTHER_TAG = {**THE_THING, "tags": [6]}
+
+
+def tagged_pair(inst, **kwargs):
+    """Alien (first in oldest_first) gets no release: the one indexer it
+    shares a tag with is down. The Thing (other tag) has a clean release."""
+    defaults = dict(missing=[ALIEN_TAGGED, THING_OTHER_TAG], movies=[ALIEN_TAGGED, THING_OTHER_TAG],
+                    indexers=[INDEXERS[0], TAGGED], health=indexer_down("Tagged"))
+    defaults.update(kwargs)
+    return the_thing_agent(inst, **defaults)
+
+
+def searched_ids(agent):
+    return [params.get("movieId", params.get("episodeId")) for p, params in agent.gets if p == RELEASE]
+
+
+def pauses():
+    return sql("SELECT cache_key, failures FROM checked_search_pauses ORDER BY cache_key")
+
+
+def pause_hours(cache_key):
+    [(hours,)] = sql("SELECT (julianday(paused_until) - julianday('now','localtime')) * 24 "
+                     "FROM checked_search_pauses WHERE cache_key=?", (cache_key,))
+    return hours
+
+
+def end_pauses(hours_ago=0):
+    """The pause ran out (hours_ago: that long ago)."""
+    sql("UPDATE checked_search_pauses SET paused_until=datetime('now','localtime', ? || ' minutes')",
+        (f"-{hours_ago * 60 + 1}",))
+
+
+@pytest.mark.parametrize("mode,clean", [("active", "grabbed"), ("dry_run", "would_grab")])
+def test_a_title_that_keeps_failing_does_not_hold_back_the_next_one(db_path, mode, clean):
+    inst = make_instance(checked_search=mode, missing_per_run=1)
+    first = tagged_pair(inst)
+    SearchMissingSkill().execute(first)
+    assert searched_ids(first) == [2]
+    assert [(r["arr_id"], r["outcome"]) for r in log_rows()] == [(2, "error")]
+    assert pauses() == [("mov:2", 1)]
+    assert pause_hours("mov:2") == pytest.approx(6, abs=0.05)
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0      # not searched: no cache entry
+
+    second = tagged_pair(inst)
+    SearchMissingSkill().execute(second)
+    assert searched_ids(second) == [1]
+    assert [(r["arr_id"], r["outcome"]) for r in log_rows()] == [(1, clean), (2, "error")]
+    run = last_run()
+    assert run["status"] == "success"
+    assert "1 title(s) left out after an error" in run["error_message"]
+    assert any("1 paused after an error" in m for m in activity_messages())
+
+    # Once the pause is over the title is tried again (in the dry run within
+    # the same round: an error never counted for it).
+    end_pauses()
+    third = tagged_pair(inst)
+    SearchMissingSkill().execute(third)
+    assert searched_ids(third) == [2]
+    assert pauses() == [("mov:2", 2)]
+
+
+def test_the_pause_grows_while_the_error_lasts_and_a_success_ends_it(db_path):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst))          # Alien fails: 6 hours
+    SearchMissingSkill().execute(tagged_pair(inst))          # The Thing grabbed meanwhile
+    for failures, hours in ((2, 12), (3, 24), (4, 24)):
+        end_pauses()
+        agent = tagged_pair(inst)
+        SearchMissingSkill().execute(agent)
+        assert searched_ids(agent) == [2]
+        assert pauses() == [("mov:2", failures)]
+        assert pause_hours("mov:2") == pytest.approx(hours, abs=0.05)
+    end_pauses()
+    recovered = tagged_pair(inst, health=[])
+    SearchMissingSkill().execute(recovered)
+    assert searched_ids(recovered) == [2]
+    assert log_rows()[0]["outcome"] == "no_results"
+    assert pauses() == []
+
+
+def test_a_failure_long_after_the_last_pause_starts_at_six_hours_again(db_path):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst))
+    sql("UPDATE checked_search_pauses SET failures=3")
+    end_pauses(hours_ago=25)
+    SearchMissingSkill().execute(tagged_pair(inst))
+    assert pauses() == [("mov:2", 1)]
+    assert pause_hours("mov:2") == pytest.approx(6, abs=0.05)
+
+
+def test_the_pause_survives_a_restart(db_path):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst))
+    database.init_db()                  # the next start migrates the same database
+    agent = tagged_pair(inst)           # a new agent: nothing kept in memory
+    SearchMissingSkill().execute(agent)
+    assert searched_ids(agent) == [1]
+
+
+@pytest.mark.parametrize("mode", ["active", "dry_run"])
+def test_a_force_run_keeps_the_pause(db_path, mode):
+    # A force run skips the cache, not the pause: with per run 1 it would
+    # otherwise only repeat the error.
+    inst = make_instance(checked_search=mode, missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst), force=True)
+    forced = tagged_pair(inst)
+    SearchMissingSkill().execute(forced, force=True)
+    assert searched_ids(forced) == [1]
+
+
+def fail_queue_read(number):
+    def hook(fake):
+        if [p for p, _ in fake.gets].count(QUEUE) == number:
+            raise requests.exceptions.ConnectionError("queue down")
+    return hook
+
+
+@pytest.mark.parametrize("kwargs,outcome", [
+    (dict(get_errors={"/api/v3/movie/1$": requests.exceptions.ConnectionError("down")}), "error"),
+    (dict(on_get={QUEUE: fail_queue_read(2)}), "error"),
+    (dict(get_errors={RELEASE: requests.exceptions.ReadTimeout("slow")}), "error"),
+    (dict(parses={WRONG: PARSE_TIMEOUT, RIGHT: PARSE_TIMEOUT}), "error"),
+    (dict(releases={}, health=indexer_down("Indexer")), "error"),
+    (dict(on_get={PARSE: fail_title_reads}), "error"),
+    (dict(post_error=http_error(409)), "grab_failed"),
+], ids=["load", "queue before the search", "release search", "parse", "indexer failure", "read before the grab",
+        "grab refused"])
+def test_every_failure_without_a_cache_entry_pauses_the_title(db_path, kwargs, outcome):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(the_thing_agent(inst, **kwargs))
+    assert [r["outcome"] for r in log_rows()] == [outcome]
+    assert pauses() == [("mov:1", 1)]
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert searched_ids(again) == []
+    assert agent_messages_say_nothing_to_search()
+
+
+def agent_messages_say_nothing_to_search():
+    return any(m.startswith("Nothing to search") and "1 paused after an error" in m for m in activity_messages())
+
+
+def test_an_uncertain_grab_is_no_pause_but_a_cache_entry(db_path):
+    inst = make_instance(checked_search="active")
+    SearchMissingSkill().execute(the_thing_agent(inst, post_error=requests.exceptions.ReadTimeout("no answer")))
+    assert log_rows()[0]["outcome"] == "grab_uncertain"
+    assert pauses() == []
+
+
+@pytest.mark.parametrize("order", ["as listed", "reversed"])
+def test_a_failing_upgrade_does_not_hold_back_another(db_path, monkeypatch, order):
+    # Upgrades come in random order: reversed, the failing title comes first.
+    fixed_shuffle(monkeypatch, order)
+    inst = checked_instance("radarr", search_upgrades_enabled=True, upgrades_per_run=1,
+                            upgrade_source="monitored_items_only")
+
+    def agent():
+        fake = upgrade_agent("radarr", inst, indexers=[INDEXERS[0], TAGGED], health=indexer_down("Tagged"))
+        fake.movies[1] = {**fake.movies[1], "tags": [6]}
+        fake.movies[2] = {**ALIEN_OWNED, "tags": [5]}
+        return fake
+
+    runs = []
+    for _ in range(2):
+        fake = agent()
+        SearchUpgradesSkill().execute(fake)
+        runs.append(searched_ids(fake))
+    if order == "reversed":
+        assert runs == [[2], [1]]
+        assert pauses() == [("upg:2", 1)]
+        assert "1 title(s) left out after an error" in last_run()["error_message"]
+    else:
+        assert runs == [[1], [2]]
+    assert [r["outcome"] for r in log_rows()] == (["grabbed", "error"] if order == "reversed"
+                                                  else ["error", "grabbed"])
+
+
+def test_the_command_path_ignores_the_pause(db_path):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst))
+    sql("UPDATE instances SET checked_search='off'")
+    agent = tagged_pair(inst)
+    SearchMissingSkill().execute(agent)
+    assert agent.commands == [{"name": "MoviesSearch", "movieIds": [2]}]
+
+
+def test_clearing_the_cache_ends_the_pauses_of_the_instance(db_path):
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    other = make_instance(name="Radarr 2", checked_search="active", missing_per_run=1)
+    for instance in (inst, other):
+        SearchMissingSkill().execute(tagged_pair(instance))
+    db.searched.clear(instance_id=inst["id"])
+    assert sql("SELECT instance_id FROM checked_search_pauses") == [(other["id"],)]
+    agent = tagged_pair(inst)
+    SearchMissingSkill().execute(agent)
+    assert searched_ids(agent) == [2]
+
+
+def test_housekeeping_drops_pauses_that_no_longer_count(db_path):
+    from backend.skills.verify_commands import VerifyCommandsSkill
+
+    class Agent:
+        def __init__(self):
+            self.config = db.instances.get_by_id(inst["id"])
+            self.messages = []
+
+        def log(self, level, skill, message):
+            self.messages.append(message)
+
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    SearchMissingSkill().execute(tagged_pair(inst))
+    VerifyCommandsSkill._last_housekeeping.clear()
+    VerifyCommandsSkill().housekeeping(Agent())
+    end_pauses(hours_ago=23)               # over, but a new failure would still count on
+    VerifyCommandsSkill._last_housekeeping.clear()
+    VerifyCommandsSkill().housekeeping(Agent())
+    assert pauses() == [("mov:2", 1)]
+    end_pauses(hours_ago=25)
+    VerifyCommandsSkill._last_housekeeping.clear()
+    agent = Agent()
+    VerifyCommandsSkill().housekeeping(agent)
+    VerifyCommandsSkill._last_housekeeping.clear()
+    assert pauses() == []
+    assert any("1 error pause(s)" in m for m in agent.messages)
 
 
 def test_a_grabbed_title_still_missing_is_searched_again_after_the_set_days(db_path):

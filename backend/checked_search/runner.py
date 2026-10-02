@@ -51,6 +51,16 @@ grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
 after a grab). Neither tries a second release.
 
+A title that ends in an error (any of the errors below, or a grab *arr
+refused) is not remembered, so it would be picked again on every run, and
+with a fixed order (oldest first, per run 1) the next title would never come
+up while the error lasts. Its log row therefore sets an error pause
+(db.checked_search_pause: 6 hours, 12, then 24 while it keeps failing);
+paused_before_collecting hands the paused titles to the skills, which leave
+them out before counting "per run" (dry run and active, force runs too).
+The pause is no search: no cache entry, no grab block, the dry-run round
+does not count the title. Any other outcome of the title ends it.
+
 A release /parse could not check (timeout, HTTP error) is never grabbed,
 and it is no rule rejection either: when no release passes and at least one
 could not be checked, the title ends as an error (not cached, not counted
@@ -337,6 +347,24 @@ def queue_note(left_out: int) -> list[str]:
         return []
     return [f"{left_out} title(s) with a download in the *arr queue left out — not searched, "
             f"the next run checks again"]
+
+
+def paused_before_collecting(cfg: dict, mode: str) -> frozenset:
+    """Cache keys of the titles the checked search pauses after an error
+    (db.checked_search_pause): the skills leave them out before counting
+    "per run" — dry run and active, force runs too. The command path
+    (mode off) ignores the pause."""
+    if mode not in (MODE_DRY_RUN, MODE_ACTIVE):
+        return frozenset()
+    return db.checked_search_pause.paused_keys(cfg["id"])
+
+
+def pause_note(left_out: int) -> list[str]:
+    """The run's note on titles left out for their error pause."""
+    if not left_out:
+        return []
+    return [f"{left_out} title(s) left out after an error — paused for 6 hours (12, then 24 if it fails "
+            f"again), not counted as searched"]
 
 
 def _named_indexers(message: str) -> list[str] | None:

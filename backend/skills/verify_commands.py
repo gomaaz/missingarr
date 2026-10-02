@@ -131,7 +131,8 @@ class VerifyCommandsSkill(BaseSkill):
 
     def housekeeping(self, agent) -> None:
         """Hourly per instance: drop finished runs past HISTORY_RETENTION_DAYS
-        (B7) and cache rows outside the retry window (B6).
+        (B7), cache rows outside the retry window (B6) and error pauses of
+        the checked search that no longer count.
 
         Database only, never *arr. The orchestrator also calls it for every
         instance, disabled ones included: those have no agent running this
@@ -153,16 +154,19 @@ class VerifyCommandsSkill(BaseSkill):
             # The pre-filter log keeps the history's retention (rows of the
             # running dry-run round stay, see checked_search_log.purge_old).
             log_rows = db.checked_search_log.purge_old(instance_id, settings.history_retention_days)
+            # Error pauses of the checked search that no longer count.
+            pauses = db.checked_search_pause.purge_expired(instance_id)
         except Exception as exc:
             agent.log("warn", self.name, f"Housekeeping failed: {exc}")
             return
 
-        if cache or runs or log_rows:
+        if cache or runs or log_rows or pauses:
             agent.log(
                 "info",
                 self.name,
                 f"Housekeeping: removed {runs} run(s) older than "
                 f"{settings.history_retention_days} days and {cache} expired cache entr"
                 f"{'y' if cache == 1 else 'ies'}"
-                + (f"; {log_rows} pre-filter log row(s)" if log_rows else ""),
+                + (f"; {log_rows} pre-filter log row(s)" if log_rows else "")
+                + (f"; {pauses} error pause(s)" if pauses else ""),
             )

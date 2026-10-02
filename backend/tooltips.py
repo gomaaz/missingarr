@@ -51,11 +51,14 @@ TOOLTIPS = {
         "see the Pre-filter page, reset the round there.\n"
         "• Active: grabs the first release that passes every rule, for exactly this title. No clean release: "
         "the title counts as searched, Retry decides when it is searched again.\n"
+        "A title whose check fails (a read, /parse, an indexer failure, a refused grab) is not counted as "
+        "searched; it sits out 6 hours (12, then 24 while it keeps failing) so it does not hold back the "
+        "next title, a Force Run too. Clear cache ends these pauses.\n"
         "A run pauses (searches nothing) while an indexer has Automatic Search and Interactive Search set "
         "differently in *arr.\n"
         "Sonarr: single episodes only — the pack modes are locked while this is on."
     ),
-    "cs_release_timeout_seconds": "How long to wait for *arr's release search (GET /release runs the indexer search before it answers). 10 to 600 seconds. A timeout counts as a failed search; the title is tried again next run.",
+    "cs_release_timeout_seconds": "How long to wait for *arr's release search (GET /release runs the indexer search before it answers). 10 to 600 seconds. A timeout counts as a failed search; the title is tried again after its error pause (6 hours at first).",
     "cs_time_budget_minutes": "No new title is started once a run has been going this long (1 to 1440 minutes). The rest waits for the next run.",
     "cs_dry_run_max_releases": "Dry run only: check at most this many approved releases per title (1 to 1000). The rest are listed as unchecked.",
     "cs_search_again_after_days": "Active only: a title the checked search grabbed that is still in the Wanted list (missing, or cutoff unmet) after this many days is searched again, checked, whatever Retry says. A title whose search returned no approved release at all (\"no results\" — an indexer failure may have hidden it) is searched again after this many days as well, also with Retry 0; a shorter Retry still frees it earlier. Titles whose results the filter rejected (\"no clean hit\") stay with Retry. 1 to 365 days. It takes the place of *arr's \"Redownload Failed from Interactive Search\" — switch that off in Radarr and Sonarr: a grab through the API counts as interactive.",

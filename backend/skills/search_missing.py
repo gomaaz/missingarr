@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 from backend import db
 from backend.checked_search.runner import (
-    CheckedTask, indexer_pause, queue_note, queued_before_collecting, run_checked,
+    CheckedTask, indexer_pause, pause_note, paused_before_collecting, queue_note, queued_before_collecting,
+    run_checked,
 )
 from backend.checked_search.settings import CheckedSearchSettings
 from backend.database import ANCESTOR_RULE_SINCE_SETTING
@@ -46,6 +47,7 @@ class _Stats:
     skipped_window: int = 0
     skipped_cache: int = 0
     skipped_queue: int = 0
+    skipped_paused: int = 0
     notes: list = field(default_factory=list)
 
     def describe(self) -> str:
@@ -54,6 +56,7 @@ class _Stats:
             f"{self.skipped_cache} already searched, {self.skipped_window} inside the release "
             f"window, {self.skipped_file} with a file"
             + (f", {self.skipped_queue} in the *arr queue" if self.skipped_queue else "")
+            + (f", {self.skipped_paused} paused after an error" if self.skipped_paused else "")
         )
 
 
@@ -101,6 +104,9 @@ class SearchMissingSkill(BaseSkill):
             # take no place of "per run" (the runner would skip them
             # unsearched, and a fixed order would never get past them).
             queued, unread_queue = queued_before_collecting(self.name, agent, checked, cfg["type"])
+            # Checked search: titles that just ended in an error sit out
+            # their pause and take no place of "per run" either.
+            paused = paused_before_collecting(cfg, checked)
             # A dry run ignores the search cache: titles searched long ago
             # are checked too. Instead each title is checked once per round
             # (the round this run begins in) — a force run as well.
@@ -118,11 +124,12 @@ class SearchMissingSkill(BaseSkill):
                       f"Searching for missing content (order={order}, per_run={per_run})...")
             if order == "random":
                 candidates, stats = self._collect_random(agent, cfg, per_run, mode, cutoff, force,
-                                                         round_keys, profiles, queued)
+                                                         round_keys, profiles, queued, paused)
             else:
                 candidates, stats = self._collect_ordered(agent, cfg, per_run, mode, order, cutoff, force,
-                                                          round_keys, profiles, queued)
-            stats.notes[:0] = ([unread_queue] if unread_queue else []) + queue_note(stats.skipped_queue)
+                                                          round_keys, profiles, queued, paused)
+            stats.notes[:0] = (([unread_queue] if unread_queue else []) + queue_note(stats.skipped_queue)
+                               + pause_note(stats.skipped_paused))
             wanted_count = len(candidates)
             agent.log("debug", self.name, stats.describe())
 
@@ -160,7 +167,7 @@ class SearchMissingSkill(BaseSkill):
     # ── Collecting candidates ────────────────────────────────────────────────
 
     def _collect_random(self, agent, cfg, per_run, mode, cutoff, force, round_keys=None, profiles=None,
-                        queued=frozenset()):
+                        queued=frozenset(), paused=frozenset()):
         stats = _Stats()
         page_size = min(max(per_run * 10, 50), 250)
         probe = agent.http_get(WANTED_PATH, params={"page": 1, "pageSize": 1, "monitored": "true"})
@@ -188,11 +195,11 @@ class SearchMissingSkill(BaseSkill):
             records = list(resp.get("records") or [])
             random.shuffle(records)
             self._take_eligible(agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats,
-                                round_keys, profiles, queued)
+                                round_keys, profiles, queued, paused)
         return candidates, stats
 
     def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force, round_keys=None, profiles=None,
-                         queued=frozenset()):
+                         queued=frozenset(), paused=frozenset()):
         """Read the whole wanted list, sort it here, then walk it in order (A3/A4)."""
         stats = _Stats()
         records: list = []
@@ -225,11 +232,11 @@ class SearchMissingSkill(BaseSkill):
         ordered = self._apply_order(records, order, cfg["type"])
         candidates: list = []
         self._take_eligible(agent, cfg, ordered, mode, cutoff, force, per_run, candidates, set(), stats,
-                            round_keys, profiles, queued)
+                            round_keys, profiles, queued, paused)
         return candidates, stats
 
     def _take_eligible(self, agent, cfg, records, mode, cutoff, force, per_run, candidates, seen, stats,
-                       round_keys=None, profiles=None, queued=frozenset()):
+                       round_keys=None, profiles=None, queued=frozenset(), paused=frozenset()):
         """Append records, in the given order, that are missing, released and
         not in the cache, until per_run candidates exist. The cache is asked
         once per chunk, not once per record (A-L3). Commands still waiting to
@@ -249,7 +256,12 @@ class SearchMissingSkill(BaseSkill):
         queued (active checked search, force run too): ids of the movies or
         episodes with a download in the *arr queue. They count toward
         neither per_run nor the candidates, so a stuck one does not hold back
-        the next title in order."""
+        the next title in order.
+
+        paused (checked search, dry run and active, force run too): own
+        keys of titles in their error pause (db.checked_search_pause). Left
+        out the same way, so a title that keeps failing does not hold back
+        the next one either."""
         profiles = profiles or ProfileState()
         grab_days = CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
         arr_type = cfg["type"]
@@ -304,6 +316,9 @@ class SearchMissingSkill(BaseSkill):
                 seen.add(dedup)
                 if record.get("id") in queued:
                     stats.skipped_queue += 1
+                    continue
+                if self._own_key(arr_type, record) in paused:
+                    stats.skipped_paused += 1
                     continue
                 candidates.append(record)
 

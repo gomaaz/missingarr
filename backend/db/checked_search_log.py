@@ -11,6 +11,7 @@ import sqlite3
 from typing import Iterator, Optional
 
 from backend.database import get_connection, get_db
+from backend.db import checked_search_pause
 
 MODES = ("dry_run", "active")
 OUTCOMES = ("grabbed", "would_grab", "no_clean_hit", "no_results", "error", "grab_failed", "grab_uncertain",
@@ -55,7 +56,11 @@ def insert_with(conn: sqlite3.Connection, entry: dict) -> int:
     None), candidates (list of dicts), error_message, profile_fingerprint
     and profile_id (the title's quality profile when it was checked),
     dry_run_round (the round its run began in, dry run only),
-    settings_fingerprint (the rule settings it was checked under)."""
+    settings_fingerprint (the rule settings it was checked under).
+
+    The row also keeps the title's error pause (checked_search_pause): an
+    error or a refused grab sets or extends it, any other outcome ends it —
+    in the same transaction, so the pause never disagrees with the log."""
     pick = entry.get("pick") or {}
     profile_id = entry.get("profile_id")
     cursor = conn.execute(_INSERT, (
@@ -67,6 +72,7 @@ def insert_with(conn: sqlite3.Connection, entry: dict) -> int:
         profile_id if isinstance(profile_id, int) and not isinstance(profile_id, bool) else None,
         entry.get("dry_run_round"), entry.get("settings_fingerprint"),
     ))
+    checked_search_pause.note_with(conn, entry["instance_id"], entry.get("cache_key") or "", entry["outcome"])
     return cursor.lastrowid
 
 

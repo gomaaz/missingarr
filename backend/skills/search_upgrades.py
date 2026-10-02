@@ -4,7 +4,8 @@ import time
 
 from backend import db
 from backend.checked_search.runner import (
-    CheckedTask, indexer_pause, queue_note, queued_before_collecting, run_checked,
+    CheckedTask, indexer_pause, pause_note, paused_before_collecting, queue_note, queued_before_collecting,
+    run_checked,
 )
 from backend.checked_search.settings import CheckedSearchSettings
 from backend.skills.profiles import ProfileState
@@ -64,13 +65,15 @@ class SearchUpgradesSkill(BaseSkill):
             # Active checked search: titles with a download in the *arr queue
             # take no place of "per run" (the runner would skip them unsearched).
             queued, unread_queue = queued_before_collecting(self.name, agent, checked, cfg["type"])
+            # Checked search: titles in their error pause take no place either.
+            paused = paused_before_collecting(cfg, checked)
             # Dry run: once per round, a force run as well.
             round_keys = (
                 db.checked_search_log.dry_run_keys(cfg["id"], int(cfg.get("dry_run_round") or 0))
                 if checked == "dry_run" else None
             )
             candidates, failures, notes, requested = self._collect_candidates(
-                agent, cfg, per_run, force, checked != "off", round_keys, profiles, queued)
+                agent, cfg, per_run, force, checked != "off", round_keys, profiles, queued, paused)
             for failure in failures:
                 agent.log("warn", self.name, f"Could not load {failure}")
             if failures and len(failures) == requested:
@@ -186,9 +189,9 @@ class SearchUpgradesSkill(BaseSkill):
     # ── Candidates ───────────────────────────────────────────────────────────
 
     def _collect_candidates(self, agent, cfg, per_run, force, checked=False, round_keys=None, profiles=None,
-                            queued=frozenset()):
+                            queued=frozenset(), paused=frozenset()):
         """Returns (candidates, failed sources, notes, number of sources asked).
-        queued: see _keep_uncached; the notes say how many were left out."""
+        queued, paused: see _keep_uncached; the notes say how many were left out."""
         if cfg["type"] == "radarr":
             sources = self.SOURCES.get(cfg.get("upgrade_source", "monitored_items_only"), ("monitored",))
         else:
@@ -199,7 +202,8 @@ class SearchUpgradesSkill(BaseSkill):
         failures: list = []
         notes: list = []
         left_out: set = set()
-        queue = {"queued": queued, "left_out": left_out}
+        left_paused: set = set()
+        queue = {"queued": queued, "left_out": left_out, "paused": paused, "left_paused": left_paused}
         for source in sources:
             try:
                 if source == "cutoff":
@@ -212,10 +216,12 @@ class SearchUpgradesSkill(BaseSkill):
                 failures.append(f"{self.SOURCE_LABELS[source]}: {exc}")
 
         random.shuffle(found)
-        return found[:per_run], failures, queue_note(len(left_out)) + notes, len(sources)
+        return (found[:per_run], failures, queue_note(len(left_out)) + pause_note(len(left_paused)) + notes,
+                len(sources))
 
     def _keep_uncached(self, agent, cfg, items, force, found, seen, limit, checked=False, round_keys=None,
-                       profiles=None, wanted_list=False, queued=frozenset(), left_out=None) -> None:
+                       profiles=None, wanted_list=False, queued=frozenset(), left_out=None,
+                       paused=frozenset(), left_paused=None) -> None:
         """Commands still waiting to be stored count as cached. A cache entry
         blocks only under the current fingerprint of the item's quality
         profile (spec addendum, unless switched off). wanted_list (the cutoff
@@ -237,7 +243,11 @@ class SearchUpgradesSkill(BaseSkill):
 
         queued (active checked search, force run too): ids of the movies or
         episodes with a download in the *arr queue. They do not count toward
-        the limit and are not taken; their ids go to left_out."""
+        the limit and are not taken; their ids go to left_out.
+
+        paused (checked search, dry run and active, force run too): keys of
+        titles in their error pause (db.checked_search_pause). Left out the
+        same way; their keys go to left_paused."""
         profiles = profiles or ProfileState()
         arr_type = cfg["type"]
         keyed = [(self._cache_key(arr_type, item, checked), item) for item in items]
@@ -271,11 +281,16 @@ class SearchUpgradesSkill(BaseSkill):
                 if left_out is not None:
                     left_out.add(item["id"])
                 continue
+            if key in paused:
+                if left_paused is not None:
+                    left_paused.add(key)
+                continue
             seen.add(key)
             found.append(item)
 
     def _collect_cutoff(self, agent, cfg, per_run, force, found, seen, notes, checked=False, round_keys=None,
-                        profiles=None, queued=frozenset(), left_out=None) -> None:
+                        profiles=None, **left_out) -> None:
+        """left_out: queued, left_out, paused, left_paused (see _keep_uncached)."""
         arr_type = cfg["type"]
         limit = len(found) + per_run
         pool = max(per_run * 5, 50)
@@ -301,7 +316,7 @@ class SearchUpgradesSkill(BaseSkill):
             items = [item for item in items if item is not None]
             random.shuffle(items)
             self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
-                                wanted_list=True, queued=queued, left_out=left_out)
+                                wanted_list=True, **left_out)
 
     @staticmethod
     def _cutoff_item(arr_type: str, record: dict):
@@ -328,7 +343,8 @@ class SearchUpgradesSkill(BaseSkill):
                 "series_id": record.get("seriesId"), "season_number": season_number}
 
     def _collect_monitored(self, agent, cfg, per_run, force, found, seen, checked=False, round_keys=None,
-                           profiles=None, queued=frozenset(), left_out=None) -> None:
+                           profiles=None, **left_out) -> None:
+        """left_out: queued, left_out, paused, left_paused (see _keep_uncached)."""
         limit = len(found) + per_run
         movies = agent.http_get(MOVIES_PATH, params={"monitored": "true"})
         items = []
@@ -343,4 +359,4 @@ class SearchUpgradesSkill(BaseSkill):
                           "qualityProfileId": movie.get("qualityProfileId")})
         random.shuffle(items)
         self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
-                            queued=queued, left_out=left_out)
+                            **left_out)

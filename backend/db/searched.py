@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from backend.database import get_db
+from backend.db import checked_search_pause
 
 LOOKUP_CHUNK = 500  # well below SQLite's variable limit
 
@@ -105,6 +106,9 @@ def delete(instance_id: int, cache_key: str) -> int:
 
 
 def clear(instance_id: Optional[int] = None) -> int:
+    """Clear cache: every title may be searched again — also those the
+    checked search pauses after an error (checked_search_pause). Returns
+    the number of cache entries removed."""
     with get_db() as conn:
         if instance_id is not None:
             cursor = conn.execute(
@@ -113,6 +117,7 @@ def clear(instance_id: Optional[int] = None) -> int:
             )
         else:
             cursor = conn.execute("DELETE FROM searched_items")
+        checked_search_pause.clear_with(conn, instance_id)
         return cursor.rowcount
 
 

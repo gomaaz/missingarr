@@ -189,6 +189,16 @@ _SCHEMA = """
 
             CREATE INDEX IF NOT EXISTS idx_cs_log_instance_created ON checked_search_log(instance_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_cs_log_instance_mode_key ON checked_search_log(instance_id, mode, cache_key);
+
+            -- Error pause of the checked search (backend/db/checked_search_pause.py):
+            -- a title whose last check ended in an error sits out until paused_until.
+            CREATE TABLE IF NOT EXISTS checked_search_pauses (
+                instance_id  INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+                cache_key    TEXT NOT NULL,
+                failures     INTEGER NOT NULL,
+                paused_until TEXT NOT NULL,
+                PRIMARY KEY (instance_id, cache_key)
+            );
 """
 
 # (table, column, definition) for every column added after a table was first
