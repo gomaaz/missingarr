@@ -689,6 +689,10 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
 
         if not result.searched:
             agent.release_action(token)
+        # Counted before storing, like a command *arr accepted
+        # (submit_candidates): the grab or search happened in *arr, only the
+        # bookkeeping may fail. Run, card and summary still name it.
+        _count(outcome, mode, result.outcome, task, result.error)
         try:
             check.store(task, result)
         except Exception as exc:
@@ -698,7 +702,6 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
                 _keep_unsaved(agent, check.instance_id, run_id, task, result)
             outcome.store_error = message
             break
-        _count(outcome, mode, result.outcome, task, result.error)
         _log_title(agent, skill_name, mode, task, result.outcome, result.entry, result.error)
 
         if delay > 0 and index < len(tasks) - 1 and agent.wait_or_stop(delay):

@@ -4828,7 +4828,7 @@ Ablauf pro Titel (`_TitleCheck.run`), genau nach Spec:
 
 **Profilstand (Spec-Nachtrag).** Beide Such-Skills rufen nach der „per run“-Prüfung `profiles.refresh` auf, in beiden Suchwegen: `GET /api/v3/qualityprofile`, `/customformat`, `/releaseprofile`, `/qualitydefinition`, `/config/indexer` (je `timeout=60`; die letzten beiden seit dem Nachtrag vom 02.10.2026, G1.6: globale Größengrenzen und Indexer-Einstellungen, die über `approved` mitentscheiden; scheitert einer der fünf Abrufe oder hat die Antwort nicht die erwartete Form, gilt dasselbe wie bei den Profilen: gespeicherter Stand, nichts freigegeben, dieselbe Warnung), Fingerabdruck je Profil (G1.6), Vergleich mit `instances.profile_fingerprints`; jede Änderung eines vorhandenen Profils kommt als `"Quality profile changed: <name> (<alt 8> → <neu 8>)"` ins Aktivitätslog; dann `store_profile_fingerprints` (setzt beim ersten Mal die Grundlinie). Scheitert der Abruf, gilt der gespeicherte Stand (Warnung), es wird nichts neu freigegeben. Scheitert beim ersten Lauf von 0.9.0 nur das **Speichern** (Datenbank gesperrt, Platte voll), gilt für diesen Lauf der gerade gelesene Stand als Grundlinie (Codex-Runde 3, G2, mit Probe bestätigt: vorher blieb die Grundlinie `None`, Alt-Einträge verglichen `None` mit dem neuen Fingerabdruck und wurden frei, auch bei Checked search Off). Der nächste Lauf speichert die Grundlinie dann wirklich (`COALESCE`); eine Profiländerung genau zwischen diesen beiden Läufen gibt Alt-Einträge nicht frei, die vorsichtige Richtung. Das Profil eines Titels: Radarr `qualityProfileId` am Film (Wanted-, Cutoff- und Film-Liste liefern ihn). Sonarr-Folgen tragen keins; `series.qualityProfileId` steht in `/wanted/missing` und `/wanted/cutoff` nur mit `includeSeries=true` (Sonarr `MissingController.cs:29`, `CutoffController.cs:33`, Voreinstellung `false`), und missingarr sendet den Parameter nicht. Sonarr liest deshalb einmal pro Lauf `GET /api/v3/series` (Serie → Profil). `includeSeries=true` wäre die Alternative, ist aber verworfen: Jede Folge einer Seite (bis 1.000) brächte die ganze Serie mit, und `tests/test_p2_search_missing.py:146` legt die Parameter der Wanted-Abfrage fest. Profil unbekannt (Serienliste nicht lesbar, Titel ohne Profil) → beim **Auswählen** Fingerabdruck `None` → der Cache-Eintrag sperrt, nichts wird freigegeben. Beim **Merken** darf der Fingerabdruck dagegen nicht fehlen (Codex K3: ein neuer Eintrag mit `NULL` gälte als Alt-Eintrag unter der Grundlinie und würde nach einer früheren Profiländerung sofort wieder frei): Die geprüfte Suche nimmt ihn aus dem geladenen Film bzw. der Serie, der Befehlsweg fragt bei nicht lesbarer Serienliste die einzelne Serie (`ProfileState.stored_fingerprint`, je Serie und Lauf einmal, nur für eingereichte Titel), und `_UPSERT_SEARCHED` ersetzt einen vorhandenen Fingerabdruck nie durch `NULL` (G2.3).
 
-Pro Lauf: einmal die Indexer-Liste (im Skill vor dem Sammeln, Aussetzen siehe oben), dann vor jedem Titel Abbruch und Zeitbudget prüfen (kein neuer Titel nach Ablauf, Hinweis am Lauf; das Budget zählt ab dem Start des Skills, `started`, Codex K9), dann `reserve_action()` (eine Aktion pro Titel; `None` → Rate-Cap, Lauf endet). Zwischen Titeln `seconds_between_actions` per `wait_or_stop`. Scheitert das Schreiben in die Datenbank, endet der Lauf wie in `submit_candidates` mit `store_error`; war der Titel geladen (oder unklar geladen), bleibt er als `UnsavedCheckedGrab` in `runtime.unsaved_submissions` (Codex K2), sperrt seinen Titel (`unsaved_cache_keys`) und wird von `store_unsaved_submissions` zu Beginn des nächsten Laufs nachgespeichert, dem ursprünglichen Lauf zugeordnet (oder dem neuen, wenn es den alten nicht mehr gibt). Die Instanz-Konfiguration liest der Runner einmal beim Start (`config=cfg` vom Skill): Runde, Einstellungen und Einstellungs-Fingerabdruck ändern sich während eines Laufs nicht, auch wenn das Formular gespeichert oder die Runde zurückgesetzt wird (`agent.reload`/`refresh_config` tauschen `agent.config` aus). Zählung: Probelauf `handled` = Titel ohne Fehler, `triggered` = 0; aktiv `triggered` = `grabbed + no_hit`. So bleibt `finish_search_run` für beide Modi ehrlich (alle gescheitert → `error`; einige → `success` mit Fehlertext). `finish_search_run` liest `last_verified` jetzt aus dem gerade beendeten Lauf statt es auf 0 zu setzen: Ein aktiver Lauf der geprüften Suche hat sein `verified_count` sofort (G2.3), die Karte zeigt die bestätigten Titel also gleich, nicht erst nach der nächsten Befehlsprüfung; für Befehls-Läufe ist der Wert wie bisher 0.
+Pro Lauf: einmal die Indexer-Liste (im Skill vor dem Sammeln, Aussetzen siehe oben), dann vor jedem Titel Abbruch und Zeitbudget prüfen (kein neuer Titel nach Ablauf, Hinweis am Lauf; das Budget zählt ab dem Start des Skills, `started`, Codex K9), dann `reserve_action()` (eine Aktion pro Titel; `None` → Rate-Cap, Lauf endet). Zwischen Titeln `seconds_between_actions` per `wait_or_stop`. Scheitert das Schreiben in die Datenbank, endet der Lauf wie in `submit_candidates` mit `store_error`; war der Titel geladen (oder unklar geladen), bleibt er als `UnsavedCheckedGrab` in `runtime.unsaved_submissions` (Codex K2), sperrt seinen Titel (`unsaved_cache_keys`) und wird von `store_unsaved_submissions` zu Beginn des nächsten Laufs nachgespeichert, dem ursprünglichen Lauf zugeordnet (oder dem neuen, wenn es den alten nicht mehr gibt). Die Instanz-Konfiguration liest der Runner einmal beim Start (`config=cfg` vom Skill): Runde, Einstellungen und Einstellungs-Fingerabdruck ändern sich während eines Laufs nicht, auch wenn das Formular gespeichert oder die Runde zurückgesetzt wird (`agent.reload`/`refresh_config` tauschen `agent.config` aus). Zählung: Probelauf `handled` = Titel ohne Fehler, `triggered` = 0; aktiv `triggered` = `grabbed + no_hit`. Gezählt wird vor dem Speichern, wie `submit_candidates` einen angenommenen Befehl vor `_store_submission` zählt: Scheitert das Speichern, nennen `triggered_count`, `last_triggered` und die Zusammenfassung den Grab (oder die Suche ohne sauberen Treffer) trotzdem (Codex-Nachtrag 02.10.2026). So bleibt `finish_search_run` für beide Modi ehrlich (alle gescheitert → `error`; einige → `success` mit Fehlertext). `finish_search_run` liest `last_verified` jetzt aus dem gerade beendeten Lauf statt es auf 0 zu setzen: Ein aktiver Lauf der geprüften Suche hat sein `verified_count` sofort (G2.3), die Karte zeigt die bestätigten Titel also gleich, nicht erst nach der nächsten Befehlsprüfung; für Befehls-Läufe ist der Wert wie bisher 0.
 
 In der Fehlend-Suche gilt bei `checked_search != 'off'`: Sonarr arbeitet immer im Modus `episode` (auch wenn in der DB ein anderer steht), und im Probelauf ersetzt die Runde den Such-Cache: ein Datensatz fällt nur weg, wenn sein eigener Schlüssel (`mov:`/`ep:`) in der Runde, mit der der Lauf beginnt (`cfg["dry_run_round"]`), schon eine Zeile **mit dem aktuellen Fingerabdruck seines Profils und dem aktuellen Einstellungs-Fingerabdruck** hat (`ProfileState.round_blocks`; unabhängig von der Einstellung, Spec: „der Probelauf berücksichtigt Profiländerungen immer“; Einstellungen: Entscheidung Daniel 01.10.2026). Das gilt **auch beim Force Run** (Codex K8, Entscheidung Daniel): `force` übergeht Ruhezeiten, Release-Fenster und Such-Cache, aber nicht die Probelauf-Runde; wer neu prüfen will, nutzt „Reset dry run“. Wie gespeicherte Cache-Einträge (und wie ungespeicherte Befehle seit 0.8.0, `hits = {} if force …`) übergeht der Force Run auch ungespeicherte Grabs (`unsaved_cache_keys`); normale Läufe sperren sie bis zum Nachspeichern (Codex-Runde 2, F2, widerlegt als eigene Lücke: ein gespeicherter Grab verhält sich beim Force Run genauso). Sonst fragt die Cache-Prüfung `lookup_many` mit `ProfileState.cache_filter` (bei ausgeschalteter Einstellung `None`) und `grab_release_days = search_again_after_days` (die Datensätze stammen aus der Wanted-Liste). Beide Suchwege schreiben den Fingerabdruck des Titels: der alte über `submit_candidates(…, fingerprint_of=profiles.stored_fingerprint)` → `SearchResult.profile_fingerprint` → `record_submission`, der geprüfte über den Fingerabdruck des geladenen Titels → `record_checked` und Protokoll.
 
@@ -5718,6 +5718,29 @@ def test_an_unsaved_grab_blocks_its_title_while_the_database_refuses(db_path, mo
     assert len([p for p, _ in agent.gets if p == RELEASE]) == 1
     assert len(agent.posts) == 1
     assert len(agent.runtime.unsaved_submissions) == 1
+
+
+@pytest.mark.parametrize("releases, posts, summary", [
+    ([release(WRONG, "guid-wrong"), release(RIGHT, "guid-right")], 1, "Checked search: 1 grabbed, 0 without"),
+    ([release(WRONG, "guid-wrong")], 0, "Checked search: 0 grabbed, 1 without"),
+], ids=["grab", "no clean hit"])
+def test_a_title_counts_although_its_bookkeeping_fails(db_path, monkeypatch, releases, posts, summary):
+    # Like a command *arr accepted (submit_candidates): the grab or the search
+    # happened in *arr, only the bookkeeping failed. Run, card and summary
+    # still name it (Codex addendum 02.10.2026).
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={1: releases})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_checked", broken)
+    SearchMissingSkill().execute(agent)
+    assert len(agent.posts) == posts
+    run = last_run()
+    assert (run["status"], run["triggered_count"]) == ("error", 1)
+    assert agent.state["last_triggered"] == 1
+    assert any(m.startswith(summary) for m in activity_messages())
 
 
 def test_a_grabbed_title_still_missing_is_searched_again_after_the_set_days(db_path):
@@ -7284,6 +7307,10 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
 
         if not result.searched:
             agent.release_action(token)
+        # Counted before storing, like a command *arr accepted
+        # (submit_candidates): the grab or search happened in *arr, only the
+        # bookkeeping may fail. Run, card and summary still name it.
+        _count(outcome, mode, result.outcome, task, result.error)
         try:
             check.store(task, result)
         except Exception as exc:
@@ -7293,7 +7320,6 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
                 _keep_unsaved(agent, check.instance_id, run_id, task, result)
             outcome.store_error = message
             break
-        _count(outcome, mode, result.outcome, task, result.error)
         _log_title(agent, skill_name, mode, task, result.outcome, result.entry, result.error)
 
         if delay > 0 and index < len(tasks) - 1 and agent.wait_or_stop(delay):

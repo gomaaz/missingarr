@@ -907,6 +907,29 @@ def test_an_unsaved_grab_blocks_its_title_while_the_database_refuses(db_path, mo
     assert len(agent.runtime.unsaved_submissions) == 1
 
 
+@pytest.mark.parametrize("releases, posts, summary", [
+    ([release(WRONG, "guid-wrong"), release(RIGHT, "guid-right")], 1, "Checked search: 1 grabbed, 0 without"),
+    ([release(WRONG, "guid-wrong")], 0, "Checked search: 0 grabbed, 1 without"),
+], ids=["grab", "no clean hit"])
+def test_a_title_counts_although_its_bookkeeping_fails(db_path, monkeypatch, releases, posts, summary):
+    # Like a command *arr accepted (submit_candidates): the grab or the search
+    # happened in *arr, only the bookkeeping failed. Run, card and summary
+    # still name it.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={1: releases})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db.history, "record_checked", broken)
+    SearchMissingSkill().execute(agent)
+    assert len(agent.posts) == posts
+    run = last_run()
+    assert (run["status"], run["triggered_count"]) == ("error", 1)
+    assert agent.state["last_triggered"] == 1
+    assert any(m.startswith(summary) for m in activity_messages())
+
+
 # ── Changed meanwhile ────────────────────────────────────────────────────────
 # *arr approved the releases during GET /release; POST /release checks neither
 # its queue nor the file again. Right before the grab the runner reads both.
