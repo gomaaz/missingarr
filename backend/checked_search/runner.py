@@ -518,7 +518,8 @@ class _TitleCheck:
 
     def run(self, task: CheckedTask) -> _Result:
         """Raises _Stopped when an abort arrives after the search, before a
-        /parse call or before the grab."""
+        /parse call, before reading the title again or right before the
+        grab."""
         try:
             info, profile_id, tags, loaded_file = self.load(task)
         except Exception as exc:
@@ -617,6 +618,9 @@ class _TitleCheck:
             # No history item, no cache entry: the next run decides again.
             reason = f"not grabbed, the title changed in *arr during the check: {changed}"
             return _Result(OUTCOME_CHANGED, reason, entry(OUTCOME_CHANGED, error_message=reason, **common), None)
+        # Again right before the POST: reading queue and title can take up to
+        # two HTTP timeouts, and an abort meanwhile must still stop the grab.
+        self.stop_check()
         try:
             self.grab(task, pick)
         except Exception as exc:

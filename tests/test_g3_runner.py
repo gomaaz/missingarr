@@ -1404,6 +1404,33 @@ def test_abort_after_the_last_parse_grabs_nothing(db_path):
     assert log_rows() == []
 
 
+def abort_on_second_read(path):
+    """The instance is switched off while the runner reads the path again
+    right before the grab (the first read was before the search)."""
+    def hook(fake):
+        if [p for p, _ in fake.gets].count(path) == 2:
+            fake.request_abort()
+    return hook
+
+
+@pytest.mark.parametrize("arr,path", [
+    ("radarr", QUEUE), ("radarr", "/api/v3/movie/1"),
+    ("sonarr", QUEUE), ("sonarr", "/api/v3/episode/3"),
+], ids=["radarr queue", "radarr movie", "sonarr queue", "sonarr episode"])
+def test_abort_while_reading_the_title_again_grabs_nothing(db_path, arr, path):
+    # The reads before the grab wait up to two HTTP timeouts: an abort that
+    # arrives meanwhile must still stop the grab.
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst, on_get={path: abort_on_second_read(path)})
+    SearchMissingSkill().execute(agent)
+    assert [p for p, _ in agent.gets].count(path) == 2
+    assert agent.posts == []
+    assert log_rows() == []
+    assert sql("SELECT COUNT(*) FROM search_history_items")[0][0] == 0
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    assert last_run()["status"] == "error"
+
+
 def test_rate_cap_counts_one_action_per_title(db_path):
     inst = make_instance(rate_cap=1)
     films = three_movies()
