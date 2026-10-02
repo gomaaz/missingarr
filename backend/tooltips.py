@@ -77,7 +77,8 @@ TOOLTIPS = {
     "search_again_after_profile_change": (
         "A searched title stays in the Searched cache (see Retry). With this on, it may be searched again as soon "
         "as its quality profile changes in *arr — scores, qualities, custom formats or release profiles. "
-        "Every run compares a fingerprint of the profiles; a changed custom format or release profile counts as "
+        "Every run compares a fingerprint of the profiles; a changed custom format, release profile, quality "
+        "size limit (Settings → Quality) or indexer setting (minimum age, maximum size, retention) counts as "
         "a change of every profile. Titles searched before 0.9.0 are released only by the next change. "
         "Off: cached titles stay blocked whatever the profile. A dry run always checks a title again after a "
         "profile change."

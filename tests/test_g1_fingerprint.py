@@ -32,17 +32,35 @@ FORMATS = [
 ]
 RELEASE_PROFILES = [{"id": 1, "name": "German", "enabled": True, "required": ["German", "DL"], "ignored": [],
                      "indexerId": 0, "tags": [1, 2]}]
+# GET /api/v3/qualitydefinition: global size limits per quality (MB per minute of runtime).
+DEFINITIONS = [
+    {"id": 1, "quality": {"id": 3, "name": "WEBDL-1080p", "source": "webdl", "resolution": 1080},
+     "title": "WEBDL-1080p", "weight": 20, "minSize": 5.0, "maxSize": 100.0, "preferredSize": 50.0},
+    {"id": 2, "quality": {"id": 7, "name": "Bluray-1080p", "source": "bluray", "resolution": 1080},
+     "title": "Bluray-1080p", "weight": 22, "minSize": 10.0, "maxSize": None, "preferredSize": None},
+]
+# GET /api/v3/config/indexer (Radarr; Sonarr has no hardcoded-subs fields).
+INDEXER_CONFIG = {"id": 1, "minimumAge": 0, "maximumSize": 0, "retention": 0, "rssSyncInterval": 60,
+                  "preferIndexerFlags": False, "availabilityDelay": 0, "allowHardcodedSubs": False,
+                  "whitelistedHardcodedSubs": "German,Deutsch"}
 
 
 def base():
-    return fingerprint(PROFILE, FORMATS, RELEASE_PROFILES)
+    return fingerprint(PROFILE, FORMATS, RELEASE_PROFILES, DEFINITIONS, INDEXER_CONFIG)
 
 
 def changed(mutate):
     """The fingerprint after mutate(profile, formats, release_profiles) on copies."""
     profile, formats, release_profiles = copy.deepcopy((PROFILE, FORMATS, RELEASE_PROFILES))
     mutate(profile, formats, release_profiles)
-    return fingerprint(profile, formats, release_profiles)
+    return fingerprint(profile, formats, release_profiles, DEFINITIONS, INDEXER_CONFIG)
+
+
+def changed_globally(mutate):
+    """The fingerprint after mutate(quality definitions, indexer config) on copies."""
+    definitions, config = copy.deepcopy((DEFINITIONS, INDEXER_CONFIG))
+    mutate(definitions, config)
+    return fingerprint(PROFILE, FORMATS, RELEASE_PROFILES, definitions, config)
 
 
 def reorder(value):
@@ -60,7 +78,8 @@ def test_fingerprint_is_16_hex_characters():
 
 
 def test_same_content_in_another_key_order_gives_the_same_fingerprint():
-    assert fingerprint(reorder(PROFILE), reorder(FORMATS), reorder(RELEASE_PROFILES)) == base()
+    assert fingerprint(reorder(PROFILE), reorder(FORMATS), reorder(RELEASE_PROFILES),
+                       reorder(DEFINITIONS), reorder(INDEXER_CONFIG)) == base()
 
 
 def test_a_changed_score_changes_the_fingerprint():
@@ -109,8 +128,8 @@ def test_unordered_collections_do_not_count():
         r[0]["required"].reverse()
     assert changed(shuffle) == base()
     other = {"id": 2, "enabled": True, "required": [], "ignored": ["CAM"], "indexerId": 0, "tags": []}
-    assert fingerprint(PROFILE, FORMATS, [RELEASE_PROFILES[0], other]) == \
-        fingerprint(PROFILE, FORMATS, [other, RELEASE_PROFILES[0]])
+    assert fingerprint(PROFILE, FORMATS, [RELEASE_PROFILES[0], other], DEFINITIONS, INDEXER_CONFIG) == \
+        fingerprint(PROFILE, FORMATS, [other, RELEASE_PROFILES[0]], DEFINITIONS, INDEXER_CONFIG)
 
 
 def test_terms_as_text_count_like_a_list():
@@ -123,28 +142,100 @@ def test_a_recreated_release_profile_with_a_new_id_does_not_count():
 
 def test_a_changed_custom_format_or_release_profile_changes_every_profile():
     other = {**PROFILE, "id": 2, "name": "UHD"}
-    before = fingerprints([PROFILE, other], FORMATS, RELEASE_PROFILES)
+    before = fingerprints([PROFILE, other], FORMATS, RELEASE_PROFILES, DEFINITIONS, INDEXER_CONFIG)
     formats = copy.deepcopy(FORMATS)
     formats[0]["specifications"][0]["fields"][0]["value"] = 2
-    after_format = fingerprints([PROFILE, other], formats, RELEASE_PROFILES)
-    after_release = fingerprints([PROFILE, other], FORMATS, [{**RELEASE_PROFILES[0], "ignored": ["CAM"]}])
+    after_format = fingerprints([PROFILE, other], formats, RELEASE_PROFILES, DEFINITIONS, INDEXER_CONFIG)
+    after_release = fingerprints([PROFILE, other], FORMATS, [{**RELEASE_PROFILES[0], "ignored": ["CAM"]}],
+                                 DEFINITIONS, INDEXER_CONFIG)
     for after in (after_format, after_release):
         assert after["1"] != before["1"] and after["2"] != before["2"]
 
 
 def test_fingerprints_are_keyed_by_profile_id():
     other = {**PROFILE, "id": 2, "name": "UHD", "cutoff": 19}
-    result = fingerprints([PROFILE, other, {"name": "no id"}, {"id": True}], FORMATS, [])
+    result = fingerprints([PROFILE, other, {"name": "no id"}, {"id": True}], FORMATS, [], DEFINITIONS, INDEXER_CONFIG)
     assert set(result) == {"1", "2"}
     assert result["1"] != result["2"]
     # the id itself is no rule: two profiles with the same rules share a fingerprint
-    assert fingerprints([PROFILE, {**PROFILE, "id": 3, "name": "Copy"}], FORMATS, [])["3"] == result["1"]
+    copied = fingerprints([PROFILE, {**PROFILE, "id": 3, "name": "Copy"}], FORMATS, [], DEFINITIONS, INDEXER_CONFIG)
+    assert copied["3"] == result["1"]
 
 
-@pytest.mark.parametrize("answers", [({"id": 1}, [], []), ([PROFILE], None, []), ([PROFILE], [], "x")])
+@pytest.mark.parametrize("answers", [
+    ({"id": 1}, [], [], DEFINITIONS, INDEXER_CONFIG),
+    ([PROFILE], None, [], DEFINITIONS, INDEXER_CONFIG),
+    ([PROFILE], [], "x", DEFINITIONS, INDEXER_CONFIG),
+    ([PROFILE], [], [], {"minSize": 1}, INDEXER_CONFIG),
+    ([PROFILE], [], [], DEFINITIONS, [INDEXER_CONFIG]),
+    ([PROFILE], [], [], DEFINITIONS, None),
+], ids=["profiles", "formats", "release profiles", "definitions", "indexer config list", "indexer config none"])
 def test_unexpected_answers_are_refused(answers):
     with pytest.raises(ValueError):
         fingerprints(*answers)
+
+
+# ── Global size limits and indexer settings (decide `approved` for every profile) ──
+
+@pytest.mark.parametrize("mutate", [
+    lambda d, c: d[0].update(maxSize=80.0),
+    lambda d, c: d[0].update(minSize=6.0),
+    lambda d, c: d[1].update(maxSize=200.0),
+    lambda d, c: c.update(maximumSize=50000),
+    lambda d, c: c.update(retention=3000),
+    lambda d, c: c.update(minimumAge=30),
+    lambda d, c: c.update(allowHardcodedSubs=True),
+    lambda d, c: c.update(whitelistedHardcodedSubs="German"),
+], ids=["max size", "min size", "max size from unlimited", "maximumSize", "retention", "minimumAge",
+        "allow hardcoded subs", "hardcoded subs whitelist"])
+def test_a_changed_size_limit_or_indexer_setting_changes_the_fingerprint(mutate):
+    assert changed_globally(mutate) != base()
+
+
+def test_a_size_change_changes_every_profile():
+    other = {**PROFILE, "id": 2, "name": "UHD", "cutoff": 19}
+    before = fingerprints([PROFILE, other], FORMATS, RELEASE_PROFILES, DEFINITIONS, INDEXER_CONFIG)
+    definitions = copy.deepcopy(DEFINITIONS)
+    definitions[0]["maxSize"] = 80.0
+    after = fingerprints([PROFILE, other], FORMATS, RELEASE_PROFILES, definitions, INDEXER_CONFIG)
+    assert after["1"] != before["1"] and after["2"] != before["2"]
+
+
+def test_titles_labels_and_sorting_only_fields_of_the_definitions_do_not_count():
+    def relabel(d, c):
+        d[0]["title"] = "WEB 1080p"
+        d[0]["quality"]["name"] = "WEB-DL 1080p"
+        d[1]["title"] = "Blu-ray 1080p"
+        d[0]["weight"] = 99                 # fixed by *arr, reset on every start
+        d[0]["preferredSize"] = 60.0        # only sorts approved releases
+        d[0]["id"] = 41                     # the definition row, not the quality
+        c.update(rssSyncInterval=15, preferIndexerFlags=True, availabilityDelay=7)
+    assert changed_globally(relabel) == base()
+
+
+def test_the_order_of_the_definitions_does_not_count():
+    assert changed_globally(lambda d, c: d.reverse()) == base()
+
+
+def test_unlimited_sizes_count_alike():
+    # *arr: no maximum when maxSize is null or 0; a minimum of null or 0 rejects nothing.
+    assert changed_globally(lambda d, c: d[1].update(maxSize=0)) == base()
+    assert changed_globally(lambda d, c: d[0].update(minSize=5)) == base()
+    zero_min = changed_globally(lambda d, c: d[1].update(minSize=0))
+    assert zero_min == changed_globally(lambda d, c: d[1].update(minSize=None))
+
+
+def test_the_whitelist_counts_as_a_set_and_only_while_hardcoded_subs_are_refused():
+    assert changed_globally(lambda d, c: c.update(whitelistedHardcodedSubs="deutsch,GERMAN,")) == base()
+    allowed = changed_globally(lambda d, c: c.update(allowHardcodedSubs=True))
+    assert changed_globally(lambda d, c: c.update(allowHardcodedSubs=True, whitelistedHardcodedSubs="")) == allowed
+
+
+def test_sonarr_indexer_config_without_hardcoded_subs_fields():
+    sonarr = {"id": 1, "minimumAge": 0, "retention": 0, "maximumSize": 0, "rssSyncInterval": 15}
+    value = fingerprint(PROFILE, FORMATS, RELEASE_PROFILES, DEFINITIONS, sonarr)
+    assert fingerprint(PROFILE, FORMATS, RELEASE_PROFILES, DEFINITIONS, {**sonarr, "retention": 1500}) != value
+    assert fingerprint(PROFILE, FORMATS, RELEASE_PROFILES, DEFINITIONS, {**sonarr, "rssSyncInterval": 60}) == value
 
 
 def test_changes_names_only_profiles_that_existed_before():

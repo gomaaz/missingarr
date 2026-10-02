@@ -21,12 +21,17 @@ PARSE = "/api/v3/parse"
 COMMAND = "/api/v3/command"
 HEALTH = "/api/v3/health"
 QUALITY_PROFILES = "/api/v3/qualityprofile"
+QUALITY_DEFINITIONS = "/api/v3/qualitydefinition"
+INDEXER_CONFIG = "/api/v3/config/indexer"
 INDEXER_KEY = "PROWLARRSECRET123"
 API_KEY = "ARRSECRETKEY1234567890"
 
 PROFILES = [{"id": 1, "name": "HD", "cutoff": 7, "minFormatScore": 0,
              "formatItems": [{"format": 1, "name": "German", "score": 100}]}]
 FORMATS = [{"id": 1, "name": "German", "specifications": []}]
+DEFINITIONS = [{"id": 1, "quality": {"id": 7, "name": "Bluray-1080p"}, "title": "Bluray-1080p", "weight": 22,
+                "minSize": 10.0, "maxSize": 100.0, "preferredSize": 50.0}]
+SETTINGS = {"id": 1, "minimumAge": 0, "maximumSize": 0, "retention": 0, "rssSyncInterval": 60}
 INDEXERS = [{"id": 7, "name": "Indexer", "enableAutomaticSearch": True, "enableInteractiveSearch": True}]
 # Quality and languages as GET /release reports them; the grab sends them back unchanged.
 QUALITY = {"quality": {"id": 7, "name": "Bluray-1080p"}, "revision": {"version": 1, "real": 0, "isRepack": False}}
@@ -133,7 +138,7 @@ class FakeArr(BaseAgent):
     def __init__(self, config, missing=(), cutoff=(), movies=(), episodes=(), series=(), releases=None,
                  parses=None, get_errors=None, post_error=None, abort_after_parses=None, abort_on_release=False,
                  profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None,
-                 health=None):
+                 health=None, quality_definitions=None, indexer_config=None):
         super().__init__(config)
         self.missing, self.cutoff = list(missing), list(cutoff)
         self.movies = {m["id"]: m for m in movies}
@@ -148,6 +153,8 @@ class FakeArr(BaseAgent):
         self.profiles = copy.deepcopy(PROFILES if profiles is None else profiles)
         self.custom_formats = copy.deepcopy(FORMATS if custom_formats is None else custom_formats)
         self.release_profiles = list(release_profiles or [])
+        self.quality_definitions = copy.deepcopy(DEFINITIONS if quality_definitions is None else quality_definitions)
+        self.indexer_config = copy.deepcopy(SETTINGS if indexer_config is None else indexer_config)
         self.indexers = copy.deepcopy(INDEXERS if indexers is None else indexers)
         self.health = copy.deepcopy(health or [])
         self.on_get = on_get or {}
@@ -191,6 +198,10 @@ class FakeArr(BaseAgent):
             return copy.deepcopy(self.custom_formats)
         if path == "/api/v3/releaseprofile":
             return copy.deepcopy(self.release_profiles)
+        if path == QUALITY_DEFINITIONS:
+            return copy.deepcopy(self.quality_definitions)
+        if path == INDEXER_CONFIG:
+            return copy.deepcopy(self.indexer_config)
         if path == "/api/v3/indexer":
             return copy.deepcopy(self.indexers)
         if path == HEALTH:
@@ -1194,6 +1205,123 @@ def test_profiles_that_cannot_be_read_release_nothing(db_path):
     SearchMissingSkill().execute(broken)
     assert broken.commands == []
     assert any(m.startswith("Could not read the quality profiles") for m in activity_messages())
+
+
+def changed_definitions(**fields):
+    definitions = copy.deepcopy(DEFINITIONS)
+    definitions[0].update(fields)
+    return definitions
+
+
+def test_profile_state_reads_the_size_limits_and_indexer_settings_with_the_profiles(db_path):
+    inst = make_instance(checked_search="off")
+    agent = the_thing_agent(inst)
+    SearchMissingSkill().execute(agent)
+    paths = [p for p, _ in agent.gets]
+    assert {QUALITY_DEFINITIONS, INDEXER_CONFIG} <= set(paths)
+    assert paths.index(QUALITY_DEFINITIONS) < paths.index(WANTED)
+    assert agent.timeouts[QUALITY_DEFINITIONS] == agent.timeouts[INDEXER_CONFIG] == 60
+
+
+@pytest.mark.parametrize("change", [
+    dict(quality_definitions=changed_definitions(maxSize=80.0)),
+    dict(quality_definitions=changed_definitions(minSize=20.0)),
+    dict(indexer_config={**SETTINGS, "maximumSize": 50000}),
+    dict(indexer_config={**SETTINGS, "retention": 3000}),
+], ids=["max size", "min size", "maximumSize", "retention"])
+def test_cache_frees_a_title_after_a_size_limit_or_indexer_setting_changed(db_path, change):
+    inst = make_instance(checked_search="off")
+    SearchMissingSkill().execute(the_thing_agent(inst))
+    before = stored_fingerprint(inst)
+
+    changed = the_thing_agent(inst, **change)
+    SearchMissingSkill().execute(changed)
+    assert changed.commands == [{"name": "MoviesSearch", "movieIds": [1]}]
+    assert stored_fingerprint(inst) != before
+    assert any(m.startswith("Quality profile changed: HD (") for m in activity_messages())
+
+
+TWO_DEFINITIONS = [
+    {"id": 2, "quality": {"id": 3, "name": "WEBDL-1080p"}, "title": "WEBDL-1080p", "weight": 20,
+     "minSize": 5.0, "maxSize": 90.0, "preferredSize": 40.0},
+] + DEFINITIONS
+
+
+def retitled():
+    definitions = copy.deepcopy(TWO_DEFINITIONS)
+    definitions[1].update(title="Blu-ray 1080p", preferredSize=60.0)
+    return definitions
+
+
+@pytest.mark.parametrize("change", [
+    dict(quality_definitions=retitled()),
+    dict(quality_definitions=list(reversed(TWO_DEFINITIONS))),
+    dict(quality_definitions=TWO_DEFINITIONS, indexer_config={**SETTINGS, "rssSyncInterval": 15}),
+], ids=["title and preferred size", "reordered list", "rss interval"])
+def test_cache_keeps_a_title_when_only_display_or_order_changed(db_path, change):
+    inst = make_instance(checked_search="off")
+    SearchMissingSkill().execute(the_thing_agent(inst, quality_definitions=TWO_DEFINITIONS))
+    before = stored_fingerprint(inst)
+
+    same = the_thing_agent(inst, **change)
+    SearchMissingSkill().execute(same)
+    assert same.commands == []
+    assert stored_fingerprint(inst) == before
+
+
+@pytest.mark.parametrize("failing", [QUALITY_DEFINITIONS, INDEXER_CONFIG])
+@pytest.mark.parametrize("checked", ["off", "dry_run"])
+def test_size_limits_or_indexer_settings_that_cannot_be_read_release_nothing(db_path, failing, checked):
+    inst = make_instance(checked_search=checked)
+    SearchMissingSkill().execute(the_thing_agent(inst))
+    before = db.instances.get_by_id(inst["id"])["profile_fingerprints"]
+
+    broken = the_thing_agent(inst, quality_definitions=changed_definitions(maxSize=80.0),
+                             indexer_config={**SETTINGS, "retention": 3000},
+                             get_errors={failing + "$": requests.exceptions.ConnectionError("down")})
+    SearchMissingSkill().execute(broken)
+    assert broken.commands == [] and [p for p, _ in broken.gets if p == RELEASE] == []
+    assert any(m.startswith("Could not read the quality profiles") for m in activity_messages())
+    assert db.instances.get_by_id(inst["id"])["profile_fingerprints"] == before
+
+
+@pytest.mark.parametrize("answer", [dict(quality_definitions={"minSize": 1}), dict(indexer_config=[SETTINGS])],
+                         ids=["definitions not a list", "indexer config not an object"])
+def test_unexpected_size_or_indexer_answers_release_nothing(db_path, answer):
+    inst = make_instance(checked_search="off")
+    SearchMissingSkill().execute(the_thing_agent(inst))
+    odd = the_thing_agent(inst, profiles=changed_profiles(), **answer)
+    SearchMissingSkill().execute(odd)
+    assert odd.commands == []
+
+
+def test_cache_entries_from_before_0_9_0_block_until_a_size_limit_changes(db_path):
+    # The baseline logic is unchanged: the first run stores what it read (size
+    # limits and indexer settings included) and old entries count under it.
+    inst = make_instance(checked_search="off")
+    db.searched.add(inst["id"], "mov:1", "The Thing", "movie")      # cached by 0.8.0, no fingerprint
+    first = the_thing_agent(inst)
+    SearchMissingSkill().execute(first)
+    assert first.commands == []
+    assert db.instances.get_by_id(inst["id"])["profile_fingerprints_baseline"] == {"1": stored_fingerprint(inst)}
+
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert again.commands == []
+
+    changed = the_thing_agent(inst, quality_definitions=changed_definitions(maxSize=80.0))
+    SearchMissingSkill().execute(changed)
+    assert changed.commands == [{"name": "MoviesSearch", "movieIds": [1]}]
+    assert db.instances.get_by_id(inst["id"])["profile_fingerprints_baseline"] != {"1": stored_fingerprint(inst)}
+
+
+def test_dry_run_checks_again_after_a_size_limit_changed(db_path):
+    inst = make_instance()
+    SearchMissingSkill().execute(the_thing_agent(inst))
+    changed = the_thing_agent(inst, quality_definitions=changed_definitions(maxSize=80.0))
+    SearchMissingSkill().execute(changed)
+    assert len([p for p, _ in changed.gets if p == RELEASE]) == 1
+    assert [r["profile_changed"] for r in log_rows()] == [False, True]
 
 
 @pytest.mark.parametrize("checked", ["off", "active"])

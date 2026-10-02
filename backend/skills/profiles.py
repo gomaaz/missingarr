@@ -1,8 +1,11 @@
 """Quality-profile fingerprints for the search cache and the dry run (0.9.0).
 
 Spec addendum "notice profile changes": at the start of every search run the
-skills read the quality profiles, custom formats and release profiles (no
-indexer load) and fingerprint each profile (checked_search/fingerprint.py).
+skills read the quality profiles, custom formats and release profiles, and the
+global size limits (quality definitions) and indexer settings that decide
+`approved` for every profile too (no indexer load), and fingerprint each
+profile (checked_search/fingerprint.py). One of them unreadable counts like
+all of them unreadable.
 A cached title blocks only while it was searched under the current
 fingerprint of its profile; a dry-run row counts for the round only with it.
 If the profiles cannot be read, the fingerprints stored by the last run stay
@@ -31,7 +34,9 @@ from backend import db
 from backend.checked_search.fingerprint import changes, fingerprints, short
 from backend.checked_search.settings import CheckedSearchSettings
 
-PROFILE_PATHS = ("/api/v3/qualityprofile", "/api/v3/customformat", "/api/v3/releaseprofile")
+# In the order fingerprints() takes the answers.
+PROFILE_PATHS = ("/api/v3/qualityprofile", "/api/v3/customformat", "/api/v3/releaseprofile",
+                 "/api/v3/qualitydefinition", "/api/v3/config/indexer")
 SERIES_PATH = "/api/v3/series"
 # Read once per run; a large Sonarr library takes a while to list its series.
 PROFILE_TIMEOUT = 60
