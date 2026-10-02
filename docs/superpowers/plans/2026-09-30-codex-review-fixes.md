@@ -652,7 +652,7 @@ def test_names_with_control_characters_or_too_long_are_rejected(name):
 
 
 def test_names_with_quotes_and_brackets_stay_allowed():
-    assert make(name="Daniel's \"Sonarr\" <4K>").name == "Daniel's \"Sonarr\" <4K>"
+    assert make(name="Owner's \"Sonarr\" <4K>").name == "Owner's \"Sonarr\" <4K>"
 ```
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
@@ -4726,7 +4726,7 @@ git commit -m "docs: document 0.8.0 settings, security behaviour and the upgrade
 
 Voraussetzung: Welle 1 komplett (P1: `reserve_action`, `release_action`, `stop_requested`, `wait_or_stop`, `request_abort`, 3xx als `HTTPError`; P3: `lookup_many`, `local_to_utc`, `db.app_settings`, `ANCESTOR_RULE_SINCE_SETTING` samt Marker aus `init_db()`, `record_submission`, `record_failed_submission`).
 
-**Vor P2.2 Daniel fragen (offene Frage 7):** Der Plan setzt die Vorfahren-Regel mit dem Marker `ancestor_rule_since` um, damit die alten `ser:`/`sea:`-Zeilen den Live-Modus `episode` nicht wieder sperren. Entscheidet Daniel anders, ändert sich nur `_blocked` (und die zwei Marker-Tests in P2.3).
+**Vor P2.2 den Betreiber fragen (offene Frage 7):** Der Plan setzt die Vorfahren-Regel mit dem Marker `ancestor_rule_since` um, damit die alten `ser:`/`sea:`-Zeilen den Live-Modus `episode` nicht wieder sperren. Entscheidet der Betreiber anders, ändert sich nur `_blocked` (und die zwei Marker-Tests in P2.3).
 
 Abnahme P2: `tests/test_p2_*.py` grün, Gesamtsuite grün; `grep -n "check_rate_cap\|record_action\|exists_any\|searched.exists(\|insert_item\|sortKey" backend/skills/` findet nichts; die Live-Konfigurationen (Sonarr `episode`/`random` bzw. unbekannte Reihenfolge, `per_run=4`; Radarr `per_run=600`) laufen in den Tests `test_live_like_*` durch.
 
@@ -9725,7 +9725,7 @@ def component_script(page, marker):
 def test_reset_and_heading_behave_in_the_component(client, tmp_path):
     # C13 is about behaviour: after a reset the open table must be empty and
     # the heading must name the instance. Run the real component in Node.
-    make_instance(name="Daniel's Sonarr")
+    make_instance(name="Owner's Sonarr")
     script = component_script(client.get("/searched").text, "function searchedPage()")
     out = run_js(tmp_path, f"""
 vm.runInThisContext({json.dumps(script)});
@@ -9737,14 +9737,14 @@ const deleted = (n) => ({{ status: 200, ok: true, redirected: false, url: '/api/
   json: async () => ({{ deleted: n }}) }});
 const page = searchedPage();
 responses.push(listed([{{ id: 1, title: 'A' }}, {{ id: 2, title: 'B' }}], 2));
-await page.loadInstance(1, "Daniel's Sonarr");
+await page.loadInstance(1, "Owner's Sonarr");
 out.heading = page.activeInstanceName;
 out.loaded = page.items.length;
 responses.push(deleted(5));
 await page.reset(2, 'Other');
 out.afterOtherReset = page.items.length;
 responses.push(deleted(2));
-await page.reset(1, "Daniel's Sonarr");
+await page.reset(1, "Owner's Sonarr");
 out.afterOwnReset = [page.items.length, page.total];
 responses.push(listed([{{ id: 3, title: 'C' }}], 1));
 await page.fetchItems();
@@ -9752,7 +9752,7 @@ responses.push(deleted(1));
 await page.resetAll();
 out.afterResetAll = [page.items.length, page.total];
 """)
-    assert out == {"heading": "Daniel's Sonarr", "loaded": 2, "afterOtherReset": 2,
+    assert out == {"heading": "Owner's Sonarr", "loaded": 2, "afterOtherReset": 2,
                    "afterOwnReset": [0, 0], "afterResetAll": [0, 0]}
 
 
@@ -10304,7 +10304,7 @@ git commit -m "chore: drop transition helpers nothing calls any more"
 git push -u origin fix/codex-review
 ```
 
-Expected: Tests grün, Push des Branches `fix/codex-review`. Kein `git tag`, kein Merge nach `main`: ein Tag `v*` startet `.github/workflows/docker-publish.yml` und veröffentlicht `gomaaz/missingarr:latest`. Das Deployment auf den Live-Container ist ein eigener Schritt mit Daniels Freigabe.
+Expected: Tests grün, Push des Branches `fix/codex-review`. Kein `git tag`, kein Merge nach `main`: ein Tag `v*` startet `.github/workflows/docker-publish.yml` und veröffentlicht `gomaaz/missingarr:latest`. Das Deployment auf den Live-Container ist ein eigener Schritt mit Freigabe des Betreibers.
 
 ---
 
@@ -10315,7 +10315,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 1. **Einmal neu anmelden.** Das Remember-Cookie hat ein neues Format (v2), alte Cookies und Sitzungen gelten nicht mehr. Das gilt auch für Skripte, die ein altes Session-Cookie aufbewahren.
 2. **Abmelden meldet überall ab.** `POST /logout` widerruft alle Sitzungen und Remember-Cookies aller Geräte und Skripte. Auch ein Wechsel von `AUTH_PASSWORD` meldet alle ab.
 3. **Abmelden nur per Knopf.** `GET /logout` antwortet `405`; Lesezeichen auf `/logout` funktionieren nicht mehr.
-4. **Rechte von `/data`.** Beim ersten Start übergibt der Container den Datenordner des Live-Stacks an `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), nimmt Gruppe und Anderen alle Rechte (Ordner `700`, Dateien `600`, auch `missingarr.db.bak-20260817-000513`) und läuft danach ohne root. **Auf dem Server ist UID/GID 1000 ein vorhandener Login-Benutzer** (`getent passwd 1000`, geprüft 30.09.2026); mit dem Standard könnte dieser Benutzer die DB samt Fernet-Schlüssel lesen und schreiben (heute nur lesen, `root:root 644`, `/root` hat `755`). Deshalb im Live-Stack vor dem Update `PUID=568` und `PGID=568` setzen (auf dem Host frei, geprüft 30.09.2026) — Änderung am Live-Stack, nur mit Daniels Freigabe beim Deployment. Danach lesen nur root und 568 die Daten.
+4. **Rechte von `/data`.** Beim ersten Start übergibt der Container den Datenordner des Live-Stacks an `PUID:PGID` (nur Dateien, die noch nicht passen, Symlinks nie), nimmt Gruppe und Anderen alle Rechte (Ordner `700`, Dateien `600`, auch `missingarr.db.bak-20260817-000513`) und läuft danach ohne root. **Auf dem Server ist UID/GID 1000 ein vorhandener Login-Benutzer** (`getent passwd 1000`, geprüft 30.09.2026); mit dem Standard könnte dieser Benutzer die DB samt Fernet-Schlüssel lesen und schreiben (heute nur lesen, `root:root 644`, `/root` hat `755`). Deshalb im Live-Stack vor dem Update `PUID=568` und `PGID=568` setzen (auf dem Host frei, geprüft 30.09.2026) — Änderung am Live-Stack, nur mit Freigabe des Betreibers beim Deployment. Danach lesen nur root und 568 die Daten.
 5. **`SECRET_KEY`.** Ist im Live-Stack **kein** Wert gesetzt: keine Änderung. Ist dort ein Wert gesetzt (der alte Compose-Kommentar lud dazu ein), werden beim ersten Start alle API-Schlüssel umgeschlüsselt, die alten Schlüssel aus der DB gelöscht, und ab dann startet missingarr nur noch mit genau diesem Wert. Vorher `data/` sichern. Sicherungskopien in `data/` (z. B. `missingarr.db.bak-…`) enthalten danach weiter die alten Schlüssel samt Fernet-Schlüssel: löschen oder wie ein Geheimnis aufbewahren. Geht der Wert verloren: Rettungsweg in „Risiken“ (Schlüssel leeren, neu eingeben).
 6. **Erstes Aufräumen.** Direkt nach dem Start löscht die Hauspflege abgeschlossene Läufe älter als 365 Tage (`HISTORY_RETENTION_DAYS`), danach stündlich, für jede Instanz, auch abgeschaltete. Bei `retry_hours=0` (live) bleibt der Cache unangetastet.
 7. **Hängende Läufe werden geschlossen.** Läufe, die seit einem früheren Neustart auf „läuft“ stehen, werden beim Start auf „offen“ (mit Items) bzw. „Fehler: Interrupted by restart“ gesetzt.
@@ -10356,7 +10356,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 | `LazySessionMiddleware` ruft `SessionMiddleware.__init__` später auf | ein Starlette-Update könnte das brechen | Test `test_login_works_with_the_lazily_read_session_key`; Versionen stehen in `requirements.lock` |
 | `token_version` im Speicher | mehrere Worker sähen verschiedene Stände | Dockerfile erzwingt `--workers 1` (Agenten brauchen das ohnehin) |
 | chown von `/data` auf `PUID:PGID` | Standard 1000 = ein vorhandener Login-Benutzer auf dem Server bekäme Lese- und Schreibzugriff auf DB und Fernet-Schlüssel; Host-Werkzeuge, die als anderer Benutzer lesen, brauchen root | Live-Stack mit `PUID/PGID=568` (Release-Notiz 4, offene Frage 6); `go-rwx` auch auf Sicherungskopien; Symlinks übersprungen; `PUID=0` als Ausweg; Task Z Step 4 prüft 568/700/600 am Probe-Container |
-| Vorfahren-Regel gegen den Live-Stand | ohne Marker sperrten die alten `ser:`/`sea:`-Zeilen (Seriensuchen 2026, Folgen älter) im Live-Modus `episode` wieder den Großteil des Rückstands — genau das, was die Umstellung am 30.09.2026 behoben hat | Marker `ancestor_rule_since` (P3.1), `_blocked` ignoriert ältere Vorfahren-Schlüssel (P2.2), Regressionstest in P2.3; Entscheidung vor P2.2 bei Daniel (offene Frage 7) |
+| Vorfahren-Regel gegen den Live-Stand | ohne Marker sperrten die alten `ser:`/`sea:`-Zeilen (Seriensuchen 2026, Folgen älter) im Live-Modus `episode` wieder den Großteil des Rückstands — genau das, was die Umstellung am 30.09.2026 behoben hat | Marker `ancestor_rule_since` (P3.1), `_blocked` ignoriert ältere Vorfahren-Schlüssel (P2.2), Regressionstest in P2.3; Entscheidung vor P2.2 beim Betreiber (offene Frage 7) |
 | Staffelsuche kurz nach Ausstrahlung | eine SeasonSearch wenige Stunden nach der Folge sperrte sie bei `retry_hours=0` für immer | Vorfahren-Schlüssel zählen erst ab Ausstrahlung + `hours_after_release` (P2.2, Test in P2.3) |
 | Cache-Regel mit alten Zeitstempeln | Zeilen vor 1c1dc83 (März 2026) stehen in UTC statt Ortszeit | Abweichung 1–2 h, nur für Vorfahren-Schlüssel relevant; durch den Marker betrifft es nur noch Zeilen ab 0.8.0 (Ortszeit); hingenommen |
 | Worktree-Merge am Wellenende | ein Paket ändert entgegen der Zuständigkeit eine fremde Datei → Merge-Konflikt | Wellen-Abnahme merged nacheinander und stoppt beim ersten Konflikt; der Vertrag nennt jede Datei genau einmal |
@@ -10379,7 +10379,7 @@ Was der Live-Betrieb spürt, nach Wirkung sortiert:
 - **Eigener Status `aborted`:** Der CHECK-Constraint kennt ihn nicht; ein Tabellenumbau nur dafür lohnt nicht. Abbrüche stehen als `error` bzw. mit Text am Lauf.
 - **Leere Läufe gar nicht speichern (B7, Nebenvorschlag):** Sie zeigen auf der Karte, dass gesucht wurde; die Aufbewahrungsfrist begrenzt sie.
 - **`cap_drop`, `no-new-privileges`, `read_only` im Compose (C9, optional):** Der Entrypoint braucht beim Start `CHOWN`, `SETUID`, `SETGID`. Das ist eine Entscheidung für den Live-Stack (Portainer) und gehört nicht in diesen Branch.
-- **Dependabot/Renovate:** würde Pull-Requests im öffentlichen Repo erzeugen; Daniels Entscheidung.
+- **Dependabot/Renovate:** würde Pull-Requests im öffentlichen Repo erzeugen; Entscheidung des Betreibers.
 - **Deployment, Tag, Merge, Änderungen am Live-Stack:** außerhalb dieses Plans; nur der Branch wird gepusht.
 
 ## Offene Fragen
@@ -10422,4 +10422,4 @@ Jeder Punkt wurde am Code bzw. am Host nachgeprüft. Alle 17 Punkte stimmen und 
 - Dateizuständigkeit: jede geänderte Datei gehört genau einem Paket (Tabelle „Wellen und Dateizuständigkeit“); parallele Pakete arbeiten in eigenen Worktrees; Task 0, Welle 3 und Task Z laufen allein im Haupt-Arbeitsbaum.
 - Nach dem Review geänderte Stellen sind nur teilweise gegen die Wegwerf-Kopie gelaufen: nachgestellt wurden die Release-Kette (Punkt 15), der Entrypoint mit Symlink, `go-rwx` und `umask` (Punkte 12, 17), `extra="ignore"` (Punkt 4) und bcrypt > 72 Byte (Punkt 10). Die übrigen neuen Tests (P1.4 Wegwerf-Agenten und Ruhezeit, P2.3 Marker und Freigabefenster, P3.4 Nicht-Antworten, P4.2 Rettungsweg, P4.3 htmx, P5.1/P5.2/P5.3/P5.4) laufen erst beim Ausführen; schlägt einer fehl, zuerst den Test gegen diese Tabelle prüfen.
 - Namen: `reserve_action`/`release_action`, `stop_requested`/`wait_or_stop`/`request_abort`, `record_submission`/`record_failed_submission`, `lookup_many`, `public_instance`, `apiFetch`/`isSessionExpired` sind im Vertrag und in den Tasks gleich geschrieben.
-- Probe bei Planerstellung (30.09.2026, nur in einer Wegwerf-Kopie im Scratchpad, Repo und Live-System unberührt): Der Code aller Pakete wurde so angewendet, wie die Tasks ihn beschreiben, und die Tests aus diesem Plan liefen dagegen: 292 Tests aus P1–P5 plus die alten 22 grün (dreimal hintereinander, keine Wackler), P6 mit 13 Tests grün, `pip-compile` mit Hashes und `pip install --dry-run --require-hashes` ohne Fehler, `scripts/vendor_assets.py` bestätigt beide npm-Integrity-Werte. Das Image baute mit Digest und `--require-hashes`; der Probe-Container lief als UID 1000, `missingarr.db` mit `600`, curl-Ablauf 302/201/200, fremder `Origin` 403, ohne Sitzung 401, `docker stop` mit offenem Log-Stream in 0 s mit „Shutdown complete“. In headless Chromium luden `/`, `/instances`, `/history`, `/logs`, `/searched`, `/instances/1/edit`, `/help` ohne JavaScript-Fehler, auch mit dem Instanznamen `Daniel's "Sonarr" <4K>`. Dabei gefundene Planfehler sind eingearbeitet: `httpx2` statt `httpx` (Starlette 1.6), Startstatus `starting` und Log-vor-Status (Wettlauf in den Scheduler-Tests), Migrationsfehler-Test mit `PRIMARY KEY`, Hauspflege-Test mit offenem Item, `docker top -o pid,uid,cmd`.
+- Probe bei Planerstellung (30.09.2026, nur in einer Wegwerf-Kopie im Scratchpad, Repo und Live-System unberührt): Der Code aller Pakete wurde so angewendet, wie die Tasks ihn beschreiben, und die Tests aus diesem Plan liefen dagegen: 292 Tests aus P1–P5 plus die alten 22 grün (dreimal hintereinander, keine Wackler), P6 mit 13 Tests grün, `pip-compile` mit Hashes und `pip install --dry-run --require-hashes` ohne Fehler, `scripts/vendor_assets.py` bestätigt beide npm-Integrity-Werte. Das Image baute mit Digest und `--require-hashes`; der Probe-Container lief als UID 1000, `missingarr.db` mit `600`, curl-Ablauf 302/201/200, fremder `Origin` 403, ohne Sitzung 401, `docker stop` mit offenem Log-Stream in 0 s mit „Shutdown complete“. In headless Chromium luden `/`, `/instances`, `/history`, `/logs`, `/searched`, `/instances/1/edit`, `/help` ohne JavaScript-Fehler, auch mit dem Instanznamen `Owner's "Sonarr" <4K>`. Dabei gefundene Planfehler sind eingearbeitet: `httpx2` statt `httpx` (Starlette 1.6), Startstatus `starting` und Log-vor-Status (Wettlauf in den Scheduler-Tests), Migrationsfehler-Test mit `PRIMARY KEY`, Hauspflege-Test mit offenem Item, `docker top -o pid,uid,cmd`.

@@ -5,10 +5,10 @@ from backend.models.instance import FIELD_BOUNDS, InstanceCreate, InstanceUpdate
 
 BASE = {"name": "Sonarr", "type": "sonarr", "url": "http://sonarr:8989", "api_key": "k" * 32}
 
-LIVE_SONARR = dict(interval_minutes=60, missing_mode="episode", missing_per_run=4,
+BIG_SONARR = dict(interval_minutes=60, missing_mode="episode", missing_per_run=4,
                    rate_cap=300, rate_window_minutes=60, search_upgrades_enabled=False,
                    retry_hours=0)
-LIVE_RADARR = dict(type="radarr", interval_minutes=30, missing_per_run=600,
+BIG_RADARR = dict(type="radarr", interval_minutes=30, missing_per_run=600,
                    rate_cap=999_999_999, search_upgrades_enabled=False, retry_hours=0,
                    upgrades_per_run=0)
 
@@ -18,9 +18,9 @@ def make(model=InstanceCreate, **fields):
 
 
 @pytest.mark.parametrize("model", [InstanceCreate, InstanceUpdate])
-def test_live_settings_stay_valid(model):
-    make(model, **LIVE_SONARR)
-    make(model, **LIVE_RADARR)
+def test_big_setups_stay_valid(model):
+    make(model, **BIG_SONARR)
+    make(model, **BIG_RADARR)
 
 
 @pytest.mark.parametrize("field,value", [

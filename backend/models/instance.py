@@ -12,7 +12,7 @@ UpgradeSource = Literal["wanted_list_only", "monitored_items_only", "both"]
 InstanceType = Literal["sonarr", "radarr"]
 ConnectionStatus = Literal["unknown", "online", "offline", "error"]
 
-# Generous on purpose: Radarr runs live with rate_cap=999999999 and
+# Generous on purpose: real setups run Radarr with rate_cap=999999999 and
 # missing_per_run=600, and d8aadd8 once removed tighter limits that blocked
 # such values. The bounds only stop values that break the scheduler (A1).
 FIELD_BOUNDS: dict[str, tuple[int, int]] = {
