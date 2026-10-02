@@ -257,6 +257,18 @@ def _named_indexers(message: str) -> list[str] | None:
     return [name.strip() for name in names.split(", ")] if colon else None
 
 
+def _asked(indexer: dict, title_tags) -> bool:
+    """Does the release search ask this indexer for the title? Interactive
+    search on, and untagged or sharing a tag with the movie or series
+    (ReleaseSearchService.Dispatch). Unknown title tags: asked."""
+    if indexer.get("enableInteractiveSearch") is not True:
+        return False
+    own = indexer.get("tags")
+    if not isinstance(title_tags, list) or not isinstance(own, list) or not own:
+        return True
+    return any(tag in title_tags for tag in own)
+
+
 def _candidate(release: _Release, verdict: str, reasons=(), notes=(), chosen=False, arr_choice=False) -> dict:
     return {
         "title": release.title, "indexer": release.indexer, "score": release.score, "size": release.size,
@@ -287,14 +299,16 @@ class _TitleCheck:
     # ── *arr calls ───────────────────────────────────────────────────────
 
     def load(self, task: CheckedTask):
-        """(title data for the rules, quality profile id of the loaded movie or series)."""
+        """(title data for the rules, quality profile id and tags of the
+        loaded movie or series)."""
         if self.arr_type == "radarr":
             movie = self.agent.http_get(f"/api/v3/movie/{task.arr_id}")
-            return radarr_rules.movie_from_resource(movie), movie.get("qualityProfileId")
+            return radarr_rules.movie_from_resource(movie), movie.get("qualityProfileId"), movie.get("tags")
         episode = self.agent.http_get(f"/api/v3/episode/{task.arr_id}")
         series_id = task.series_id or episode.get("seriesId")
         series = self.agent.http_get(f"/api/v3/series/{series_id}")
-        return sonarr_rules.episode_from_resources(episode, series), series.get("qualityProfileId")
+        return (sonarr_rules.episode_from_resources(episode, series), series.get("qualityProfileId"),
+                series.get("tags"))
 
     def fingerprint(self, task: CheckedTask, profile_id) -> str | None:
         """The profile fingerprint the title is checked and stored under: from
@@ -354,13 +368,14 @@ class _TitleCheck:
             body["episodeIds"] = [task.arr_id]
         self.agent.http_post(RELEASE_PATH, body, timeout=self.settings.release_timeout_seconds)
 
-    def indexer_failure(self) -> str:
+    def indexer_failure(self, tags) -> str:
         """'' when no indexer the release search asks is blocked after
         failures, else why the miss is no clean one. Waits for *arr to
         refresh its health checks first (an abort meanwhile ends the run).
         Unreadable health or indexer list: a failure too (in doubt, do not
-        remember). Only an indexer with interactive search off is surely not
-        asked; tags are not looked at."""
+        remember). tags: those of the movie or series; surely not asked is
+        an indexer with interactive search off or with tags the title has
+        none of."""
         if self.agent.wait_or_stop(HEALTH_SETTLE_SECONDS):
             raise _Stopped()
         try:
@@ -376,8 +391,7 @@ class _TitleCheck:
                 raise ValueError("the indexer list was no list")
         except Exception as exc:
             return f"could not read the indexer status, the miss may be an indexer failure: {exc}"
-        not_asked = {i.get("name") for i in indexers
-                     if isinstance(i, dict) and i.get("enableInteractiveSearch") is not True}
+        not_asked = {i.get("name") for i in indexers if isinstance(i, dict) and not _asked(i, tags)}
         asked = [m for m in messages
                  if (names := _named_indexers(m)) is None or any(n not in not_asked for n in names)]
         if not asked:
@@ -414,7 +428,7 @@ class _TitleCheck:
         """Raises _Stopped when an abort arrives after the search, before a
         /parse call or before the grab."""
         try:
-            info, profile_id = self.load(task)
+            info, profile_id, tags = self.load(task)
         except Exception as exc:
             error = f"could not load the title: {exc}"
             # A failed item (no cache entry): a run with a grab next to it ends
@@ -437,7 +451,7 @@ class _TitleCheck:
                            ITEM_FAILED, searched=not _refused(exc))
         self.stop_check()
         if not releases:
-            failure = self.indexer_failure()
+            failure = self.indexer_failure(tags)
             if failure:
                 return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure), ITEM_FAILED)
             return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS), ITEM_NO_HIT)
@@ -476,7 +490,7 @@ class _TitleCheck:
             return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
         if pick is None:
             # A failing indexer may have had the clean release: not a clean miss.
-            failure = self.indexer_failure()
+            failure = self.indexer_failure(tags)
             if failure:
                 return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure, **common),
                                ITEM_FAILED)

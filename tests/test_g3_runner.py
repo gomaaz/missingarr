@@ -747,6 +747,38 @@ def test_only_a_failure_of_an_indexer_the_search_asks_counts(db_path, names, out
     assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == (1 if outcome == "no_results" else 0)
 
 
+TAGGED = {"id": 9, "name": "Tagged", "enableAutomaticSearch": True, "enableInteractiveSearch": True, "tags": [5]}
+
+
+@pytest.mark.parametrize("tags,outcome", [
+    ([], "no_results"),
+    ([6], "no_results"),
+    ([5, 6], "error"),
+    (None, "error"),
+], ids=["untagged movie", "other tag", "shared tag", "tags unknown"])
+def test_a_tagged_indexer_counts_only_for_a_movie_sharing_a_tag(db_path, tags, outcome):
+    # *arr asks a tagged indexer only for a movie or series sharing one of
+    # its tags (ReleaseSearchService.Dispatch). A blocked one elsewhere must
+    # not keep every other miss from being remembered.
+    inst = make_instance(checked_search="active")
+    thing = {**THE_THING, "tags": tags} if tags is not None else THE_THING
+    agent = the_thing_agent(inst, missing=[thing], movies=[thing], releases={},
+                            indexers=[INDEXERS[0], TAGGED], health=indexer_down("Tagged"))
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == outcome
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == (1 if outcome == "no_results" else 0)
+
+
+@pytest.mark.parametrize("tags,outcome", [([6], "no_results"), ([5], "error")], ids=["other tag", "shared tag"])
+def test_sonarr_matches_indexer_tags_with_the_series(db_path, tags, outcome):
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="active")
+    series = {**GUEST_SERIES, "tags": tags}
+    agent = agent_for(inst, missing=[guest_episode()], episodes=[guest_episode()], series=[series], releases={},
+                      indexers=[INDEXERS[0], TAGGED], health=indexer_down("Tagged"))
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == outcome
+
+
 def test_other_health_warnings_do_not_count(db_path):
     inst = make_instance(checked_search="active")
     health = [{"source": "IndexerRssCheck", "type": "warning", "message": "No indexers available with RSS sync"}]
