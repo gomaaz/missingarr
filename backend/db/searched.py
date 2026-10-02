@@ -18,8 +18,9 @@ def add(instance_id: int, cache_key: str, title: str, item_type: str,
         profile_fingerprint: Optional[str] = None) -> None:
     """profile_fingerprint: the title's quality profile when it was searched
     (0.9.0). A new search of a cached title takes the new one over, never
-    NULL over a known one; it is no grab of the checked search (grabbed_at
-    cleared) and no history item wrote it (history_item_id cleared)."""
+    NULL over a known one; it is no grab and no empty search of the checked
+    search (grabbed_at, no_results_at cleared) and no history item wrote it
+    (history_item_id cleared)."""
     with get_db() as conn:
         conn.execute(
             """
@@ -29,7 +30,8 @@ def add(instance_id: int, cache_key: str, title: str, item_type: str,
                 searched_at=datetime('now','localtime'),
                 profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),
                 grabbed_at=NULL,
-                history_item_id=NULL
+                history_item_id=NULL,
+                no_results_at=NULL
             """,
             (instance_id, cache_key, title, item_type, profile_fingerprint),
         )
@@ -120,6 +122,7 @@ def lookup_many(
     retry_hours: int = 0,
     fingerprints: Optional[dict] = None,
     grab_release_days: int = 0,
+    no_results_release_days: int = 0,
 ) -> dict[str, datetime]:
     """cache_key -> searched_at (UTC) for every key in the cache.
 
@@ -140,6 +143,13 @@ def lookup_many(
     like any entry). Pass it only for candidates from a wanted list — there
     a grab that is still listed is still missing. 0: off, a grab keeps the
     plain retry window.
+
+    no_results_release_days (owner decision 02.10.2026, the same setting):
+    an empty search of the checked search (no_results_at) is released after
+    that many days, also with retry_hours 0 — an indexer failure may have
+    left *arr's health list before it was read. Unlike a grab it never
+    blocks longer than the retry window: whichever ends first releases it.
+    A changed profile releases it earlier, like any entry. 0: off.
     """
     wanted = list(dict.fromkeys(k for k in keys if k))
     found: dict[str, datetime] = {}
@@ -152,10 +162,13 @@ def lookup_many(
             statement = (
                 "SELECT cache_key, searched_at, profile_fingerprint, "
                 "(grabbed_at IS NOT NULL AND grabbed_at <= datetime('now', 'localtime', ? || ' days')) "
-                "AS grab_due FROM searched_items "
+                "AS grab_due, "
+                "(no_results_at IS NOT NULL AND no_results_at <= datetime('now', 'localtime', ? || ' days')) "
+                "AS empty_due FROM searched_items "
                 f"WHERE instance_id=? AND cache_key IN ({placeholders})"
             )
-            params: list = [f"-{max(0, grab_release_days)}", instance_id, *chunk]
+            params: list = [f"-{max(0, grab_release_days)}", f"-{max(0, no_results_release_days)}",
+                            instance_id, *chunk]
             if retry_hours > 0:
                 # A grab's own days decide when it is released, not the window.
                 statement += (" AND (searched_at > datetime('now', 'localtime', ? || ' hours')"
@@ -163,6 +176,8 @@ def lookup_many(
                 params += [f"-{retry_hours}", grab_release_days]
             for row in conn.execute(statement, params):
                 if grab_release_days > 0 and row["grab_due"]:
+                    continue
+                if no_results_release_days > 0 and row["empty_due"]:
                     continue
                 if fingerprints is not None and not _same_profile(row, fingerprints):
                     continue
@@ -186,7 +201,9 @@ def purge_expired(instance_id: int, retry_hours: int, keep_grab_days: int = 0) -
 
     keep_grab_days (0.9.0): a grab of the checked search (grabbed_at) blocks
     that many days whatever retry_hours says ("Search again if still missing
-    after"), so its row stays until then."""
+    after"), so its row stays until then. An empty search (no_results_at)
+    needs no such guard: it never blocks past the retry window, and without
+    one nothing is purged, so its mark lives until it is due."""
     if retry_hours <= 0:
         return 0
     with get_db() as conn:

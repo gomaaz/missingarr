@@ -908,6 +908,61 @@ def test_a_grabbed_title_still_missing_is_searched_again_after_the_set_days(db_p
     assert later.posts == [movie_grab("guid-right")]
 
 
+def test_an_empty_search_is_searched_again_after_the_set_days_without_retry(db_path):
+    # Owner decision 02.10.2026: an indexer failure can leave the health list
+    # (a later successful RSS sync clears its block) before missingarr reads
+    # it, so an empty list is no proof. Retry 0 must not keep it forever.
+    inst = make_instance(checked_search="active", retry_hours=0,
+                         checked_search_settings={"search_again_after_days": 3})
+    SearchMissingSkill().execute(the_thing_agent(inst, releases={}))
+    assert log_rows()[0]["outcome"] == "no_results"
+    assert sql("SELECT cache_key, no_results_at IS NOT NULL FROM searched_items") == [("mov:1", 1)]
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-2 days'), "
+        "no_results_at=datetime('now','localtime','-2 days')")
+    same = the_thing_agent(inst)
+    SearchMissingSkill().execute(same)
+    assert [p for p, _ in same.gets if p == RELEASE] == []
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-4 days'), "
+        "no_results_at=datetime('now','localtime','-4 days')")
+    later = the_thing_agent(inst)
+    SearchMissingSkill().execute(later)
+    assert len([p for p, _ in later.gets if p == RELEASE]) == 1
+    assert later.posts == [movie_grab("guid-right")]
+    assert sql("SELECT no_results_at, grabbed_at IS NOT NULL FROM searched_items") == [(None, 1)]
+
+
+def test_a_title_the_filter_emptied_stays_remembered_without_retry(db_path):
+    # Releases came back and only the filter rejected them: no indexer doubt,
+    # Retry decides as before.
+    inst = make_instance(checked_search="active", retry_hours=0,
+                         checked_search_settings={"search_again_after_days": 3})
+    SearchMissingSkill().execute(the_thing_agent(inst, releases={1: [release(WRONG, "g1")]}))
+    assert log_rows()[0]["outcome"] == "no_clean_hit"
+    assert sql("SELECT cache_key, no_results_at FROM searched_items") == [("mov:1", None)]
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-30 days')")
+    later = the_thing_agent(inst)
+    SearchMissingSkill().execute(later)
+    assert [p for p, _ in later.gets if p == RELEASE] == []
+
+
+def test_dry_run_counts_an_empty_title_as_checked_for_the_whole_round(db_path):
+    # The round, not the days, decides in a dry run (nothing is remembered,
+    # each title once per round): an empty title comes up again in the next
+    # round, which "Reset dry run" starts.
+    inst = make_instance(checked_search_settings={"search_again_after_days": 3})
+    SearchMissingSkill().execute(the_thing_agent(inst, releases={}))
+    assert log_rows()[0]["outcome"] == "no_results"
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    sql("UPDATE checked_search_log SET created_at=strftime('%Y-%m-%d %H:%M:%f','now','localtime','-4 days')")
+    same = the_thing_agent(inst)
+    SearchMissingSkill().execute(same)
+    assert [p for p, _ in same.gets if p == RELEASE] == []
+    db.instances.reset_dry_run(inst["id"])
+    next_round = the_thing_agent(inst)
+    SearchMissingSkill().execute(next_round)
+    assert len([p for p, _ in next_round.gets if p == RELEASE]) == 1
+
+
 @pytest.mark.parametrize("indexers,errors,hint", [
     ([*INDEXERS, {"id": 9, "name": "Weekly check", "enableAutomaticSearch": True,
                   "enableInteractiveSearch": False}], {}, "Checked search paused — indexer Weekly check"),
@@ -1451,6 +1506,28 @@ def test_a_grabbed_upgrade_is_searched_again_only_from_the_cutoff_list(db_path, 
     again = agent_for(inst, **kwargs)
     SearchUpgradesSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == searched_again
+
+
+@pytest.mark.parametrize("source", ["wanted_list_only", "monitored_items_only"])
+def test_an_empty_upgrade_search_is_searched_again_after_the_set_days_from_either_list(db_path, source):
+    # Owner decision 02.10.2026: nothing was grabbed, so the movie list's
+    # doubt about grabs does not apply — an empty search is released from
+    # both lists, also with Retry 0.
+    inst = make_instance(checked_search="active", search_upgrades_enabled=True, upgrades_per_run=1,
+                         upgrade_source=source, retry_hours=0,
+                         checked_search_settings={"search_again_after_days": 1})
+    owned = movie(1, "The Thing", 1982, hasFile=True)
+    kwargs = dict(cutoff=[owned], movies=[owned], parses=PARSES)
+    SearchUpgradesSkill().execute(agent_for(inst, releases={}, **kwargs))
+    assert [r["outcome"] for r in log_rows()] == ["no_results"]
+    same = agent_for(inst, releases={}, **kwargs)
+    SearchUpgradesSkill().execute(same)
+    assert [p for p, _ in same.gets if p == RELEASE] == []
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-2 days'), "
+        "no_results_at=datetime('now','localtime','-2 days')")
+    again = agent_for(inst, releases={1: [release(RIGHT, "g1")]}, **kwargs)
+    SearchUpgradesSkill().execute(again)
+    assert again.posts == [movie_grab("g1")]
 
 
 def test_upgrade_cache_frees_a_movie_after_its_profile_changed(db_path):

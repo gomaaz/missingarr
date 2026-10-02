@@ -123,17 +123,21 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
 # also takes over the fingerprint it was searched under (0.9.0) — but never
 # replaces one with NULL (the profile was unknown this time). grabbed_at
 # (1/0 parameter) marks a grab of the checked search; any other search
-# clears it. history_item_id (last parameter): the item that wrote the
-# entry last — a failed command releases only an entry it still owns.
+# clears it. history_item_id: the item that wrote the entry last — a failed
+# command releases only an entry it still owns. no_results_at (1/0, last
+# parameter) marks an empty search of the checked search, cleared likewise.
 _UPSERT_SEARCHED = """
     INSERT INTO searched_items
-        (instance_id, cache_key, title, item_type, profile_fingerprint, grabbed_at, history_item_id)
-    VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now','localtime') END, ?)
+        (instance_id, cache_key, title, item_type, profile_fingerprint, grabbed_at, history_item_id,
+         no_results_at)
+    VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now','localtime') END, ?,
+            CASE WHEN ? THEN datetime('now','localtime') END)
     ON CONFLICT(instance_id, cache_key) DO UPDATE SET
         searched_at=datetime('now','localtime'),
         profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),
         grabbed_at=excluded.grabbed_at,
-        history_item_id=excluded.history_item_id
+        history_item_id=excluded.history_item_id,
+        no_results_at=excluded.no_results_at
 """
 
 
@@ -165,7 +169,7 @@ def record_submission(
         )
         if command_id is not None and cache_key:
             conn.execute(_UPSERT_SEARCHED,
-                         (instance_id, cache_key, title, item_type, profile_fingerprint, 0, cursor.lastrowid))
+                         (instance_id, cache_key, title, item_type, profile_fingerprint, 0, cursor.lastrowid, 0))
         return cursor.lastrowid
 
 
@@ -193,6 +197,7 @@ def record_checked(
     profile_fingerprint: Optional[str] = None,
     cache: Optional[bool] = None,
     hold_key: Optional[str] = None,
+    no_results: bool = False,
 ) -> int:
     """Store what the checked search did with one title — history item,
     retry-cache entry and pre-filter log row in one transaction.
@@ -207,6 +212,11 @@ def record_checked(
     still missing" releases the title after the set days. hold_key: a second
     key such a grab holds the same way (a Sonarr upgrade holds its season,
     so the command path does not search the season meanwhile).
+    no_results with 'no_hit': not one approved release came back (outcome
+    no_results). The entry gets no_results_at: an indexer failure may have
+    left *arr's health list before it was read, so "Search again if still
+    missing" releases the title after the set days, also with retry_hours 0
+    (owner decision 02.10.2026). Ignored with any other status.
     The cache entry names this item as its writer (history_item_id).
     """
     if status not in (ITEM_GRABBED, ITEM_NO_HIT, ITEM_FAILED):
@@ -214,6 +224,7 @@ def record_checked(
     if cache is None:
         cache = status != ITEM_FAILED
     grabbed = status == ITEM_GRABBED or (status == ITEM_FAILED and cache)
+    empty = bool(no_results) and status == ITEM_NO_HIT
     with get_db() as conn:
         cursor = conn.execute(
             _INSERT_ITEM,
@@ -222,10 +233,11 @@ def record_checked(
         item_id = cursor.lastrowid
         if cache and cache_key:
             conn.execute(_UPSERT_SEARCHED,
-                         (instance_id, cache_key, title, item_type, profile_fingerprint, int(grabbed), item_id))
+                         (instance_id, cache_key, title, item_type, profile_fingerprint, int(grabbed), item_id,
+                          int(empty)))
             if grabbed and hold_key:
                 conn.execute(_UPSERT_SEARCHED,
-                             (instance_id, hold_key, title, "season", profile_fingerprint, 1, item_id))
+                             (instance_id, hold_key, title, "season", profile_fingerprint, 1, item_id, 0))
         if log_entry is not None:
             checked_search_log.insert_with(conn, log_entry)
         return item_id

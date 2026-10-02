@@ -211,7 +211,10 @@ class SearchUpgradesSkill(BaseSkill):
         profile (spec addendum, unless switched off). wanted_list (the cutoff
         list): a grab of the checked search blocks only "Search again if
         still missing after (days)" — the movie list cannot tell whether a
-        grab is still missing. In a checked-search dry run (round_keys, force
+        grab is still missing. An empty search of the checked search
+        (no_results) is released after the same days from either list, also
+        with retry_hours 0: nothing was grabbed, the title is still a
+        candidate (owner decision 02.10.2026). In a checked-search dry run (round_keys, force
         run too) only this round's log counts, under the current profile
         fingerprint and rule settings.
 
@@ -226,8 +229,8 @@ class SearchUpgradesSkill(BaseSkill):
         keyed = [(self._cache_key(arr_type, item, checked), item) for item in items]
         other = [self._cache_key(arr_type, item, not checked) for item in items]
         held = [None if checked else self._hold_key(arr_type, item) for item in items]
-        grab_days = (CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
-                     if wanted_list else 0)
+        again_days = CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
+        grab_days = again_days if wanted_list else 0
         if round_keys is not None:
             hits = {key: True for key, item in keyed if profiles.round_blocks(round_keys, key, item)}
             other = [None] * len(keyed)
@@ -241,6 +244,7 @@ class SearchUpgradesSkill(BaseSkill):
                 **db.searched.lookup_many(
                     cfg["id"], [key for key, _ in asked], int(cfg.get("retry_hours", 0) or 0),
                     fingerprints=profiles.cache_filter(asked), grab_release_days=grab_days,
+                    no_results_release_days=again_days,
                 ),
                 **unsaved_cache_keys(agent),
             }

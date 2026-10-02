@@ -420,7 +420,8 @@ class _TitleCheck:
             db.history.record_checked(self.run_id, self.instance_id, task.title, task.arr_id,
                                       task.item_type, task.cache_key, result.history_status, result.entry,
                                       profile_fingerprint=result.entry.get("profile_fingerprint"),
-                                      cache=result.cache, hold_key=task.hold_key)
+                                      cache=result.cache, hold_key=task.hold_key,
+                                      no_results=result.outcome == OUTCOME_NO_RESULTS)
         else:
             db.checked_search_log.insert(result.entry)
 

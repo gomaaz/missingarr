@@ -228,7 +228,9 @@ class SearchMissingSkill(BaseSkill):
         the record's quality profile (spec addendum), unless the instance
         switched that off. A grab of the checked search blocks only "Search
         again if still missing after (days)": the records come from the
-        wanted list, so a listed grab is still missing. round_keys
+        wanted list, so a listed grab is still missing. An empty search of
+        the checked search (no_results) is released after the same days,
+        also with retry_hours 0 (owner decision 02.10.2026). round_keys
         (checked-search dry run, force run too): the cache is not asked at
         all; a record is skipped only when its own key was checked in this
         round under its current fingerprint and the current rule settings."""
@@ -270,6 +272,7 @@ class SearchMissingSkill(BaseSkill):
                     **db.searched.lookup_many(
                         cfg["id"], [key for key, _ in keyed], retry_hours,
                         fingerprints=profiles.cache_filter(keyed), grab_release_days=grab_days,
+                        no_results_release_days=grab_days,
                     ),
                     **unsaved_cache_keys(agent),
                 }

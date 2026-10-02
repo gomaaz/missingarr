@@ -148,6 +148,7 @@ _SCHEMA = """
                 profile_fingerprint TEXT,
                 grabbed_at  TEXT,
                 history_item_id INTEGER,
+                no_results_at TEXT,
                 UNIQUE(instance_id, cache_key)
             );
 
@@ -226,6 +227,9 @@ _COLUMN_MIGRATIONS = [
     # only its own entry, even after the history was cleared (0.9.0). No
     # foreign key on purpose — clearing the history must not blank it.
     ("searched_items", "history_item_id", "INTEGER"),
+    # An empty search of the checked search (no_results): "Search again if
+    # still missing" releases it, also without a retry window (0.9.0).
+    ("searched_items", "no_results_at", "TEXT"),
 ]
 
 

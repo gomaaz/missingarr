@@ -100,6 +100,31 @@ def test_only_a_grab_marks_the_cache_entry(db_path):
     assert sql("SELECT grabbed_at FROM searched_items") == [(None,)]
 
 
+def empty_mark():
+    return sql("SELECT cache_key, no_results_at IS NOT NULL FROM searched_items ORDER BY cache_key")
+
+
+def test_only_an_empty_search_marks_the_cache_entry_as_empty(db_path):
+    # Owner decision 02.10.2026: no_results (not one approved release) is
+    # searched again after "Search again if still missing"; any other search
+    # of the title clears the mark.
+    inst = make_instance()
+    run = history.start_run(inst["id"], "Radarr", "search_missing")
+    history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_NO_HIT, no_results=True)
+    history.record_checked(run, inst["id"], "B", 2, "movie", "mov:2", ITEM_NO_HIT)
+    history.record_checked(run, inst["id"], "C", 3, "movie", "mov:3", ITEM_GRABBED, no_results=True)
+    assert empty_mark() == [("mov:1", 1), ("mov:2", 0), ("mov:3", 0)]
+    history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_NO_HIT)
+    assert empty_mark()[0] == ("mov:1", 0)
+    for again in (lambda: history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_GRABBED),
+                  lambda: history.record_submission(run, inst["id"], "A", 1, "movie", "mov:1", 77),
+                  lambda: db.searched.add(inst["id"], "mov:1", "A", "movie")):
+        history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_NO_HIT, no_results=True)
+        assert empty_mark()[0] == ("mov:1", 1)
+        again()
+        assert empty_mark()[0] == ("mov:1", 0)
+
+
 def test_a_search_without_a_fingerprint_keeps_the_stored_one(db_path):
     # The title's profile was unknown this time: the old fingerprint is better than none.
     inst = make_instance()
@@ -245,6 +270,35 @@ def test_purge_expired_keeps_young_grabs_only_when_asked(db_path):
         "grabbed_at=datetime('now','localtime','-2 days')")
     assert db.searched.purge_expired(inst["id"], 24, keep_grab_days=7) == 0
     assert db.searched.purge_expired(inst["id"], 24) == 1
+
+
+def test_housekeeping_never_deletes_an_empty_search_that_still_blocks(db_path):
+    # Owner decision 02.10.2026: the mark of an empty search must live until
+    # "Search again if still missing" is up. Without a retry window nothing
+    # is purged; with one, a row leaves only once it no longer blocks anyway
+    # (an empty search never blocks longer than Retry).
+    inst = make_instance()
+    sql("UPDATE instances SET retry_hours=0, checked_search_settings='{\"search_again_after_days\": 7}'")
+    run = history.start_run(inst["id"], "Radarr", "search_missing")
+    history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_NO_HIT, no_results=True)
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-6 days'), "
+        "no_results_at=datetime('now','localtime','-6 days')")
+    VerifyCommandsSkill().housekeeping(HousekeepingAgent(inst))
+    assert empty_mark() == [("mov:1", 1)]
+    assert set(db.searched.lookup_many(inst["id"], ["mov:1"], 0, no_results_release_days=7)) == {"mov:1"}
+
+    sql("UPDATE instances SET retry_hours=24")
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-2 hours'), "
+        "no_results_at=datetime('now','localtime','-2 hours')")
+    VerifyCommandsSkill._last_housekeeping.clear()
+    VerifyCommandsSkill().housekeeping(HousekeepingAgent(inst))
+    assert empty_mark() == [("mov:1", 1)]
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-2 days'), "
+        "no_results_at=datetime('now','localtime','-2 days')")
+    assert db.searched.lookup_many(inst["id"], ["mov:1"], 24, no_results_release_days=7) == {}
+    VerifyCommandsSkill._last_housekeeping.clear()
+    VerifyCommandsSkill().housekeeping(HousekeepingAgent(inst))
+    assert empty_mark() == []
 
 
 class FakeCommands:

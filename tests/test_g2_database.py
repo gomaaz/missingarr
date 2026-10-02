@@ -49,7 +49,8 @@ def test_fresh_database_has_the_checked_search_schema(db_path):
         assert {"checked_search", "checked_search_settings", "dry_run_round", "dry_run_round_started_at",
                 "search_again_after_profile_change", "profile_fingerprints",
                 "profile_fingerprints_baseline"} <= set(cols)
-        assert {"profile_fingerprint", "grabbed_at", "history_item_id"} <= set(columns(conn, "searched_items"))
+        assert {"profile_fingerprint", "grabbed_at", "history_item_id", "no_results_at"} <= set(
+            columns(conn, "searched_items"))
         assert set(columns(conn, "checked_search_log")) == {
             "id", "instance_id", "run_id", "mode", "skill", "arr_id", "cache_key", "title", "created_at",
             "outcome", "arr_pick", "pick", "pick_indexer", "pick_score", "pick_size", "pick_quality",
@@ -84,9 +85,9 @@ def test_0_8_0_database_gets_the_new_columns_with_defaults(tmp_path, monkeypatch
                            "profile_fingerprints_baseline FROM instances WHERE id=1").fetchone()
         assert row == ("off", "{}", 0, None, 1, "{}", None)
         # cached before 0.9.0: no fingerprint, counts as searched under the baseline; no checked grab;
-        # no item named as its writer
-        assert conn.execute("SELECT profile_fingerprint, grabbed_at, history_item_id FROM searched_items"
-                            ).fetchall() == [(None, None, None)]
+        # no item named as its writer; no empty search of the checked search
+        assert conn.execute("SELECT profile_fingerprint, grabbed_at, history_item_id, no_results_at "
+                            "FROM searched_items").fetchall() == [(None, None, None, None)]
         assert conn.execute("SELECT COUNT(*) FROM checked_search_log").fetchone()[0] == 0
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:

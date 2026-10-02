@@ -24,9 +24,10 @@ def inst(db_path):
                                 "api_key": "k" * 32})
 
 
-def blocked(inst, keys, fingerprints=None, retry_hours=0, grab_release_days=0):
+def blocked(inst, keys, fingerprints=None, retry_hours=0, grab_release_days=0, no_results_release_days=0):
     return set(db.searched.lookup_many(inst["id"], keys, retry_hours, fingerprints=fingerprints,
-                                       grab_release_days=grab_release_days))
+                                       grab_release_days=grab_release_days,
+                                       no_results_release_days=no_results_release_days))
 
 
 def test_without_fingerprints_every_entry_blocks(inst):
@@ -103,3 +104,50 @@ def test_a_grab_blocks_its_days_even_with_a_shorter_retry_window(inst):
     sql("UPDATE searched_items SET searched_at=datetime('now','localtime','-8 days'), "
         "grabbed_at=datetime('now','localtime','-8 days') WHERE cache_key='mov:1'")
     assert blocked(inst, ["mov:1"], retry_hours=24, grab_release_days=7) == set()
+
+
+def age(days, where="1=1"):
+    """Move an entry (and its marks) the given days into the past."""
+    sql("UPDATE searched_items SET searched_at=datetime('now','localtime',?), "
+        "grabbed_at=CASE WHEN grabbed_at IS NOT NULL THEN datetime('now','localtime',?) END, "
+        f"no_results_at=CASE WHEN no_results_at IS NOT NULL THEN datetime('now','localtime',?) END WHERE {where}",
+        (f"-{days} days",) * 3)
+
+
+def test_an_empty_search_is_released_after_the_set_days_without_a_retry_window(inst):
+    # Owner decision 02.10.2026: an indexer failure can vanish from the health
+    # list before missingarr reads it, so an empty list is no proof. With
+    # retry_hours 0 it is searched again after "Search again if still missing".
+    run = db.history.start_run(inst["id"], "Radarr", "search_missing")
+    db.history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", "no_hit", no_results=True)
+    db.history.record_checked(run, inst["id"], "B", 2, "movie", "mov:2", "no_hit")     # filter rejected all
+    assert blocked(inst, ["mov:1", "mov:2"], no_results_release_days=7) == {"mov:1", "mov:2"}
+    age(6)
+    assert blocked(inst, ["mov:1", "mov:2"], no_results_release_days=7) == {"mov:1", "mov:2"}
+    age(8)
+    assert blocked(inst, ["mov:1", "mov:2"], no_results_release_days=7) == {"mov:2"}   # no_clean_hit stays
+    assert blocked(inst, ["mov:1", "mov:2"], no_results_release_days=10) == {"mov:1", "mov:2"}
+    assert blocked(inst, ["mov:1", "mov:2"], grab_release_days=7) == {"mov:1", "mov:2"}  # not a grab
+    assert blocked(inst, ["mov:1", "mov:2"]) == {"mov:1", "mov:2"}                     # not asked for: blocks
+    db.searched.add(inst["id"], "mov:1", "A", "movie")                                  # searched again
+    assert blocked(inst, ["mov:1"], no_results_release_days=7) == {"mov:1"}
+
+
+def test_an_empty_search_never_blocks_longer_than_the_retry_window(inst):
+    # Unlike a grab (a download may run) nothing argues for holding an empty
+    # search past Retry: whichever ends first releases it.
+    run = db.history.start_run(inst["id"], "Radarr", "search_missing")
+    db.history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", "no_hit", no_results=True)
+    age(2)
+    assert blocked(inst, ["mov:1"], retry_hours=24, no_results_release_days=7) == set()
+    assert blocked(inst, ["mov:1"], retry_hours=72, no_results_release_days=7) == {"mov:1"}
+    age(8)
+    assert blocked(inst, ["mov:1"], retry_hours=720, no_results_release_days=7) == set()
+
+
+def test_a_profile_change_releases_an_empty_search_early(inst):
+    run = db.history.start_run(inst["id"], "Radarr", "search_missing")
+    db.history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", "no_hit", no_results=True,
+                              profile_fingerprint="aaaa")
+    assert blocked(inst, ["mov:1"], {"mov:1": ("aaaa", "aaaa")}, no_results_release_days=7) == {"mov:1"}
+    assert blocked(inst, ["mov:1"], {"mov:1": ("bbbb", "aaaa")}, no_results_release_days=7) == set()
