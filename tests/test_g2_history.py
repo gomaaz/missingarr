@@ -183,6 +183,23 @@ def test_run_with_only_settled_items_finishes_without_waiting(db_path):
     assert sql("SELECT status, verified_count FROM search_history WHERE id=?", (run,)) == [("success", 2)]
 
 
+def test_an_error_run_keeps_its_verdict_and_counts_settled_items(db_path):
+    inst = make_instance()
+    run = history.start_run(inst["id"], "Radarr", "search_missing")
+    history.record_checked(run, inst["id"], "A", 1, "movie", "mov:1", ITEM_GRABBED)
+    history.record_checked(run, inst["id"], "B", 2, "movie", "mov:2", ITEM_NO_HIT)
+    history.finish_run(run, 3, 3, "error", "Stopped: could not store C")
+    assert sql("SELECT status, verified_count, error_message FROM search_history WHERE id=?",
+               (run,)) == [("error", 2, "Stopped: could not store C")]
+
+
+def test_an_error_run_without_items_counts_nothing(db_path):
+    inst = make_instance()
+    run = history.start_run(inst["id"], "Radarr", "search_missing")
+    history.finish_run(run, 1, 0, "error", "boom")
+    assert sql("SELECT status, verified_count FROM search_history WHERE id=?", (run,)) == [("error", 0)]
+
+
 def test_run_with_a_submitted_command_still_waits(db_path):
     inst = make_instance()
     run = history.start_run(inst["id"], "Radarr", "search_missing")

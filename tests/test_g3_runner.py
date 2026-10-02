@@ -1849,6 +1849,30 @@ def test_a_store_failure_stops_the_run(db_path, monkeypatch):
     assert "database is locked" in run["error_message"]
 
 
+def test_a_store_failure_keeps_the_titles_settled_before_it(db_path, monkeypatch):
+    # Title 1 is stored as no_hit, title 2 fails to store: the run ends as
+    # 'error', but the settled title still counts as verified (run and card).
+    inst = make_instance(checked_search="active")
+    films = three_movies()
+    agent = agent_for(inst, missing=films, movies=films)
+    real = db.history.record_checked
+    calls = []
+
+    def second_breaks(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise RuntimeError("database is locked")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(db.history, "record_checked", second_breaks)
+    SearchMissingSkill().execute(agent)
+    run = last_run()
+    assert run["status"] == "error"
+    assert "database is locked" in run["error_message"]
+    assert (run["triggered_count"], run["verified_count"]) == (2, 1)
+    assert agent.state["last_verified"] == 1
+
+
 # ── Sonarr ───────────────────────────────────────────────────────────────────
 
 GUEST_SERIES = {"id": 10, "title": "The Guest", "year": 2018, "alternateTitles": [], "qualityProfileId": 1}

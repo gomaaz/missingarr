@@ -52,18 +52,23 @@ def finish_run(
     whose items are all settled already (the checked search writes grabbed /
     no_hit, nothing to ask *arr about) gets its verdict right here, and so
     does a run that sent nothing (or that threw).
+
+    The verified number does not depend on the verdict: a checked search that
+    settled titles (grabbed / no_hit) before a later title failed to store
+    ends as 'error', yet those titles are done and count. verify_commands
+    never touches an 'error' run, so this is the only place to count them.
     """
     verified_count = None
     with get_db() as conn:
-        if status == "success":
-            statuses = [
-                r[0] for r in conn.execute(
-                    "SELECT command_status FROM search_history_items WHERE run_id=?", (run_id,)
-                )
-            ]
-            if statuses:
+        statuses = [
+            r[0] for r in conn.execute(
+                "SELECT command_status FROM search_history_items WHERE run_id=?", (run_id,)
+            )
+        ]
+        if statuses:
+            verified_count = count_verified(statuses)
+            if status == "success":
                 status = aggregate_run_status(statuses)
-                verified_count = count_verified(statuses)
 
         conn.execute(
             """
