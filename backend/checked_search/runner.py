@@ -39,6 +39,13 @@ download stuck in the queue (import blocked) cost an indexer search on
 every run until someone cleared it. A queue that cannot be read there
 searches nothing either: an error, not cached, the rate slot goes back.
 
+Before that, an active run reads the whole queue once, before the skill
+collects its titles (queued_before_collecting): titles with a download there
+are left out before "per run" is counted. Skipped only in the runner, such a
+title took a place on every run, and with a fixed order (oldest first, per
+run 1) the next title never came up. A queue that cannot be read then leaves
+nothing out: the check per title above still keeps the title from a search.
+
 A POST that failed was either refused (never sent, or 3xx/4xx: nothing was
 grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
@@ -284,6 +291,54 @@ def indexer_pause(agent) -> str:
             "the indexers the search command asks. Nothing was searched or remembered; set both switches alike.")
 
 
+def _queue_key(arr_type: str) -> str:
+    """The field of a queue entry naming its movie (Radarr) or episode (Sonarr)."""
+    return "movieId" if arr_type == "radarr" else "episodeId"
+
+
+def _downloading(item, key: str) -> int | None:
+    """The movie or episode id a queue entry is a download of, else None:
+    held-back releases, failed downloads and entries without a title."""
+    if (not isinstance(item, dict) or item.get("status") in QUEUE_HELD_BACK
+            or item.get("trackedDownloadState") in QUEUE_FAILED):
+        return None
+    return _int(item.get(key))
+
+
+def queued_before_collecting(skill_name: str, agent, mode: str, arr_type: str) -> tuple[frozenset, str]:
+    """(ids, note). Active runs: the movie (Radarr) or episode ids (Sonarr)
+    with a download in the *arr queue, read once (GET /queue/details without
+    a filter, one local call) before the skill collects its titles. The
+    skills leave them out before counting "per run": the runner would skip
+    them unsearched, and an oldest-first run with per run 1 would pick the
+    same stuck title on every run and never reach the next one. Other modes
+    read nothing (the dry run grabs nothing and checks a queued title like
+    any other, once per round). A queue that cannot be read leaves nothing
+    out; the note says so (warned in the activity log), and the runner reads
+    each title's queue before its search anyway."""
+    if mode != MODE_ACTIVE:
+        return frozenset(), ""
+    try:
+        queue = agent.http_get(QUEUE_PATH)
+        if not isinstance(queue, list):
+            raise ValueError("the queue was no list")
+    except Exception as exc:
+        note = (f"could not read the *arr queue before collecting the titles: {exc} — "
+                f"each title's queue is read before its search")
+        agent.log("warn", skill_name, note)
+        return frozenset(), note
+    key = _queue_key(arr_type)
+    return frozenset(i for i in (_downloading(item, key) for item in queue) if i is not None), ""
+
+
+def queue_note(left_out: int) -> list[str]:
+    """The run's note on titles queued_before_collecting left out."""
+    if not left_out:
+        return []
+    return [f"{left_out} title(s) with a download in the *arr queue left out — not searched, "
+            f"the next run checks again"]
+
+
 def _named_indexers(message: str) -> list[str] | None:
     """The indexer names a health message lists after its colon ("Indexers
     unavailable due to failures: A, B"); None when it names none ("All
@@ -367,17 +422,13 @@ class _TitleCheck:
         """'' or the name of a download of the title in the *arr queue
         (held-back releases and failed downloads aside). Raises when the
         queue cannot be read."""
-        if self.arr_type == "radarr":
-            key, params = "movieId", {"movieId": task.arr_id}
-        else:
-            key, params = "episodeId", {"episodeIds": [task.arr_id]}
+        params = {"movieId": task.arr_id} if self.arr_type == "radarr" else {"episodeIds": [task.arr_id]}
         queue = self.agent.http_get(QUEUE_PATH, params=params)
         if not isinstance(queue, list):
             raise ValueError("the queue was no list")
+        key = _queue_key(self.arr_type)
         for item in queue:
-            if (isinstance(item, dict) and item.get(key) == task.arr_id
-                    and item.get("status") not in QUEUE_HELD_BACK
-                    and item.get("trackedDownloadState") not in QUEUE_FAILED):
+            if _downloading(item, key) == task.arr_id:
                 return str(item.get("title") or "unnamed download")
         return ""
 
@@ -540,7 +591,9 @@ class _TitleCheck:
             # A title with a download in the queue is never grabbed (see
             # changed_meanwhile), so it is not searched either: the search
             # would cost the indexers on every run until the download leaves
-            # the queue. Nothing searched: the rate slot goes back.
+            # the queue. Nothing searched: the rate slot goes back. The skill
+            # left out what was queued when it collected the titles; this
+            # catches a download that came after.
             try:
                 download = self.queued(task)
             except Exception as exc:

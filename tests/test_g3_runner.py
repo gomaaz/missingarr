@@ -1,6 +1,7 @@
 import copy
 import itertools
 import json
+import random
 import sqlite3
 
 import pytest
@@ -1095,10 +1096,13 @@ def assert_not_searched(agent, reason):
 def test_a_title_already_downloading_is_not_searched(db_path, arr):
     # *arr approves a release over a queued one when it is an upgrade of it,
     # but the runner never adds a second download: a search could only end
-    # as "changed meanwhile" and would cost the indexers for nothing.
+    # as "changed meanwhile" and would cost the indexers for nothing. The
+    # run read the queue before collecting; the title got into it after
+    # that (RSS while the run collected or checked other titles).
     inst = checked_instance(arr)
     entry = queued(movie_id=1) if arr == "radarr" else queued(episode_id=3)
-    agent = missing_agent(arr, inst, queue=[entry])
+    title_path = "/api/v3/movie/1" if arr == "radarr" else "/api/v3/episode/3"
+    agent = missing_agent(arr, inst, on_get={title_path: enqueue(entry)})
     SearchMissingSkill().execute(agent)
     assert_not_searched(agent, "not searched, the title is in the *arr queue (Grabbed.By.RSS.1080p-GRP)")
     messages = activity_messages()
@@ -1109,8 +1113,8 @@ def test_a_title_already_downloading_is_not_searched(db_path, arr):
 def test_a_download_stuck_in_the_queue_costs_no_indexer_search_on_any_run(db_path):
     # A download *arr cannot import stays in the queue until someone clears
     # it, and the title stays a candidate (no cache entry): every run reads
-    # the queue again, none asks the indexers. Once the queue is clear the
-    # title is searched and grabbed.
+    # the queue again before collecting and leaves the title out, none asks
+    # the indexers. Once the queue is clear the title is searched and grabbed.
     inst = make_instance(checked_search="active")
     stuck = queued(movie_id=1, status="warning", state="importBlocked")
     for _ in range(3):
@@ -1118,10 +1122,135 @@ def test_a_download_stuck_in_the_queue_costs_no_indexer_search_on_any_run(db_pat
         SearchMissingSkill().execute(agent)
         assert [p for p, _ in agent.gets if p == RELEASE] == []
         assert agent.get_rate_used() == 0
+        run = last_run()
+        assert run["status"] == "success"
+        assert "1 title(s) with a download in the *arr queue left out" in run["error_message"]
     cleared = the_thing_agent(inst)
     SearchMissingSkill().execute(cleared)
     assert cleared.posts == [movie_grab("guid-right")]
-    assert [r["outcome"] for r in log_rows()] == ["grabbed"] + ["changed_meanwhile"] * 3
+    assert [r["outcome"] for r in log_rows()] == ["grabbed"]
+
+
+# ── Queue before collecting ─────────────────────────────────────────────────
+# An active run reads the whole queue once before it collects its titles: a
+# title with a download there takes no place of "per run". Otherwise an
+# oldest-first run with per run 1 picked the same stuck title on every run,
+# skipped it unsearched and never reached the next one.
+
+ALIEN = movie(2, "Alien", 1979)       # released before The Thing: first in oldest_first
+ALIEN_OWNED = movie(2, "Alien", 1979, hasFile=True, movieFileId=12,
+                    movieFile={"id": 12, "sceneName": "Alien.1979.720p.BluRay.x264-OLD"})
+
+
+def guest_earlier():
+    """An episode aired a week before guest_episode(): first in oldest_first."""
+    return {**guest_episode(2), "airDateUtc": "2018-10-04T12:00:00Z"}
+
+
+def two_missing(arr, inst, **kwargs):
+    """The first title in oldest_first order is in the queue (Alien, E02);
+    the second (The Thing, E03) is free."""
+    if arr == "radarr":
+        return the_thing_agent(inst, missing=[ALIEN, THE_THING], movies=[ALIEN, THE_THING],
+                               queue=[queued(movie_id=2)], **kwargs)
+    return guest_agent(inst, missing=[guest_earlier(), guest_episode()],
+                       episodes=[guest_earlier(), guest_episode()], queue=[queued(episode_id=2)], **kwargs)
+
+
+def fixed_shuffle(monkeypatch, order):
+    """random.shuffle leaves the list as it is or reverses it."""
+    monkeypatch.setattr(random, "shuffle", (lambda items: items.reverse()) if order == "reversed"
+                        else (lambda items: None))
+
+
+def assert_second_title_grabbed(agent, arr):
+    arr_id = 1 if arr == "radarr" else 3
+    assert [params for p, params in agent.gets if p == RELEASE] == [
+        {"movieId": arr_id} if arr == "radarr" else {"episodeId": arr_id}]
+    assert agent.posts == ([movie_grab("guid-right")] if arr == "radarr" else [episode_grab("g-guest")])
+    assert [(r["arr_id"], r["outcome"]) for r in log_rows()] == [(arr_id, "grabbed")]
+    assert agent.gets.count((QUEUE, {})) == 1
+    assert agent.get_rate_used() == 1
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_a_queued_title_does_not_hold_back_the_next_one(db_path, arr):
+    inst = checked_instance(arr, missing_per_run=1)
+    agent = two_missing(arr, inst)
+    SearchMissingSkill().execute(agent)
+    assert_second_title_grabbed(agent, arr)
+    run = last_run()
+    assert (run["status"], run["triggered_count"]) == ("success", 1)
+    assert "1 title(s) with a download in the *arr queue left out" in run["error_message"]
+    assert any("1 in the *arr queue" in m for m in activity_messages())
+
+
+@pytest.mark.parametrize("order", ["as listed", "reversed"])
+def test_random_order_leaves_queued_titles_out_as_well(db_path, monkeypatch, order):
+    fixed_shuffle(monkeypatch, order)
+    inst = make_instance(checked_search="active", search_order="random", missing_per_run=1)
+    agent = two_missing("radarr", inst)
+    SearchMissingSkill().execute(agent)
+    assert_second_title_grabbed(agent, "radarr")
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+@pytest.mark.parametrize("order", ["as listed", "reversed"])
+def test_a_queued_upgrade_does_not_hold_back_another(db_path, monkeypatch, arr, order):
+    # Upgrades come in random order: reversed, the queued title comes first.
+    fixed_shuffle(monkeypatch, order)
+    inst = checked_instance(arr, search_upgrades_enabled=True, upgrades_per_run=1,
+                            upgrade_source="monitored_items_only" if arr == "radarr" else "wanted_list_only")
+    if arr == "radarr":
+        agent = upgrade_agent(arr, inst, queue=[queued(movie_id=2)])
+        agent.movies[2] = copy.deepcopy(ALIEN_OWNED)
+        grab = movie_grab("g-right")
+    else:
+        agent = upgrade_agent(arr, inst, queue=[queued(episode_id=2)])
+        owned = {**guest_earlier(), "hasFile": True, "episodeFileId": 22}
+        agent.episodes[2] = owned
+        agent.cutoff.append(owned)
+        grab = episode_grab("g-guest")
+    SearchUpgradesSkill().execute(agent)
+    search = {"movieId": 1} if arr == "radarr" else {"episodeId": 3}
+    assert [params for p, params in agent.gets if p == RELEASE] == [search]
+    assert agent.posts == [grab]
+    assert [r["outcome"] for r in log_rows()] == ["grabbed"]
+    assert agent.gets.count((QUEUE, {})) == 1
+    if order == "reversed":
+        assert "1 title(s) with a download in the *arr queue left out" in last_run()["error_message"]
+
+
+def fail_first_queue_read(fake):
+    if [p for p, _ in fake.gets].count(QUEUE) == 1:
+        raise requests.exceptions.ConnectionError("down")
+
+
+def test_an_unreadable_queue_before_collecting_leaves_the_check_to_each_title(db_path):
+    # The run collects as before and says so; the runner reads each title's
+    # queue before its search anyway, so a queued title is still not searched.
+    inst = make_instance(checked_search="active", missing_per_run=1)
+    agent = two_missing("radarr", inst, on_get={QUEUE: fail_first_queue_read})
+    SearchMissingSkill().execute(agent)
+    assert [p for p, _ in agent.gets if p == RELEASE] == []
+    assert [(r["arr_id"], r["outcome"]) for r in log_rows()] == [(2, "changed_meanwhile")]
+    run = last_run()
+    assert run["status"] == "success"
+    assert "could not read the *arr queue before collecting the titles: down" in run["error_message"]
+    assert any(r["level"] == "warn" and "could not read the *arr queue before collecting" in r["message"]
+               for r in db.activity.query(limit=200, include_debug=True))
+
+
+def test_dry_run_reads_no_queue_and_checks_a_queued_title_once_per_round(db_path):
+    # The dry run grabs nothing: a queued title is checked like any other,
+    # once per round, so it holds back no other title either.
+    inst = make_instance(missing_per_run=1)
+    for searched in ({"movieId": 2}, {"movieId": 1}):
+        agent = two_missing("radarr", inst)
+        SearchMissingSkill().execute(agent)
+        assert [p for p, _ in agent.gets if p == QUEUE] == []
+        assert [params for p, params in agent.gets if p == RELEASE] == [searched]
+    assert [r["outcome"] for r in log_rows()] == ["would_grab", "no_results"]
 
 
 @pytest.mark.parametrize("arr,reads", [
@@ -1427,26 +1556,28 @@ def test_abort_after_the_last_parse_grabs_nothing(db_path):
     assert log_rows() == []
 
 
-def abort_on_second_read(path):
+def abort_on_read(path, number):
     """The instance is switched off while the runner reads the path again
-    right before the grab (the first read was before the search)."""
+    right before the grab (the queue was read before collecting and before
+    the search, the title before the search)."""
     def hook(fake):
-        if [p for p, _ in fake.gets].count(path) == 2:
+        if [p for p, _ in fake.gets].count(path) == number:
             fake.request_abort()
     return hook
 
 
-@pytest.mark.parametrize("arr,path", [
-    ("radarr", QUEUE), ("radarr", "/api/v3/movie/1"),
-    ("sonarr", QUEUE), ("sonarr", "/api/v3/episode/3"),
+@pytest.mark.parametrize("arr,path,reads", [
+    ("radarr", QUEUE, 3), ("radarr", "/api/v3/movie/1", 2),
+    ("sonarr", QUEUE, 3), ("sonarr", "/api/v3/episode/3", 2),
 ], ids=["radarr queue", "radarr movie", "sonarr queue", "sonarr episode"])
-def test_abort_while_reading_the_title_again_grabs_nothing(db_path, arr, path):
+def test_abort_while_reading_the_title_again_grabs_nothing(db_path, arr, path, reads):
     # The reads before the grab wait up to two HTTP timeouts: an abort that
     # arrives meanwhile must still stop the grab.
     inst = checked_instance(arr)
-    agent = missing_agent(arr, inst, on_get={path: abort_on_second_read(path)})
+    agent = missing_agent(arr, inst, on_get={path: abort_on_read(path, reads)})
     SearchMissingSkill().execute(agent)
-    assert [p for p, _ in agent.gets].count(path) == 2
+    assert [p for p, _ in agent.gets if p == PARSE] != []          # aborted after the search
+    assert [p for p, _ in agent.gets].count(path) == reads
     assert agent.posts == []
     assert log_rows() == []
     assert sql("SELECT COUNT(*) FROM search_history_items")[0][0] == 0

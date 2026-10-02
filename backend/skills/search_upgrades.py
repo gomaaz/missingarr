@@ -3,7 +3,9 @@ import random
 import time
 
 from backend import db
-from backend.checked_search.runner import CheckedTask, indexer_pause, run_checked
+from backend.checked_search.runner import (
+    CheckedTask, indexer_pause, queue_note, queued_before_collecting, run_checked,
+)
 from backend.checked_search.settings import CheckedSearchSettings
 from backend.skills.profiles import ProfileState
 from backend.skills.profiles import refresh as refresh_profiles
@@ -59,13 +61,16 @@ class SearchUpgradesSkill(BaseSkill):
                     agent.log("warn", self.name, pause)
                     finish_search_run(self.name, agent, run_id, 0, SubmitOutcome(paused=pause))
                     return
+            # Active checked search: titles with a download in the *arr queue
+            # take no place of "per run" (the runner would skip them unsearched).
+            queued, unread_queue = queued_before_collecting(self.name, agent, checked, cfg["type"])
             # Dry run: once per round, a force run as well.
             round_keys = (
                 db.checked_search_log.dry_run_keys(cfg["id"], int(cfg.get("dry_run_round") or 0))
                 if checked == "dry_run" else None
             )
             candidates, failures, notes, requested = self._collect_candidates(
-                agent, cfg, per_run, force, checked != "off", round_keys, profiles)
+                agent, cfg, per_run, force, checked != "off", round_keys, profiles, queued)
             for failure in failures:
                 agent.log("warn", self.name, f"Could not load {failure}")
             if failures and len(failures) == requested:
@@ -74,7 +79,7 @@ class SearchUpgradesSkill(BaseSkill):
                 db.history.finish_run(run_id, 0, 0, "error", "; ".join(failures))
                 return
 
-            notes = failures + notes
+            notes = failures + ([unread_queue] if unread_queue else []) + notes
             wanted_count = len(candidates)
             if not candidates:
                 agent.log("info", self.name, "No upgrade candidates found")
@@ -180,8 +185,10 @@ class SearchUpgradesSkill(BaseSkill):
 
     # ── Candidates ───────────────────────────────────────────────────────────
 
-    def _collect_candidates(self, agent, cfg, per_run, force, checked=False, round_keys=None, profiles=None):
-        """Returns (candidates, failed sources, notes, number of sources asked)."""
+    def _collect_candidates(self, agent, cfg, per_run, force, checked=False, round_keys=None, profiles=None,
+                            queued=frozenset()):
+        """Returns (candidates, failed sources, notes, number of sources asked).
+        queued: see _keep_uncached; the notes say how many were left out."""
         if cfg["type"] == "radarr":
             sources = self.SOURCES.get(cfg.get("upgrade_source", "monitored_items_only"), ("monitored",))
         else:
@@ -191,21 +198,24 @@ class SearchUpgradesSkill(BaseSkill):
         seen: set = set()
         failures: list = []
         notes: list = []
+        left_out: set = set()
+        queue = {"queued": queued, "left_out": left_out}
         for source in sources:
             try:
                 if source == "cutoff":
                     self._collect_cutoff(agent, cfg, per_run, force, found, seen, notes,
-                                         checked, round_keys, profiles)
+                                         checked, round_keys, profiles, **queue)
                 else:
-                    self._collect_monitored(agent, cfg, per_run, force, found, seen, checked, round_keys, profiles)
+                    self._collect_monitored(agent, cfg, per_run, force, found, seen, checked, round_keys, profiles,
+                                            **queue)
             except Exception as exc:
                 failures.append(f"{self.SOURCE_LABELS[source]}: {exc}")
 
         random.shuffle(found)
-        return found[:per_run], failures, notes, len(sources)
+        return found[:per_run], failures, queue_note(len(left_out)) + notes, len(sources)
 
     def _keep_uncached(self, agent, cfg, items, force, found, seen, limit, checked=False, round_keys=None,
-                       profiles=None, wanted_list=False) -> None:
+                       profiles=None, wanted_list=False, queued=frozenset(), left_out=None) -> None:
         """Commands still waiting to be stored count as cached. A cache entry
         blocks only under the current fingerprint of the item's quality
         profile (spec addendum, unless switched off). wanted_list (the cutoff
@@ -223,7 +233,11 @@ class SearchUpgradesSkill(BaseSkill):
         switching the mode releases nothing early. On the command path a
         season also waits while a checked grab of one of its episodes blocks
         (hold key, owner decision 02.10.2026): SeasonSearch would search
-        the grabbed episode again."""
+        the grabbed episode again.
+
+        queued (active checked search, force run too): ids of the movies or
+        episodes with a download in the *arr queue. They do not count toward
+        the limit and are not taken; their ids go to left_out."""
         profiles = profiles or ProfileState()
         arr_type = cfg["type"]
         keyed = [(self._cache_key(arr_type, item, checked), item) for item in items]
@@ -253,10 +267,15 @@ class SearchUpgradesSkill(BaseSkill):
                 return
             if key in hits or other_key in hits or held_key in hits or key in seen:
                 continue
+            if item["id"] in queued:
+                if left_out is not None:
+                    left_out.add(item["id"])
+                continue
             seen.add(key)
             found.append(item)
 
-    def _collect_cutoff(self, agent, cfg, per_run, force, found, seen, notes, checked=False, round_keys=None, profiles=None) -> None:
+    def _collect_cutoff(self, agent, cfg, per_run, force, found, seen, notes, checked=False, round_keys=None,
+                        profiles=None, queued=frozenset(), left_out=None) -> None:
         arr_type = cfg["type"]
         limit = len(found) + per_run
         pool = max(per_run * 5, 50)
@@ -282,7 +301,7 @@ class SearchUpgradesSkill(BaseSkill):
             items = [item for item in items if item is not None]
             random.shuffle(items)
             self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
-                                wanted_list=True)
+                                wanted_list=True, queued=queued, left_out=left_out)
 
     @staticmethod
     def _cutoff_item(arr_type: str, record: dict):
@@ -308,7 +327,8 @@ class SearchUpgradesSkill(BaseSkill):
         return {"id": record["id"], "label": label,
                 "series_id": record.get("seriesId"), "season_number": season_number}
 
-    def _collect_monitored(self, agent, cfg, per_run, force, found, seen, checked=False, round_keys=None, profiles=None) -> None:
+    def _collect_monitored(self, agent, cfg, per_run, force, found, seen, checked=False, round_keys=None,
+                           profiles=None, queued=frozenset(), left_out=None) -> None:
         limit = len(found) + per_run
         movies = agent.http_get(MOVIES_PATH, params={"monitored": "true"})
         items = []
@@ -322,4 +342,5 @@ class SearchUpgradesSkill(BaseSkill):
             items.append({"id": movie["id"], "label": f"{title} ({year})" if year else title,
                           "qualityProfileId": movie.get("qualityProfileId")})
         random.shuffle(items)
-        self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles)
+        self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
+                            queued=queued, left_out=left_out)
