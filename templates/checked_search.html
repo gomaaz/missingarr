@@ -10,7 +10,8 @@ var CHECKED_OUTCOMES = {
     no_results: ['badge-unknown', 'no results'],
     error: ['badge-offline', 'error'],
     grab_failed: ['badge-offline', 'grab failed'],
-    grab_uncertain: ['badge-offline', 'grab uncertain']
+    grab_uncertain: ['badge-offline', 'grab uncertain'],
+    changed_meanwhile: ['badge-unknown', 'changed meanwhile']
 };
 
 function checkedSearchPage() {
@@ -161,6 +162,7 @@ function checkedSearchPage() {
         <option value="error">Error</option>
         <option value="grab_failed">Grab failed</option>
         <option value="grab_uncertain">Grab uncertain</option>
+        <option value="changed_meanwhile">Changed meanwhile</option>
     </select>
     <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.35rem;">
         <input type="checkbox" x-model="onlyDifferences" @change="reload()"> only differences

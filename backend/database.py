@@ -172,7 +172,7 @@ _SCHEMA = """
                 created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now','localtime')),
                 outcome       TEXT NOT NULL CHECK(outcome IN ('grabbed','would_grab','no_clean_hit',
                                                               'no_results','error','grab_failed',
-                                                              'grab_uncertain')),
+                                                              'grab_uncertain','changed_meanwhile')),
                 arr_pick      TEXT,
                 pick          TEXT,
                 pick_indexer  TEXT,

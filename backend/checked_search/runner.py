@@ -18,6 +18,20 @@ series and episodes, plus quality and languages exactly as GET /release
 reported them): a search for another title in between cannot redirect it.
 A release GET /release did not map to this very title is never grabbed.
 
+*arr checks its queue and the title's file only while it answers GET
+/release; POST /release grabs without checking again. The /parse calls in
+between take a while, and RSS, another search or an import may get the
+title meanwhile. So right before the grab the runner reads the queue
+(GET /queue/details for the movie or episode) and then the movie or episode
+again. A download of the title in the queue (held-back and failed ones
+aside), a file where there was none, a file gone or another file id than
+when the title was loaded: nothing is grabbed, the title ends as "changed
+meanwhile" (log row only: no history item, no cache entry, no failure), and
+the next run decides again. A read that fails grabs nothing either: an
+error, not cached. This narrows the window to the last two reads; a grab
+*arr makes in the second before the POST can still show in the queue too
+late.
+
 A POST that failed was either refused (never sent, or 3xx/4xx: nothing was
 grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
@@ -75,8 +89,20 @@ OUTCOME_NO_RESULTS = "no_results"
 OUTCOME_ERROR = "error"
 OUTCOME_GRAB_FAILED = "grab_failed"
 OUTCOME_GRAB_UNCERTAIN = "grab_uncertain"
+# Queue or file of the title changed between the release search and the
+# grab: nothing grabbed, nothing remembered, no failure.
+OUTCOME_CHANGED = "changed_meanwhile"
 
 RELEASE_PATH = "/api/v3/release"
+# The queue plus the releases *arr holds back, filtered by movie (Radarr,
+# movieId) or episodes (Sonarr, episodeIds; one entry per episode). Entries
+# *arr cannot assign to a title are not in it.
+QUEUE_PATH = "/api/v3/queue/details"
+# Held-back releases (delay profile, download client unavailable, fallback)
+# are no download yet; *arr drops them itself once the title is grabbed.
+QUEUE_HELD_BACK = ("delay", "downloadClientUnavailable", "fallback")
+# A failed download brings no file (QueueSpecification skips failedPending too).
+QUEUE_FAILED = ("failedPending", "failed")
 PARSE_PATH = "/api/v3/parse"
 INDEXER_PATH = "/api/v3/indexer"
 HEALTH_PATH = "/api/v3/health"
@@ -114,6 +140,7 @@ class CheckedRunOutcome(SubmitOutcome):
     would_grab: int = 0
     grabbed: int = 0
     no_hit: int = 0           # no clean hit or no results (active)
+    skipped: int = 0          # changed in *arr meanwhile, not grabbed (active)
     budget_exhausted: bool = False
     notes: list = field(default_factory=list)
 
@@ -269,6 +296,19 @@ def _asked(indexer: dict, title_tags) -> bool:
     return any(tag in title_tags for tag in own)
 
 
+def _file_state(arr_type: str, resource) -> tuple[bool, int | None]:
+    """(has a file, its id) of a movie (Radarr) or episode (Sonarr) resource."""
+    if not isinstance(resource, dict):
+        raise ValueError("the answer was no object")
+    if arr_type == "radarr":
+        movie_file = resource.get("movieFile")
+        file_id = _int(resource.get("movieFileId")) or (
+            _int(movie_file.get("id")) if isinstance(movie_file, dict) else None)
+    else:
+        file_id = _int(resource.get("episodeFileId"))
+    return resource.get("hasFile") is True, file_id or None
+
+
 def _candidate(release: _Release, verdict: str, reasons=(), notes=(), chosen=False, arr_choice=False) -> dict:
     return {
         "title": release.title, "indexer": release.indexer, "score": release.score, "size": release.size,
@@ -298,17 +338,51 @@ class _TitleCheck:
 
     # ── *arr calls ───────────────────────────────────────────────────────
 
+    def title_path(self, task: CheckedTask) -> str:
+        kind = "movie" if self.arr_type == "radarr" else "episode"
+        return f"/api/v3/{kind}/{task.arr_id}"
+
     def load(self, task: CheckedTask):
         """(title data for the rules, quality profile id and tags of the
-        loaded movie or series)."""
+        loaded movie or series, file state of the movie or episode)."""
         if self.arr_type == "radarr":
-            movie = self.agent.http_get(f"/api/v3/movie/{task.arr_id}")
-            return radarr_rules.movie_from_resource(movie), movie.get("qualityProfileId"), movie.get("tags")
-        episode = self.agent.http_get(f"/api/v3/episode/{task.arr_id}")
+            movie = self.agent.http_get(self.title_path(task))
+            return (radarr_rules.movie_from_resource(movie), movie.get("qualityProfileId"), movie.get("tags"),
+                    _file_state(self.arr_type, movie))
+        episode = self.agent.http_get(self.title_path(task))
         series_id = task.series_id or episode.get("seriesId")
         series = self.agent.http_get(f"/api/v3/series/{series_id}")
         return (sonarr_rules.episode_from_resources(episode, series), series.get("qualityProfileId"),
-                series.get("tags"))
+                series.get("tags"), _file_state(self.arr_type, episode))
+
+    def changed_meanwhile(self, task: CheckedTask, loaded_file: tuple) -> str:
+        """'' when the title is as it was loaded, else what changed. *arr
+        checked queue and file during GET /release; POST /release checks
+        neither again, so a grab by RSS or another search, or an import, in
+        the meantime would be doubled. Queue first: an import takes the
+        download out of the queue only after the file is in place, so one of
+        the two reads sees it. Raises when either cannot be read."""
+        if self.arr_type == "radarr":
+            key, params = "movieId", {"movieId": task.arr_id}
+        else:
+            key, params = "episodeId", {"episodeIds": [task.arr_id]}
+        queue = self.agent.http_get(QUEUE_PATH, params=params)
+        if not isinstance(queue, list):
+            raise ValueError("the queue was no list")
+        for item in queue:
+            if (isinstance(item, dict) and item.get(key) == task.arr_id
+                    and item.get("status") not in QUEUE_HELD_BACK
+                    and item.get("trackedDownloadState") not in QUEUE_FAILED):
+                return f"in the *arr queue now ({item.get('title') or 'unnamed download'})"
+        has_file, file_id = _file_state(self.arr_type, self.agent.http_get(self.title_path(task)))
+        had_file, loaded_id = loaded_file
+        if has_file and not had_file:
+            return "has a file now"
+        if had_file and not has_file:
+            return "its file is gone"
+        if file_id != loaded_id:
+            return "its file changed"
+        return ""
 
     def fingerprint(self, task: CheckedTask, profile_id) -> str | None:
         """The profile fingerprint the title is checked and stored under: from
@@ -429,7 +503,7 @@ class _TitleCheck:
         """Raises _Stopped when an abort arrives after the search, before a
         /parse call or before the grab."""
         try:
-            info, profile_id, tags = self.load(task)
+            info, profile_id, tags, loaded_file = self.load(task)
         except Exception as exc:
             error = f"could not load the title: {exc}"
             # A failed item (no cache entry): a run with a grab next to it ends
@@ -499,6 +573,17 @@ class _TitleCheck:
         if self.mode == MODE_DRY_RUN:
             return _Result(OUTCOME_WOULD_GRAB, "", entry(OUTCOME_WOULD_GRAB, **common), None)
         self.stop_check()
+        try:
+            changed = self.changed_meanwhile(task, loaded_file)
+        except Exception as exc:
+            # In doubt, no grab: a failed item without a cache entry, like
+            # any other read that failed.
+            error = f"could not read the title again before the grab: {exc}"
+            return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
+        if changed:
+            # No history item, no cache entry: the next run decides again.
+            reason = f"not grabbed, the title changed in *arr during the check: {changed}"
+            return _Result(OUTCOME_CHANGED, reason, entry(OUTCOME_CHANGED, error_message=reason, **common), None)
         try:
             self.grab(task, pick)
         except Exception as exc:
@@ -589,9 +674,15 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
                   f"Dry run: {outcome.checked} title(s) checked, {outcome.would_grab} would grab")
     else:
         outcome.triggered = outcome.grabbed + outcome.no_hit
+        # Skipped titles ended without an error: they count as handled, not failed.
+        outcome.handled = outcome.skipped
+        if outcome.skipped:
+            outcome.notes.append(f"{outcome.skipped} title(s) skipped — changed in *arr during the check, "
+                                 f"the next run decides again")
         agent.log("info", skill_name,
                   f"Checked search: {outcome.grabbed} grabbed, {outcome.no_hit} without a clean hit, "
-                  f"{len(outcome.errors)} failed")
+                  f"{len(outcome.errors)} failed"
+                  + (f", {outcome.skipped} skipped (changed meanwhile)" if outcome.skipped else ""))
     return outcome
 
 
@@ -616,6 +707,8 @@ def _count(outcome: CheckedRunOutcome, mode: str, result: str, task: CheckedTask
         outcome.would_grab += 1
     elif result == OUTCOME_GRABBED:
         outcome.grabbed += 1
+    elif result == OUTCOME_CHANGED:
+        outcome.skipped += 1
     elif mode == MODE_ACTIVE:
         outcome.no_hit += 1
 
@@ -631,6 +724,8 @@ def _log_title(agent, skill_name, mode, task, result, entry, error) -> None:
                                       f"the title stays blocked: {error}")
     elif result == OUTCOME_ERROR:
         agent.log("warn", skill_name, f"Checked search for {task.title} failed: {error}")
+    elif result == OUTCOME_CHANGED:
+        agent.log("info", skill_name, f"{task.title}: {pick} {error} — the next run decides again")
     elif result == OUTCOME_WOULD_GRAB:
         agent.log("debug", skill_name, f"Dry run — {task.title}: would grab {pick} (*arr: {entry.get('arr_pick')})")
     elif result == OUTCOME_NO_CLEAN_HIT:

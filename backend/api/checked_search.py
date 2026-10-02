@@ -9,7 +9,8 @@ from backend.checked_search.settings import CheckedSearchSettings
 router = APIRouter()
 
 Mode = Literal["dry_run", "active"]
-Outcome = Literal["grabbed", "would_grab", "no_clean_hit", "no_results", "error", "grab_failed", "grab_uncertain"]
+Outcome = Literal["grabbed", "would_grab", "no_clean_hit", "no_results", "error", "grab_failed", "grab_uncertain",
+                  "changed_meanwhile"]
 
 
 def _filters(instance_id, mode, outcome, q, only_differences, current_round) -> dict:

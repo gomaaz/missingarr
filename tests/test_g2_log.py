@@ -57,6 +57,13 @@ def test_insert_and_query_round_trip(db_path):
     assert len(row["created_at"]) == 23   # local time with milliseconds
 
 
+def test_a_title_changed_meanwhile_is_logged(db_path):
+    inst = make_instance()
+    log.insert(entry(inst, "Skipped", outcome="changed_meanwhile", mode="active", arr_pick="R1",
+                     pick={"title": "R1"}, error_message="not grabbed, the title changed in *arr during the check"))
+    assert [r["outcome"] for r in log.query(outcome="changed_meanwhile")] == ["changed_meanwhile"]
+
+
 def test_filters_and_count(db_path):
     radarr, sonarr = make_instance(), make_instance("Sonarr", "sonarr")
     log.insert(entry(radarr, "Same", outcome="would_grab", arr_pick="R1", pick={"title": "R1"}))

@@ -13,7 +13,8 @@ from typing import Iterator, Optional
 from backend.database import get_connection, get_db
 
 MODES = ("dry_run", "active")
-OUTCOMES = ("grabbed", "would_grab", "no_clean_hit", "no_results", "error", "grab_failed", "grab_uncertain")
+OUTCOMES = ("grabbed", "would_grab", "no_clean_hit", "no_results", "error", "grab_failed", "grab_uncertain",
+            "changed_meanwhile")
 
 CSV_HEADER = ["time", "instance", "mode", "title", "outcome", "release", "indexer", "score", "size",
               "quality", "verdict", "reasons", "notes", "chosen", "arr_would_grab"]

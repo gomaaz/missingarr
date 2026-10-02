@@ -20,6 +20,7 @@ RELEASE = "/api/v3/release"
 PARSE = "/api/v3/parse"
 COMMAND = "/api/v3/command"
 HEALTH = "/api/v3/health"
+QUEUE = "/api/v3/queue/details"
 QUALITY_PROFILES = "/api/v3/qualityprofile"
 QUALITY_DEFINITIONS = "/api/v3/qualitydefinition"
 INDEXER_CONFIG = "/api/v3/config/indexer"
@@ -138,8 +139,11 @@ class FakeArr(BaseAgent):
     def __init__(self, config, missing=(), cutoff=(), movies=(), episodes=(), series=(), releases=None,
                  parses=None, get_errors=None, post_error=None, abort_after_parses=None, abort_on_release=False,
                  profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None,
-                 health=None, quality_definitions=None, indexer_config=None):
+                 health=None, quality_definitions=None, indexer_config=None, queue=None):
         super().__init__(config)
+        # GET /queue/details: entries as *arr reports them; anything but a
+        # list is answered as it is.
+        self.queue = [] if queue is None else queue
         self.missing, self.cutoff = list(missing), list(cutoff)
         self.movies = {m["id"]: m for m in movies}
         self.episodes = {e["id"]: e for e in episodes}
@@ -206,6 +210,16 @@ class FakeArr(BaseAgent):
             return copy.deepcopy(self.indexers)
         if path == HEALTH:
             return copy.deepcopy(self.health)
+        if path == QUEUE:
+            # Like upstream: the queue plus the held-back releases, filtered
+            # by movie (Radarr) or episode ids (Sonarr, one entry per episode).
+            if not isinstance(self.queue, list):
+                return copy.deepcopy(self.queue)
+            if "movieId" in params:
+                return [copy.deepcopy(q) for q in self.queue if q.get("movieId") == params["movieId"]]
+            if "episodeIds" in params:
+                return [copy.deepcopy(q) for q in self.queue if q.get("episodeId") in params["episodeIds"]]
+            return copy.deepcopy(self.queue)
         if path == "/api/v3/movie":
             return list(self.movies.values())
         if path.startswith("/api/v3/movie/"):
@@ -891,6 +905,223 @@ def test_an_unsaved_grab_blocks_its_title_while_the_database_refuses(db_path, mo
     assert len([p for p, _ in agent.gets if p == RELEASE]) == 1
     assert len(agent.posts) == 1
     assert len(agent.runtime.unsaved_submissions) == 1
+
+
+# ── Changed meanwhile ────────────────────────────────────────────────────────
+# *arr approved the releases during GET /release; POST /release checks neither
+# its queue nor the file again. Right before the grab the runner reads both.
+
+GUEST_RIGHT = "The.Guest.S01E03.German.1080p.WEB.x264-GRP"
+GUEST_PARSES = {GUEST_RIGHT: {"parsedEpisodeInfo": {"seriesTitle": "The Guest"}, "series": {"id": 10}}}
+OLD_FILE = "The.Thing.1982.720p.BluRay.x264-OLD"
+
+
+def guest_agent(inst, episode=None, upgrade=False, **kwargs):
+    episode = episode or guest_episode()
+    defaults = dict(episodes=[episode], series=[GUEST_SERIES], parses=GUEST_PARSES,
+                    releases={3: [release(GUEST_RIGHT, "g-guest", series_id=10, episode_ids=(3,))]})
+    defaults["cutoff" if upgrade else "missing"] = [episode]
+    defaults.update(kwargs)
+    return agent_for(inst, **defaults)
+
+
+def checked_instance(arr, **fields):
+    if arr == "radarr":
+        return make_instance(checked_search="active", **fields)
+    return make_instance(name="Sonarr", type="sonarr", checked_search="active", **fields)
+
+
+def queued(movie_id=None, episode_id=None, status="downloading", state="downloading"):
+    """An entry of GET /queue/details: Radarr names the movie, Sonarr lists
+    one entry per episode."""
+    entry = {"id": 900, "title": "Grabbed.By.RSS.1080p-GRP", "status": status, "trackedDownloadState": state}
+    if episode_id is None:
+        entry["movieId"] = movie_id
+    else:
+        entry.update(seriesId=10, episodeId=episode_id)
+    return entry
+
+
+def enqueue(entry):
+    """RSS or another search grabs the title while the runner checks it."""
+    def hook(fake):
+        if entry not in fake.queue:
+            fake.queue.append(entry)
+    return hook
+
+
+def import_file(arr, file_id):
+    """*arr imports a file for the title while the runner checks it."""
+    def hook(fake):
+        records, key, name = (fake.movies, 1, "movieFileId") if arr == "radarr" else (fake.episodes, 3, "episodeFileId")
+        records[key] = {**records[key], "hasFile": True, name: file_id}
+    return hook
+
+
+def missing_agent(arr, inst, **kwargs):
+    return the_thing_agent(inst, **kwargs) if arr == "radarr" else guest_agent(inst, **kwargs)
+
+
+def upgrade_agent(arr, inst, **kwargs):
+    if arr == "radarr":
+        owned = movie(1, "The Thing", 1982, hasFile=True, movieFileId=11,
+                      movieFile={"id": 11, "sceneName": OLD_FILE})
+        return agent_for(inst, movies=[owned], releases={1: [release(RIGHT, "g-right")]},
+                         parses={RIGHT: radarr_parse("The Thing", 1982, 1)}, **kwargs)
+    episode = {**guest_episode(), "hasFile": True, "episodeFileId": 21}
+    return guest_agent(inst, episode, upgrade=True, **kwargs)
+
+
+def assert_skipped(agent, reason):
+    assert agent.posts == []
+    assert sql("SELECT COUNT(*) FROM search_history_items")[0][0] == 0   # no failed item
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0         # nothing remembered
+    [row] = log_rows()
+    assert (row["mode"], row["outcome"]) == ("active", "changed_meanwhile")
+    assert reason in row["error_message"]
+    assert row["pick"] is not None
+    run = last_run()
+    assert (run["status"], run["triggered_count"]) == ("success", 0)
+    assert "1 title(s) skipped" in run["error_message"]
+    messages = activity_messages()
+    assert any(reason in m and "next run" in m for m in messages)
+    assert any("1 skipped" in m for m in messages)
+    assert agent.get_rate_used() == 1                                     # the search ran
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_a_grab_by_another_search_during_the_check_is_not_doubled(db_path, arr):
+    inst = checked_instance(arr)
+    entry = queued(movie_id=1) if arr == "radarr" else queued(episode_id=3)
+    agent = missing_agent(arr, inst, on_get={PARSE: enqueue(entry)})
+    SearchMissingSkill().execute(agent)
+    assert_skipped(agent, "in the *arr queue")
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_an_import_during_the_check_is_not_grabbed_again(db_path, arr):
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst, on_get={PARSE: import_file(arr, 12)})
+    SearchMissingSkill().execute(agent)
+    assert_skipped(agent, "has a file now")
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_an_upgrade_whose_file_changed_during_the_check_is_not_grabbed(db_path, arr):
+    inst = checked_instance(arr, search_upgrades_enabled=True, upgrades_per_run=1,
+                            upgrade_source="monitored_items_only" if arr == "radarr" else "wanted_list_only")
+    agent = upgrade_agent(arr, inst, on_get={PARSE: import_file(arr, 99)})
+    SearchUpgradesSkill().execute(agent)
+    assert_skipped(agent, "file changed")
+
+
+@pytest.mark.parametrize("arr", ["radarr", "sonarr"])
+def test_an_unchanged_upgrade_is_grabbed(db_path, arr):
+    inst = checked_instance(arr, search_upgrades_enabled=True, upgrades_per_run=1,
+                            upgrade_source="monitored_items_only" if arr == "radarr" else "wanted_list_only")
+    agent = upgrade_agent(arr, inst)
+    SearchUpgradesSkill().execute(agent)
+    assert agent.posts == ([movie_grab("g-right")] if arr == "radarr" else [episode_grab("g-guest")])
+    assert log_rows()[0]["outcome"] == "grabbed"
+
+
+@pytest.mark.parametrize("arr,reads,grab", [
+    ("radarr", [(QUEUE, {"movieId": 1}), ("/api/v3/movie/1", {})], movie_grab("guid-right")),
+    ("sonarr", [(QUEUE, {"episodeIds": [3]}), ("/api/v3/episode/3", {})], episode_grab("g-guest")),
+])
+def test_the_title_is_read_again_right_before_the_grab(db_path, arr, reads, grab):
+    # Queue first: an import takes the download out of the queue only after
+    # the file is in place, so one of the two reads always sees it.
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst)
+    SearchMissingSkill().execute(agent)
+    last_parse = max(i for i, (path, _) in enumerate(agent.gets) if path == PARSE)
+    assert agent.gets[last_parse + 1:] == reads
+    assert agent.posts == [grab]
+    assert log_rows()[0]["outcome"] == "grabbed"
+    assert last_run()["error_message"] is None
+
+
+def test_a_title_skipped_as_changed_is_decided_again_by_the_next_run(db_path):
+    inst = make_instance(checked_search="active")
+    SearchMissingSkill().execute(the_thing_agent(inst, on_get={PARSE: enqueue(queued(movie_id=1))}))
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert again.posts == [movie_grab("guid-right")]
+    assert [r["outcome"] for r in log_rows()] == ["grabbed", "changed_meanwhile"]
+
+
+def test_a_title_already_downloading_is_not_grabbed_a_second_time(db_path):
+    # *arr approves a release over a queued one when it is an upgrade of it;
+    # the runner does not add a second download while one is in the queue.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, queue=[queued(movie_id=1)])
+    SearchMissingSkill().execute(agent)
+    assert_skipped(agent, "in the *arr queue")
+
+
+@pytest.mark.parametrize("arr,entry", [
+    ("radarr", queued(movie_id=1, status="delay", state=None)),
+    ("radarr", queued(movie_id=1, status="downloadClientUnavailable", state=None)),
+    ("radarr", queued(movie_id=1, status="fallback", state=None)),
+    ("radarr", queued(movie_id=1, status="failed", state="failedPending")),
+    ("radarr", queued(movie_id=1, status="failed", state="failed")),
+    ("radarr", queued(movie_id=2)),
+    ("sonarr", queued(episode_id=4)),
+    ("sonarr", queued(episode_id=3, status="delay", state=None)),
+], ids=["held back", "client unavailable", "fallback", "failed pending", "failed", "other movie",
+        "other episode", "episode held back"])
+def test_queue_entries_without_a_download_for_the_title_do_not_stop_the_grab(db_path, arr, entry):
+    # Held-back releases are no download yet (*arr drops them itself once the
+    # title is grabbed); a failed download brings no file.
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst, on_get={PARSE: enqueue(entry)})
+    SearchMissingSkill().execute(agent)
+    assert agent.posts == ([movie_grab("guid-right")] if arr == "radarr" else [episode_grab("g-guest")])
+
+
+def fail_title_reads(fake):
+    fake.get_errors["/api/v3/movie/"] = requests.exceptions.ReadTimeout("slow")
+    fake.get_errors["/api/v3/episode/"] = requests.exceptions.ReadTimeout("slow")
+
+
+def drop_title(fake):
+    fake.movies[1] = None
+    fake.episodes[3] = None
+
+
+@pytest.mark.parametrize("arr,kwargs", [
+    ("radarr", dict(get_errors={QUEUE: requests.exceptions.ConnectionError("down")})),
+    ("radarr", dict(get_errors={QUEUE: http_error(500)})),
+    ("radarr", dict(queue={"page": 1, "records": []})),
+    ("radarr", dict(on_get={PARSE: fail_title_reads})),
+    ("radarr", dict(on_get={PARSE: drop_title})),
+    ("sonarr", dict(get_errors={QUEUE: http_error(404)})),
+    ("sonarr", dict(on_get={PARSE: fail_title_reads})),
+], ids=["queue down", "queue 5xx", "queue no list", "title down", "title no object", "sonarr queue 404",
+        "sonarr episode down"])
+def test_a_failed_read_before_the_grab_grabs_nothing(db_path, arr, kwargs):
+    # In doubt, no grab: an error like any other failed read, nothing remembered.
+    inst = checked_instance(arr)
+    agent = missing_agent(arr, inst, **kwargs)
+    SearchMissingSkill().execute(agent)
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error" and row["pick"] is not None
+    assert row["error_message"].startswith("could not read the title again before the grab")
+    assert last_run()["status"] == "error"
+    assert agent.get_rate_used() == 1
+
+
+def test_dry_run_reads_nothing_again(db_path):
+    inst = make_instance()
+    agent = the_thing_agent(inst, queue=[queued(movie_id=1)])
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == "would_grab"
+    assert [p for p, _ in agent.gets if p == QUEUE] == []
+    assert len([p for p, _ in agent.gets if p == "/api/v3/movie/1"]) == 1
 
 
 def test_a_grabbed_title_still_missing_is_searched_again_after_the_set_days(db_path):

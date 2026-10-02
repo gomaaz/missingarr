@@ -106,6 +106,7 @@ def test_help_explains_checked_search(client):
     page = client.get("/help").text
     assert "Checked search (pre-filter)" in page
     assert "Checked Search Year Tolerance" in page
+    assert '"changed meanwhile"' in page
 
 
 def test_prefilter_page_lists_counters_and_reset_buttons(client):
@@ -119,6 +120,7 @@ def test_prefilter_page_lists_counters_and_reset_buttons(client):
     assert "current round only" in page
     assert "profile changed" in page and "settings changed" in page
     assert '<option value="grab_uncertain">' in page
+    assert '<option value="changed_meanwhile">' in page and "'changed meanwhile'" in page
     for tag, name, value in script_attributes(page):
         assert "alert(" not in value, (tag, name, value)
     buttons = [a for t, a in tags(page) if t == "button" and "data-name" in a]

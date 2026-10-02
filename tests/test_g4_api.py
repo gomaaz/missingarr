@@ -204,6 +204,7 @@ def test_list_marks_rows_checked_under_other_rule_settings(api):
     rows = {r["title"]: r["settings_changed"] for r in api.get("/api/checked-search").json()}
     assert rows == {"Same settings": True, "Before the change": True, "Unknown": False}
     assert api.get("/api/checked-search", params={"outcome": "grab_uncertain"}).status_code == 200
+    assert api.get("/api/checked-search", params={"outcome": "changed_meanwhile"}).status_code == 200
 
 
 @pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 201}, {"offset": -1}, {"mode": "maybe"},
