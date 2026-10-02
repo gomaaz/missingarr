@@ -31,6 +31,16 @@ passes after such a one is still grabbed: it passed every rule, only its
 rank may be lower, and a /parse failing for one release name every time
 would otherwise keep the title from ever being grabbed.
 
+An indexer failure does not fail GET /release: *arr catches it per indexer
+and answers with what the others found, and it leaves an indexer blocked
+after failures out of the search. Both show only in the health checks
+(IndexerStatusCheck, IndexerLongTermStatusCheck: blocked indexers by name;
+Radarr and Sonarr have no indexer status endpoint). So before a title ends
+without a clean hit or without results, the runner waits until *arr has
+refreshed its health checks and reads them: is an indexer the release search
+asks named there, or can the health or indexer list not be read, the title
+ends as an error (not cached, not counted for the dry-run round).
+
 Secrets: a release from *arr carries downloadUrl (with the indexer's API
 key), infoUrl, magnetUrl and guid. Only the fields below are kept; guid,
 the mapping, quality and languages live in memory for the one POST and are
@@ -69,6 +79,13 @@ OUTCOME_GRAB_UNCERTAIN = "grab_uncertain"
 RELEASE_PATH = "/api/v3/release"
 PARSE_PATH = "/api/v3/parse"
 INDEXER_PATH = "/api/v3/indexer"
+HEALTH_PATH = "/api/v3/health"
+# Health checks naming the indexers *arr blocks after failures (backoff of at
+# least a minute per failure): within six hours of the first failure, and after.
+INDEXER_HEALTH_SOURCES = ("IndexerStatusCheck", "IndexerLongTermStatusCheck")
+# *arr re-evaluates these checks up to 5 s after an indexer status changed
+# (debounced): a failure late in the search shows only after that.
+HEALTH_SETTLE_SECONDS = 6
 
 VERDICT_PASS = "pass"
 VERDICT_REJECT = "reject"
@@ -232,6 +249,14 @@ def indexer_pause(agent) -> str:
             "the indexers the search command asks. Nothing was searched or remembered; set both switches alike.")
 
 
+def _named_indexers(message: str) -> list[str] | None:
+    """The indexer names a health message lists after its colon ("Indexers
+    unavailable due to failures: A, B"); None when it names none ("All
+    indexers are unavailable …", or a translation without ': ')."""
+    _, colon, names = message.partition(": ")
+    return [name.strip() for name in names.split(", ")] if colon else None
+
+
 def _candidate(release: _Release, verdict: str, reasons=(), notes=(), chosen=False, arr_choice=False) -> dict:
     return {
         "title": release.title, "indexer": release.indexer, "score": release.score, "size": release.size,
@@ -329,6 +354,36 @@ class _TitleCheck:
             body["episodeIds"] = [task.arr_id]
         self.agent.http_post(RELEASE_PATH, body, timeout=self.settings.release_timeout_seconds)
 
+    def indexer_failure(self) -> str:
+        """'' when no indexer the release search asks is blocked after
+        failures, else why the miss is no clean one. Waits for *arr to
+        refresh its health checks first (an abort meanwhile ends the run).
+        Unreadable health or indexer list: a failure too (in doubt, do not
+        remember). Only an indexer with interactive search off is surely not
+        asked; tags are not looked at."""
+        if self.agent.wait_or_stop(HEALTH_SETTLE_SECONDS):
+            raise _Stopped()
+        try:
+            health = self.agent.http_get(HEALTH_PATH)
+            if not isinstance(health, list):
+                raise ValueError("the health list was no list")
+            messages = [str(check.get("message") or "") for check in health
+                        if isinstance(check, dict) and check.get("source") in INDEXER_HEALTH_SOURCES]
+            if not messages:
+                return ""
+            indexers = self.agent.http_get(INDEXER_PATH)
+            if not isinstance(indexers, list):
+                raise ValueError("the indexer list was no list")
+        except Exception as exc:
+            return f"could not read the indexer status, the miss may be an indexer failure: {exc}"
+        not_asked = {i.get("name") for i in indexers
+                     if isinstance(i, dict) and i.get("enableInteractiveSearch") is not True}
+        asked = [m for m in messages
+                 if (names := _named_indexers(m)) is None or any(n not in not_asked for n in names)]
+        if not asked:
+            return ""
+        return f"indexer failure during search — *arr reports: {'; '.join(asked)}"
+
     def stop_check(self) -> None:
         """The release search can take minutes: an abort that arrived
         meanwhile ends the run before anything is parsed or grabbed."""
@@ -382,6 +437,9 @@ class _TitleCheck:
                            ITEM_FAILED, searched=not _refused(exc))
         self.stop_check()
         if not releases:
+            failure = self.indexer_failure()
+            if failure:
+                return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure), ITEM_FAILED)
             return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS), ITEM_NO_HIT)
 
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
@@ -417,6 +475,11 @@ class _TitleCheck:
                      f"first: {parse_failures[0]}")
             return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
         if pick is None:
+            # A failing indexer may have had the clean release: not a clean miss.
+            failure = self.indexer_failure()
+            if failure:
+                return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure, **common),
+                               ITEM_FAILED)
             return _Result(OUTCOME_NO_CLEAN_HIT, "", entry(OUTCOME_NO_CLEAN_HIT, **common), ITEM_NO_HIT)
         if self.mode == MODE_DRY_RUN:
             return _Result(OUTCOME_WOULD_GRAB, "", entry(OUTCOME_WOULD_GRAB, **common), None)

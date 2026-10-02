@@ -70,7 +70,7 @@ Welle 2 startet erst, wenn G1 und G2 gemergt sind und die Gesamtsuite auf `feat/
 |---|---|---|
 | Ablauf pro Titel 1–5 (Daten, `/release` mit eigener Wartezeit, nur `approved`, Zuordnung zum Titel, `/parse`, Laden per `POST /release` mit `shouldOverride`, Protokoll) | `runner._TitleCheck.load/search/mapped_here/verdict/grab/run` | G3.1 |
 | Ziel-Festlegung beim Laden (Spec Ablauf 4, Codex K1): Treffer nur, wenn `GET /release` ihn genau diesem Titel zugeordnet hat; POST mit `shouldOverride`, `movieId` bzw. `seriesId`/`episodeIds`, `quality`, `languages` wie gemeldet | `_Release.mapped_*`, `quality_raw`, `languages_raw`, `REASON_TARGET`, `_TitleCheck.grab` | G1.1, G3.1 |
-| Fehler: `/movie`, `/episode`, `/series` → „Fehler“, aktiv Verlaufseintrag `failed` ohne Cache (Codex K4); `/release` → `failed`; `/parse` → Kandidat Urteil `error` mit „parse error“ (nie geladen, keine Regel-Ablehnung), besteht keiner → „Fehler“, `failed` ohne Cache (Codex-Prüfung 0.9.0); `POST` abgelehnt → `grab_failed`, `failed` ohne Cache; `POST` unklar → `grab_uncertain`, `failed` **mit** Cache (Codex K2); kein zweiter Kandidat; Fehler zählen nicht zur Probelauf-Runde („Titel nicht gemerkt“) | `runner._TitleCheck.run`, `_refused`, `run_checked`, `record_checked(cache=)`, `dry_run_keys` (`outcome != 'error'`) | G2.2, G2.3, G3.1 |
+| Fehler: `/movie`, `/episode`, `/series` → „Fehler“, aktiv Verlaufseintrag `failed` ohne Cache (Codex K4); `/release` → `failed`; `/parse` → Kandidat Urteil `error` mit „parse error“ (nie geladen, keine Regel-Ablehnung), besteht keiner → „Fehler“, `failed` ohne Cache (Codex-Prüfung 0.9.0); kein sauberer Treffer oder keine Treffer, während der Health-Check von \*arr einen Indexer der interaktiven Suche als gestört nennt (oder Health/Indexer-Liste nicht lesbar) → „Fehler“, `failed` ohne Cache (Codex-Prüfung 0.9.0, Indexer-Ausfall); `POST` abgelehnt → `grab_failed`, `failed` ohne Cache; `POST` unklar → `grab_uncertain`, `failed` **mit** Cache (Codex K2); kein zweiter Kandidat; Fehler zählen nicht zur Probelauf-Runde („Titel nicht gemerkt“) | `runner._TitleCheck.run`, `_TitleCheck.indexer_failure`, `_refused`, `run_checked`, `record_checked(cache=)`, `dry_run_keys` (`outcome != 'error'`) | G2.2, G2.3, G3.1 |
 | Grab gespeichert gescheitert → im Speicher halten, sperrt den Titel, nächster Lauf speichert nach (Codex K2) | `skills.base.UnsavedCheckedGrab`, `store_unsaved_submissions`, `unsaved_cache_keys` | G3.1 |
 | Zeitbudget ab Start des Laufs (Codex K9), Abbruch zwischen Titeln, nach der Release-Suche, vor jedem `/parse` und vor dem `POST` | `run_checked(clock=…, started=…)`, `_Stopped` | G3.1 |
 | Rate-Limit: eine Aktion pro Titel | `agent.reserve_action()` je Titel; Rückgabe nur, wenn keine Indexer-Suche lief (`load` gescheitert, `/release` nachweislich nicht gesendet oder 3xx/4xx; Codex K5) | G3.1 |
@@ -391,6 +391,9 @@ MODE_DRY_RUN = "dry_run"; MODE_ACTIVE = "active"
 OUTCOME_GRABBED, OUTCOME_WOULD_GRAB, OUTCOME_NO_CLEAN_HIT, OUTCOME_NO_RESULTS, OUTCOME_ERROR, OUTCOME_GRAB_FAILED,
 OUTCOME_GRAB_UNCERTAIN
 RELEASE_PATH = "/api/v3/release"; PARSE_PATH = "/api/v3/parse"; INDEXER_PATH = "/api/v3/indexer"
+HEALTH_PATH = "/api/v3/health"
+INDEXER_HEALTH_SOURCES = ("IndexerStatusCheck", "IndexerLongTermStatusCheck")
+HEALTH_SETTLE_SECONDS = 6     # *arr wertet Health-Checks bis 5 s nach einer Indexer-Störung neu aus
 
 @dataclass(frozen=True)
 class CheckedTask:
@@ -412,6 +415,8 @@ def run_checked(skill_name: str, agent, run_id: int, tasks: list[CheckedTask], m
     # (Runde, Einstellungen), Vorgabe agent.config; profiles: Fingerabdruck aus dem geladenen Titel;
     # check_indexers=False: der Skill hat die Indexer-Liste schon gelesen (vor dem Sammeln, Codex-Runde 3, G4)
 ```
+
+Indexer-Störung (Codex-Prüfung 0.9.0): Endet ein Titel ohne Treffer oder ohne sauberen Treffer, wartet der Runner `HEALTH_SETTLE_SECONDS` (`agent.wait_or_stop`, Abbruch → Lauf endet ohne Zeile) und liest `GET /api/v3/health`. Nennt ein Eintrag mit `source` in `INDEXER_HEALTH_SOURCES` einen Indexer, der nicht sicher ungefragt ist (alles außer Indexern mit `enableInteractiveSearch` aus laut `GET /api/v3/indexer`; Meldung ohne Namen = alle), wird der Titel `error` mit `"indexer failure during search — *arr reports: <meldung>"`; Health oder Indexer-Liste nicht lesbar → `error` mit `"could not read the indexer status, the miss may be an indexer failure: <fehler>"`. Sonst `no_results`/`no_clean_hit` wie bisher.
 
 Aktivitätslog am Laufende wörtlich: `"Dry run: <n> title(s) checked, <m> would grab"` bzw. `"Checked search: <g> grabbed, <h> without a clean hit, <f> failed"`. Zeitbudget-Hinweis am Lauf: `"Time budget of <n> min used up — <k> title(s) left for the next run"`. Aussetzen (warn im Aktivitätslog und Hinweis am Lauf, Laufstatus `success`): `"Checked search paused — indexer <name> (automatic search on, interactive search off): …"` bzw. `"Checked search paused — could not read the indexer list: <fehler>"`.
 
@@ -4735,10 +4740,12 @@ Abnahme G3: `tests/test_g3_*.py` grün (`88 passed`); Gesamtsuite im Worktree `5
 Ablauf pro Titel (`_TitleCheck.run`), genau nach Spec:
 1. Radarr `GET /api/v3/movie/{id}`; Sonarr `GET /api/v3/episode/{id}` und `GET /api/v3/series/{seriesId}`. Fehler → `error`; aktiv Verlaufseintrag `failed` ohne Cache (Codex K4: sonst endete ein Lauf mit einem Ladefehler und einem Grab als `success` statt `partial`, `record_failed_submission` und `skills/base.py` halten das seit 0.8.0 so), Probelauf nur Protokoll; Rate-Slot zurück (es lief keine Suche). Der Profil-Fingerabdruck des Titels kommt ab hier aus dem gerade geladenen Film bzw. der Serie (`qualityProfileId`; Codex K3), nur ohne Treffer im Profilstand aus dem Datensatz der Liste.
 2. `GET /api/v3/release?movieId=` bzw. `?episodeId=` mit `timeout=release_timeout_seconds`. Fehler → `error`; aktiv Verlaufseintrag `failed` (kein Cache), Probelauf nur Protokoll (die Zeile zählt nicht zur Runde, G2.2). Rate-Slot (Codex K5): zurück nur, wenn die Anfrage \*arr nachweislich nicht erreicht hat (`ConnectTimeout`, oder `ConnectionError` mit `MaxRetryError(reason=NewConnectionError)` — Verbindung abgelehnt, Name nicht auflösbar) oder \*arr mit 3xx/4xx ablehnt (`_refused`). Jede andere `ConnectionError` (Reset oder Schließen nach dem Senden, hängender Antwortkörper: requests packt `ProtocolError` und `ReadTimeoutError` des Körpers in `ConnectionError`, `adapters.py:500f`, `models.py:821f`), `ReadTimeout`, 5xx oder eine unlesbare Antwort lassen ihn belegt: Radarr und Sonarr rufen die Suche ohne Abbruchsignal auf (`ReleaseController.cs` `MovieSearch`/`EpisodeSearch` ohne `CancellationToken`), sie läuft zu Ende (Spec: „zählt als eine Aktion gegen das Rate-Limit“).
-3. **Abbruch prüfen** (direkt nach der Suche). Dann nur `approved is True`, in der gelieferten Reihenfolge; der erste ist, was der Such-Befehl geladen hätte (`arr_pick`). Keiner → `no_results` (aktiv: `no_hit` + Cache).
+3. **Abbruch prüfen** (direkt nach der Suche). Dann nur `approved is True`, in der gelieferten Reihenfolge; der erste ist, was der Such-Befehl geladen hätte (`arr_pick`). Keiner → Indexer-Störung prüfen (siehe unten „Indexer-Störung“), ohne Störung `no_results` (aktiv: `no_hit` + Cache).
 4. Je Kandidat, **vor jedem** `/parse` (auch vor dem ersten) Abbruch prüfen, dann `GET /api/v3/parse?title=` (Standard-Wartezeit 10 s). Scheitert es (Zeitüberschreitung, HTTP-Fehler, unlesbare Antwort; `_ParseFailed`) → Urteil `error` mit Grund `parse error`: nie geladen, aber keine Regel-Ablehnung (zählt nicht zu „Rejected“, Codex-Prüfung 0.9.0). Ohne `/parse` verworfen werden: Treffer, die `GET /release` nicht genau diesem Titel zugeordnet hat oder die keine Qualität (`dict`) und Sprachen (`list`) melden (Grund `not mapped to this title`; Radarr `mappedMovieId == movieId`, Sonarr `mappedSeriesId` = Serie der Folge und die Folge in `mappedEpisodeInfo`), Sonarr-Treffer mit `fullSeason` (Grund `season pack`) und Sonarr-Treffer, deren `mappedEpisodeInfo` mehr als eine Folge nennt (Grund `multi-episode release`; Entscheidung Daniel 01.10.2026, Codex-Runde 2, F4: Sonarr gibt `S01E01E02` bei der Suche nach E01 frei, `SingleEpisodeSearchMatchSpecification.cs:59` verlangt nur, dass die gesuchte Folge enthalten ist; S3/S4 und der Cache-Eintrag deckten aber nur die gesuchte Folge ab, die zweite würde ungeprüft geladen und blieb ohne Sperre). Ein Abbruch beendet den Lauf, der Titel bekommt keine Zeile.
-5. Aktiv: erster bestehender Kandidat → **Abbruch prüfen** → `POST /api/v3/release` mit `timeout=release_timeout_seconds` und **festgelegtem Ziel** (Codex K1): `{"guid", "indexerId", "shouldOverride": true, "quality", "languages"}` plus Radarr `movieId`, Sonarr `seriesId` und `episodeIds` (genau die gesuchte Folge, `[episodeId]`; Mehrfachfolgen kommen nicht bis hier). `quality` und `languages` gehen unverändert zurück, wie `GET /release` sie lieferte. Die übrigen Kandidaten gehen als `unchecked` ins Protokoll. Erfolg → `grabbed` (Item + Cache mit `grabbed_at` + Protokoll in einer Transaktion, mit Fingerabdruck). Fehler (Codex K2, `_refused` wie oben): abgelehnt → `grab_failed`, Item `failed`, kein Cache; sonst → `grab_uncertain`, Item `failed` mit Hinweis auf die Warteschlange, **mit** Cache und `grabbed_at` (der Download läuft vielleicht). In beiden Fällen **kein zweiter Kandidat**. Keiner besteht → `no_clean_hit` (Item `no_hit` + Cache). Keiner besteht und mindestens ein `/parse` scheiterte → `error` mit dem `/parse`-Fehler in `error_message`, Item `failed`, **kein** Cache, Rate-Slot belegt (die Suche lief): Der nicht prüfbare Treffer kann der richtige sein, ein `no_hit` sperrte den Titel bei `retry_hours=0` für immer. Besteht ein Kandidat nach einem nicht prüfbaren, wird er wie sonst geladen (er hat alle Regeln bestanden, es leidet höchstens der Rang; ein `/parse`, das für einen Release-Namen jedes Mal scheitert, ließe den Titel sonst nie laden und kostete jeden Lauf eine Indexer-Suche).
-6. Probelauf: höchstens `dry_run_max_releases` Kandidaten prüfen, der Rest `unchecked`; Ergebnis `would_grab` oder `no_clean_hit`, oder `error` wie in 5, wenn keiner besteht und ein `/parse` scheiterte (zählt nicht zur Runde); nur Protokoll (mit Profil-Fingerabdruck, Runde und Einstellungs-Fingerabdruck).
+5. Aktiv: erster bestehender Kandidat → **Abbruch prüfen** → `POST /api/v3/release` mit `timeout=release_timeout_seconds` und **festgelegtem Ziel** (Codex K1): `{"guid", "indexerId", "shouldOverride": true, "quality", "languages"}` plus Radarr `movieId`, Sonarr `seriesId` und `episodeIds` (genau die gesuchte Folge, `[episodeId]`; Mehrfachfolgen kommen nicht bis hier). `quality` und `languages` gehen unverändert zurück, wie `GET /release` sie lieferte. Die übrigen Kandidaten gehen als `unchecked` ins Protokoll. Erfolg → `grabbed` (Item + Cache mit `grabbed_at` + Protokoll in einer Transaktion, mit Fingerabdruck). Fehler (Codex K2, `_refused` wie oben): abgelehnt → `grab_failed`, Item `failed`, kein Cache; sonst → `grab_uncertain`, Item `failed` mit Hinweis auf die Warteschlange, **mit** Cache und `grabbed_at` (der Download läuft vielleicht). In beiden Fällen **kein zweiter Kandidat**. Keiner besteht → Indexer-Störung prüfen, ohne Störung `no_clean_hit` (Item `no_hit` + Cache). Keiner besteht und mindestens ein `/parse` scheiterte → `error` mit dem `/parse`-Fehler in `error_message`, Item `failed`, **kein** Cache, Rate-Slot belegt (die Suche lief): Der nicht prüfbare Treffer kann der richtige sein, ein `no_hit` sperrte den Titel bei `retry_hours=0` für immer. Besteht ein Kandidat nach einem nicht prüfbaren, wird er wie sonst geladen (er hat alle Regeln bestanden, es leidet höchstens der Rang; ein `/parse`, das für einen Release-Namen jedes Mal scheitert, ließe den Titel sonst nie laden und kostete jeden Lauf eine Indexer-Suche).
+6. Probelauf: höchstens `dry_run_max_releases` Kandidaten prüfen, der Rest `unchecked`; Ergebnis `would_grab` oder `no_clean_hit`, oder `error` wie in 5, wenn keiner besteht und ein `/parse` scheiterte oder ein Indexer gestört war (zählt nicht zur Runde); nur Protokoll (mit Profil-Fingerabdruck, Runde und Einstellungs-Fingerabdruck).
+
+**Indexer-Störung (Codex-Prüfung 0.9.0, am Quellcode geprüft).** Ein Indexer-Fehler lässt `GET /release` nicht scheitern: `HttpIndexerBase.FetchReleases` fängt Netz-, HTTP-, Schlüssel-, Captcha- und Zeitfehler selbst ab, ruft `IndexerStatusService.RecordFailure` (bzw. `RecordConnectionFailure`) und liefert, was bis dahin da war; `ReleaseSearchService.DispatchIndexer` fängt den Rest und gibt eine leere Liste (Radarr `:130–141`, Sonarr `:546–557`). `RecordFailure` setzt `MostRecentFailure` und sperrt den Indexer mindestens 60 s (`EscalationBackOff.Periods[1]`, steigend bis 24 h); `InteractiveSearchEnabled()` lässt gesperrte Indexer dann ganz weg (`FilterBlockedIndexers`). Leere oder nur abgelehnte Treffer sähen so wie ein sauberer Fehlschlag aus, `no_hit` sperrte den Titel bei `retry_hours=0` für immer, ein Probelauf zählte ihn zur Runde. Einen Endpunkt `/api/v3/indexerstatus` haben Radarr und Sonarr nicht (nur Prowlarr; nicht in `Radarr.Api.V3`/`Sonarr.Api.V3` und nicht in deren `openapi.json`). Sichtbar ist die Sperre nur in `GET /api/v3/health`: `IndexerStatusCheck` (gesperrt, erste Störung unter 6 h) und `IndexerLongTermStatusCheck` (länger) nennen die gesperrten Indexer mit Namen (`"Indexers unavailable due to failures: A, B"`, alle gesperrt: ohne Namen). Beide laufen bei `ProviderStatusChangedEvent` (also bei jeder Störung und bei der Erholung), entprellt um 5 s (`HealthCheckService`, `Debouncer` 5 s); daher wartet der Runner `HEALTH_SETTLE_SECONDS` = 6 s, bevor er liest, sonst fiele eine Störung kurz vor dem Ende der Suche durch, und eine eben behobene stünde noch da. Die Meldung bleibt bis zur nächsten Auswertung stehen, auch wenn die 60 s Sperre schon um sind; erst ein erfolgreicher Abruf (`RecordSuccess`) räumt sie. Deshalb gilt „gesperrt laut Health“ als Störung während der Suche. Gezählt wird nur ein Indexer, den die Suche fragt: Ein Name, der in `GET /api/v3/indexer` zu einem Indexer mit „Interactive Search“ aus gehört, zählt nicht; alles andere schon (unbekannter Name, Meldung ohne Namen, übersetzte Meldung ohne `": "`; Tags werden nicht ausgewertet). Die Indexer-Liste wird nur gelesen, wenn es eine solche Meldung gibt. Ergebnis bei Störung: `error` (aktiv `failed` ohne Cache, Probelauf zählt nicht zur Runde, Rate-Slot belegt), Grund in `error_message` und im Aktivitätslog (`"Checked search for <titel> failed: indexer failure during search — *arr reports: …"`). Health oder Indexer-Liste nicht lesbar: ebenso `error` (im Zweifel nicht merken). Ein Treffer, der besteht, braucht die Abfrage nicht. Grenze: Ein Fehler, den Prowlarr selbst schluckt und als leere Antwort weitergibt, sieht \*arr nicht; das gilt für den Such-Befehl genauso.
 
 **Warum das Ziel festgelegt wird (Codex K1, am Quellcode bestätigt).** Radarr und Sonarr legen jede Entscheidung einer Suche 30 Minuten in einen prozessweiten Zwischenspeicher, Schlüssel `indexerId + "_" + guid` (Radarr `ReleaseController.cs:65,175–185`, Sonarr `:66,237–247`); jede Suche, die denselben Treffer liefert, überschreibt den Eintrag mit *ihrer* Zuordnung (`ParsingService` ordnet ohne passende ID über Titel, Alias oder die gesuchte Folge zu). Ohne `shouldOverride` lädt `POST` den Treffer für das Ziel aus dem Zwischenspeicher (`movieId`/`seriesId` wirken nur, wenn dort keins steht). Überlappen kann sich vieles: die beiden Skills derselben Instanz (eigene APScheduler-Jobs, je eigene Sperre), Handsuchen, andere Clients, RSS-Abfragen. Mit `shouldOverride` setzt \*arr Film bzw. Serie und Folgen, Qualität und Sprachen aus dem POST (Radarr `:83–106`, Sonarr `:84–112`); aus dem Zwischenspeicher bleiben nur der Treffer selbst (dieselbe Download-Adresse), die Titel-Zerlegung und Verlaufsdaten (Custom Formats, Punkte). Fehlt der Eintrag (abgelaufen): 404 → `grab_failed`.
 
@@ -4775,6 +4782,7 @@ CUTOFF = "/api/v3/wanted/cutoff"
 RELEASE = "/api/v3/release"
 PARSE = "/api/v3/parse"
 COMMAND = "/api/v3/command"
+HEALTH = "/api/v3/health"
 QUALITY_PROFILES = "/api/v3/qualityprofile"
 INDEXER_KEY = "PROWLARRSECRET123"
 API_KEY = "ARRSECRETKEY1234567890"
@@ -4795,6 +4803,13 @@ def db_path(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "_cached_secret_key", None)
     database.init_db()
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_health_settle(monkeypatch):
+    """*arr refreshes its health checks within 5 s; the fake answers at once."""
+    from backend.checked_search import runner
+    monkeypatch.setattr(runner, "HEALTH_SETTLE_SECONDS", 0, raising=False)
 
 
 def sql(statement, params=()):
@@ -4880,7 +4895,8 @@ class FakeArr(BaseAgent):
 
     def __init__(self, config, missing=(), cutoff=(), movies=(), episodes=(), series=(), releases=None,
                  parses=None, get_errors=None, post_error=None, abort_after_parses=None, abort_on_release=False,
-                 profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None):
+                 profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None,
+                 health=None):
         super().__init__(config)
         self.missing, self.cutoff = list(missing), list(cutoff)
         self.movies = {m["id"]: m for m in movies}
@@ -4896,6 +4912,7 @@ class FakeArr(BaseAgent):
         self.custom_formats = copy.deepcopy(FORMATS if custom_formats is None else custom_formats)
         self.release_profiles = list(release_profiles or [])
         self.indexers = copy.deepcopy(INDEXERS if indexers is None else indexers)
+        self.health = copy.deepcopy(health or [])
         self.on_get = on_get or {}
         self.gets, self.posts, self.commands, self.timeouts = [], [], [], {}
         self.release_cache, self.grabbed = {}, []
@@ -4939,6 +4956,8 @@ class FakeArr(BaseAgent):
             return copy.deepcopy(self.release_profiles)
         if path == "/api/v3/indexer":
             return copy.deepcopy(self.indexers)
+        if path == HEALTH:
+            return copy.deepcopy(self.health)
         if path == "/api/v3/movie":
             return list(self.movies.values())
         if path.startswith("/api/v3/movie/"):
@@ -5370,6 +5389,157 @@ def test_a_title_is_searched_again_once_parse_answers(db_path, mode, recovered):
     SearchMissingSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == 1
     assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
+
+
+# ── Indexer failures ─────────────────────────────────────────────────────────
+# *arr catches a failing indexer inside the release search and answers with
+# what the others found (often nothing); an indexer blocked after failures is
+# not asked at all. Only its health checks show it.
+
+def indexer_down(*names, source="IndexerStatusCheck"):
+    message = ("Indexers unavailable due to failures: " + ", ".join(names) if names
+               else "All indexers are unavailable due to failures")
+    return [{"source": source, "type": "warning", "message": message,
+             "wikiUrl": "https://wiki.servarr.com/radarr/system#indexers-are-unavailable-due-to-failures"}]
+
+
+RSS_ONLY = {"id": 8, "name": "RSS only", "enableAutomaticSearch": False, "enableInteractiveSearch": False}
+
+
+def test_an_indexer_failure_during_an_empty_search_leaves_the_title_free(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={}, health=indexer_down("Indexer"))
+    SearchMissingSkill().execute(agent)
+
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert row["error_message"].startswith("indexer failure during search")
+    assert "Indexers unavailable due to failures: Indexer" in row["error_message"]
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"].startswith("All 1 submission(s) failed")
+    assert agent.get_rate_used() == 1           # the indexer search did run
+    assert any(m.startswith("Checked search for ") and "indexer failure during search" in m
+               for m in activity_messages())
+
+
+def test_an_indexer_failure_next_to_rejected_releases_is_no_clean_miss(db_path):
+    # The failing indexer may have had the right release.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={1: [release(WRONG, "g1")]},
+                            health=indexer_down("Indexer", source="IndexerLongTermStatusCheck"))
+    SearchMissingSkill().execute(agent)
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert "indexer failure during search" in row["error_message"]
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("reject", ["year"])]
+
+
+@pytest.mark.parametrize("mode,recovered", [("active", "grabbed"), ("dry_run", "would_grab")])
+def test_a_title_is_searched_again_once_the_indexers_answer(db_path, mode, recovered):
+    inst = make_instance(checked_search=mode)
+    SearchMissingSkill().execute(the_thing_agent(inst, releases={}, health=indexer_down()))
+    assert [r["outcome"] for r in log_rows()] == ["error"]
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert len([p for p, _ in again.gets if p == RELEASE]) == 1
+    assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
+
+
+@pytest.mark.parametrize("releases,outcome", [({}, "no_results"), ({1: [release(WRONG, "g1")]}, "no_clean_hit")],
+                         ids=["empty", "rejected"])
+def test_a_miss_without_an_indexer_failure_is_remembered(db_path, releases, outcome):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases=releases)
+    SearchMissingSkill().execute(agent)
+    assert [p for p, _ in agent.gets if p == HEALTH] == [HEALTH]
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("no_hit", "mov:1")]
+    assert sql("SELECT cache_key FROM searched_items") == [("mov:1",)]
+    assert log_rows()[0]["outcome"] == outcome
+
+
+def test_a_clean_hit_needs_no_indexer_status(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, health=indexer_down("Indexer"))
+    SearchMissingSkill().execute(agent)
+    assert agent.grabbed == [1]
+    assert [p for p, _ in agent.gets if p == HEALTH] == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"get_errors": {HEALTH: requests.exceptions.ReadTimeout("health slow")}},
+    {"health": {"message": "no list"}},
+    {"health": indexer_down("RSS only"), "indexers": [INDEXERS[0], RSS_ONLY],
+     "get_errors": {"/api/v3/indexer$": requests.exceptions.ConnectionError("down")}},
+], ids=["health unreadable", "health no list", "indexer list unreadable"])
+def test_an_unreadable_indexer_status_leaves_the_title_free(db_path, kwargs):
+    inst = make_instance(checked_search="active")
+    kwargs = dict(kwargs)
+    errors = kwargs.pop("get_errors", {})
+    agent = the_thing_agent(inst, releases={}, **kwargs)
+    # The skill reads the indexer list before collecting; only the second read fails.
+    reads = []
+    if errors.get("/api/v3/indexer$"):
+        agent.on_get["/api/v3/indexer"] = lambda fake: reads.append(1) or (
+            fake.get_errors.update(errors) if len(reads) > 1 else None)
+    else:
+        agent.get_errors.update(errors)
+    SearchMissingSkill().execute(agent)
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert "could not read the indexer status" in row["error_message"]
+
+
+@pytest.mark.parametrize("names,outcome", [
+    (("RSS only",), "no_results"),
+    (("RSS only", "Indexer"), "error"),
+    (("Gone",), "error"),
+    ((), "error"),
+], ids=["unused indexer", "used one among them", "unknown name", "all indexers"])
+def test_only_a_failure_of_an_indexer_the_search_asks_counts(db_path, names, outcome):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={}, indexers=[INDEXERS[0], RSS_ONLY], health=indexer_down(*names))
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == outcome
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == (1 if outcome == "no_results" else 0)
+
+
+def test_other_health_warnings_do_not_count(db_path):
+    inst = make_instance(checked_search="active")
+    health = [{"source": "IndexerRssCheck", "type": "warning", "message": "No indexers available with RSS sync"}]
+    agent = the_thing_agent(inst, releases={}, health=health)
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == "no_results"
+
+
+def test_the_indexer_status_is_read_after_arr_refreshed_its_health(db_path, monkeypatch):
+    # *arr re-evaluates its health checks up to 5 s after an indexer failure
+    # (debounced): a failure late in the search shows only after that.
+    from backend.checked_search import runner
+    monkeypatch.setattr(runner, "HEALTH_SETTLE_SECONDS", 6)
+    inst = make_instance(checked_search="active")
+    events = []
+    agent = the_thing_agent(inst, releases={}, on_get={HEALTH: lambda fake: events.append("health")})
+    agent.wait_or_stop = lambda seconds: events.append(("wait", seconds)) or False
+    SearchMissingSkill().execute(agent)
+    assert events == [("wait", 6), "health"]
+    assert log_rows()[0]["outcome"] == "no_results"
+
+
+def test_an_abort_while_arr_refreshes_its_health_stops_the_run(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={})
+    agent.wait_or_stop = lambda seconds: True
+    SearchMissingSkill().execute(agent)
+    assert log_rows() == []
+    assert [p for p, _ in agent.gets if p == HEALTH] == []
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
 
 
 def test_a_grab_without_a_clear_answer_blocks_the_title(db_path):
@@ -6469,6 +6639,16 @@ passes after such a one is still grabbed: it passed every rule, only its
 rank may be lower, and a /parse failing for one release name every time
 would otherwise keep the title from ever being grabbed.
 
+An indexer failure does not fail GET /release: *arr catches it per indexer
+and answers with what the others found, and it leaves an indexer blocked
+after failures out of the search. Both show only in the health checks
+(IndexerStatusCheck, IndexerLongTermStatusCheck: blocked indexers by name;
+Radarr and Sonarr have no indexer status endpoint). So before a title ends
+without a clean hit or without results, the runner waits until *arr has
+refreshed its health checks and reads them: is an indexer the release search
+asks named there, or can the health or indexer list not be read, the title
+ends as an error (not cached, not counted for the dry-run round).
+
 Secrets: a release from *arr carries downloadUrl (with the indexer's API
 key), infoUrl, magnetUrl and guid. Only the fields below are kept; guid,
 the mapping, quality and languages live in memory for the one POST and are
@@ -6507,6 +6687,13 @@ OUTCOME_GRAB_UNCERTAIN = "grab_uncertain"
 RELEASE_PATH = "/api/v3/release"
 PARSE_PATH = "/api/v3/parse"
 INDEXER_PATH = "/api/v3/indexer"
+HEALTH_PATH = "/api/v3/health"
+# Health checks naming the indexers *arr blocks after failures (backoff of at
+# least a minute per failure): within six hours of the first failure, and after.
+INDEXER_HEALTH_SOURCES = ("IndexerStatusCheck", "IndexerLongTermStatusCheck")
+# *arr re-evaluates these checks up to 5 s after an indexer status changed
+# (debounced): a failure late in the search shows only after that.
+HEALTH_SETTLE_SECONDS = 6
 
 VERDICT_PASS = "pass"
 VERDICT_REJECT = "reject"
@@ -6670,6 +6857,14 @@ def indexer_pause(agent) -> str:
             "the indexers the search command asks. Nothing was searched or remembered; set both switches alike.")
 
 
+def _named_indexers(message: str) -> list[str] | None:
+    """The indexer names a health message lists after its colon ("Indexers
+    unavailable due to failures: A, B"); None when it names none ("All
+    indexers are unavailable …", or a translation without ': ')."""
+    _, colon, names = message.partition(": ")
+    return [name.strip() for name in names.split(", ")] if colon else None
+
+
 def _candidate(release: _Release, verdict: str, reasons=(), notes=(), chosen=False, arr_choice=False) -> dict:
     return {
         "title": release.title, "indexer": release.indexer, "score": release.score, "size": release.size,
@@ -6767,6 +6962,36 @@ class _TitleCheck:
             body["episodeIds"] = [task.arr_id]
         self.agent.http_post(RELEASE_PATH, body, timeout=self.settings.release_timeout_seconds)
 
+    def indexer_failure(self) -> str:
+        """'' when no indexer the release search asks is blocked after
+        failures, else why the miss is no clean one. Waits for *arr to
+        refresh its health checks first (an abort meanwhile ends the run).
+        Unreadable health or indexer list: a failure too (in doubt, do not
+        remember). Only an indexer with interactive search off is surely not
+        asked; tags are not looked at."""
+        if self.agent.wait_or_stop(HEALTH_SETTLE_SECONDS):
+            raise _Stopped()
+        try:
+            health = self.agent.http_get(HEALTH_PATH)
+            if not isinstance(health, list):
+                raise ValueError("the health list was no list")
+            messages = [str(check.get("message") or "") for check in health
+                        if isinstance(check, dict) and check.get("source") in INDEXER_HEALTH_SOURCES]
+            if not messages:
+                return ""
+            indexers = self.agent.http_get(INDEXER_PATH)
+            if not isinstance(indexers, list):
+                raise ValueError("the indexer list was no list")
+        except Exception as exc:
+            return f"could not read the indexer status, the miss may be an indexer failure: {exc}"
+        not_asked = {i.get("name") for i in indexers
+                     if isinstance(i, dict) and i.get("enableInteractiveSearch") is not True}
+        asked = [m for m in messages
+                 if (names := _named_indexers(m)) is None or any(n not in not_asked for n in names)]
+        if not asked:
+            return ""
+        return f"indexer failure during search — *arr reports: {'; '.join(asked)}"
+
     def stop_check(self) -> None:
         """The release search can take minutes: an abort that arrived
         meanwhile ends the run before anything is parsed or grabbed."""
@@ -6820,6 +7045,9 @@ class _TitleCheck:
                            ITEM_FAILED, searched=not _refused(exc))
         self.stop_check()
         if not releases:
+            failure = self.indexer_failure()
+            if failure:
+                return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure), ITEM_FAILED)
             return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS), ITEM_NO_HIT)
 
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
@@ -6855,6 +7083,11 @@ class _TitleCheck:
                      f"first: {parse_failures[0]}")
             return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
         if pick is None:
+            # A failing indexer may have had the clean release: not a clean miss.
+            failure = self.indexer_failure()
+            if failure:
+                return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure, **common),
+                               ITEM_FAILED)
             return _Result(OUTCOME_NO_CLEAN_HIT, "", entry(OUTCOME_NO_CLEAN_HIT, **common), ITEM_NO_HIT)
         if self.mode == MODE_DRY_RUN:
             return _Result(OUTCOME_WOULD_GRAB, "", entry(OUTCOME_WOULD_GRAB, **common), None)
@@ -9808,6 +10041,7 @@ Things to know before you switch it on:
 
 - `GET /api/v3/release` is an **interactive search** for Radarr and Sonarr. It asks the indexers that have *Interactive Search* enabled, not the ones with *Automatic Search* that the search command used. While any indexer has the two switches set differently (or the indexer list cannot be read), a checked run **pauses** — also a run that would find nothing to search: it searches and remembers nothing and ends as a success with the note "Checked search paused" in the History; the activity log warns and names the indexer (or why the list could not be read). *Last sync* on the card stays at the last run that searched, so a lasting pause shows there. Set both switches alike under *Settings → Indexers* (or in Prowlarr).
 - The grab names its target: missingarr sends the movie (or the series and episodes) together with the quality and languages the search reported (`shouldOverride`). Radarr and Sonarr keep search results for 30 minutes per indexer and release, mapped to whichever search returned them last; without the target a search for another title in between could redirect the grab. A release the search did not map to exactly this title is never grabbed.
+- A failing indexer does not make `GET /api/v3/release` fail: Radarr and Sonarr answer with what the other indexers found and skip an indexer they blocked after failures. So when a title ends without a clean release, missingarr waits a few seconds and reads the \*arr health checks (`GET /api/v3/health`). If they report an indexer with *Interactive Search* on as unavailable due to failures (or cannot be read), the title ends as an error ("indexer failure during search") and is not remembered: the next run searches it again. A permanently broken indexer therefore keeps those titles coming back until it is fixed or switched off.
 - A release grabbed through `POST /api/v3/release` is recorded as an interactive grab. Radarr and Sonarr then skip their "matched by ID — Manual Import required" block and import it automatically. Switch off *Settings → Download Clients → Failed Download Handling → Redownload Failed from Interactive Search* in both: missingarr searches a grabbed title again itself once it is still missing after **Search again if still missing after (days)**. A foreign release that gets past the pre-filter (same title and year, see the known limits) is imported, not held back.
 - A grab without a clear answer (timeout, connection lost after sending, server error) may be downloading: the title stays blocked like after a grab ("grab uncertain" on the Pre-filter page) — check the queue in \*arr, reset the cache on the Progressed page to retry sooner. A refused grab (for example the search result expired) leaves the title free.
 - Season packs: in a search for one episode Sonarr rejects packs itself, except for specials (season 0); the checked search never takes a pack. Nor does it take a multi-episode release (one release for two or more episodes, which Sonarr approves in a search for either of them): the rules and the Searched cache would only cover the episode searched for. An episode that only exists as part of such a release needs the search command (Checked search Off).

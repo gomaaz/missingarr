@@ -19,6 +19,7 @@ CUTOFF = "/api/v3/wanted/cutoff"
 RELEASE = "/api/v3/release"
 PARSE = "/api/v3/parse"
 COMMAND = "/api/v3/command"
+HEALTH = "/api/v3/health"
 QUALITY_PROFILES = "/api/v3/qualityprofile"
 INDEXER_KEY = "PROWLARRSECRET123"
 API_KEY = "ARRSECRETKEY1234567890"
@@ -39,6 +40,13 @@ def db_path(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "_cached_secret_key", None)
     database.init_db()
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_health_settle(monkeypatch):
+    """*arr refreshes its health checks within 5 s; the fake answers at once."""
+    from backend.checked_search import runner
+    monkeypatch.setattr(runner, "HEALTH_SETTLE_SECONDS", 0, raising=False)
 
 
 def sql(statement, params=()):
@@ -124,7 +132,8 @@ class FakeArr(BaseAgent):
 
     def __init__(self, config, missing=(), cutoff=(), movies=(), episodes=(), series=(), releases=None,
                  parses=None, get_errors=None, post_error=None, abort_after_parses=None, abort_on_release=False,
-                 profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None):
+                 profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None,
+                 health=None):
         super().__init__(config)
         self.missing, self.cutoff = list(missing), list(cutoff)
         self.movies = {m["id"]: m for m in movies}
@@ -140,6 +149,7 @@ class FakeArr(BaseAgent):
         self.custom_formats = copy.deepcopy(FORMATS if custom_formats is None else custom_formats)
         self.release_profiles = list(release_profiles or [])
         self.indexers = copy.deepcopy(INDEXERS if indexers is None else indexers)
+        self.health = copy.deepcopy(health or [])
         self.on_get = on_get or {}
         self.gets, self.posts, self.commands, self.timeouts = [], [], [], {}
         self.release_cache, self.grabbed = {}, []
@@ -183,6 +193,8 @@ class FakeArr(BaseAgent):
             return copy.deepcopy(self.release_profiles)
         if path == "/api/v3/indexer":
             return copy.deepcopy(self.indexers)
+        if path == HEALTH:
+            return copy.deepcopy(self.health)
         if path == "/api/v3/movie":
             return list(self.movies.values())
         if path.startswith("/api/v3/movie/"):
@@ -614,6 +626,157 @@ def test_a_title_is_searched_again_once_parse_answers(db_path, mode, recovered):
     SearchMissingSkill().execute(again)
     assert len([p for p, _ in again.gets if p == RELEASE]) == 1
     assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
+
+
+# ── Indexer failures ─────────────────────────────────────────────────────────
+# *arr catches a failing indexer inside the release search and answers with
+# what the others found (often nothing); an indexer blocked after failures is
+# not asked at all. Only its health checks show it.
+
+def indexer_down(*names, source="IndexerStatusCheck"):
+    message = ("Indexers unavailable due to failures: " + ", ".join(names) if names
+               else "All indexers are unavailable due to failures")
+    return [{"source": source, "type": "warning", "message": message,
+             "wikiUrl": "https://wiki.servarr.com/radarr/system#indexers-are-unavailable-due-to-failures"}]
+
+
+RSS_ONLY = {"id": 8, "name": "RSS only", "enableAutomaticSearch": False, "enableInteractiveSearch": False}
+
+
+def test_an_indexer_failure_during_an_empty_search_leaves_the_title_free(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={}, health=indexer_down("Indexer"))
+    SearchMissingSkill().execute(agent)
+
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert row["error_message"].startswith("indexer failure during search")
+    assert "Indexers unavailable due to failures: Indexer" in row["error_message"]
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"].startswith("All 1 submission(s) failed")
+    assert agent.get_rate_used() == 1           # the indexer search did run
+    assert any(m.startswith("Checked search for ") and "indexer failure during search" in m
+               for m in activity_messages())
+
+
+def test_an_indexer_failure_next_to_rejected_releases_is_no_clean_miss(db_path):
+    # The failing indexer may have had the right release.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={1: [release(WRONG, "g1")]},
+                            health=indexer_down("Indexer", source="IndexerLongTermStatusCheck"))
+    SearchMissingSkill().execute(agent)
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert "indexer failure during search" in row["error_message"]
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("reject", ["year"])]
+
+
+@pytest.mark.parametrize("mode,recovered", [("active", "grabbed"), ("dry_run", "would_grab")])
+def test_a_title_is_searched_again_once_the_indexers_answer(db_path, mode, recovered):
+    inst = make_instance(checked_search=mode)
+    SearchMissingSkill().execute(the_thing_agent(inst, releases={}, health=indexer_down()))
+    assert [r["outcome"] for r in log_rows()] == ["error"]
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert len([p for p, _ in again.gets if p == RELEASE]) == 1
+    assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
+
+
+@pytest.mark.parametrize("releases,outcome", [({}, "no_results"), ({1: [release(WRONG, "g1")]}, "no_clean_hit")],
+                         ids=["empty", "rejected"])
+def test_a_miss_without_an_indexer_failure_is_remembered(db_path, releases, outcome):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases=releases)
+    SearchMissingSkill().execute(agent)
+    assert [p for p, _ in agent.gets if p == HEALTH] == [HEALTH]
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("no_hit", "mov:1")]
+    assert sql("SELECT cache_key FROM searched_items") == [("mov:1",)]
+    assert log_rows()[0]["outcome"] == outcome
+
+
+def test_a_clean_hit_needs_no_indexer_status(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, health=indexer_down("Indexer"))
+    SearchMissingSkill().execute(agent)
+    assert agent.grabbed == [1]
+    assert [p for p, _ in agent.gets if p == HEALTH] == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"get_errors": {HEALTH: requests.exceptions.ReadTimeout("health slow")}},
+    {"health": {"message": "no list"}},
+    {"health": indexer_down("RSS only"), "indexers": [INDEXERS[0], RSS_ONLY],
+     "get_errors": {"/api/v3/indexer$": requests.exceptions.ConnectionError("down")}},
+], ids=["health unreadable", "health no list", "indexer list unreadable"])
+def test_an_unreadable_indexer_status_leaves_the_title_free(db_path, kwargs):
+    inst = make_instance(checked_search="active")
+    kwargs = dict(kwargs)
+    errors = kwargs.pop("get_errors", {})
+    agent = the_thing_agent(inst, releases={}, **kwargs)
+    # The skill reads the indexer list before collecting; only the second read fails.
+    reads = []
+    if errors.get("/api/v3/indexer$"):
+        agent.on_get["/api/v3/indexer"] = lambda fake: reads.append(1) or (
+            fake.get_errors.update(errors) if len(reads) > 1 else None)
+    else:
+        agent.get_errors.update(errors)
+    SearchMissingSkill().execute(agent)
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert "could not read the indexer status" in row["error_message"]
+
+
+@pytest.mark.parametrize("names,outcome", [
+    (("RSS only",), "no_results"),
+    (("RSS only", "Indexer"), "error"),
+    (("Gone",), "error"),
+    ((), "error"),
+], ids=["unused indexer", "used one among them", "unknown name", "all indexers"])
+def test_only_a_failure_of_an_indexer_the_search_asks_counts(db_path, names, outcome):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={}, indexers=[INDEXERS[0], RSS_ONLY], health=indexer_down(*names))
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == outcome
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == (1 if outcome == "no_results" else 0)
+
+
+def test_other_health_warnings_do_not_count(db_path):
+    inst = make_instance(checked_search="active")
+    health = [{"source": "IndexerRssCheck", "type": "warning", "message": "No indexers available with RSS sync"}]
+    agent = the_thing_agent(inst, releases={}, health=health)
+    SearchMissingSkill().execute(agent)
+    assert log_rows()[0]["outcome"] == "no_results"
+
+
+def test_the_indexer_status_is_read_after_arr_refreshed_its_health(db_path, monkeypatch):
+    # *arr re-evaluates its health checks up to 5 s after an indexer failure
+    # (debounced): a failure late in the search shows only after that.
+    from backend.checked_search import runner
+    monkeypatch.setattr(runner, "HEALTH_SETTLE_SECONDS", 6)
+    inst = make_instance(checked_search="active")
+    events = []
+    agent = the_thing_agent(inst, releases={}, on_get={HEALTH: lambda fake: events.append("health")})
+    agent.wait_or_stop = lambda seconds: events.append(("wait", seconds)) or False
+    SearchMissingSkill().execute(agent)
+    assert events == [("wait", 6), "health"]
+    assert log_rows()[0]["outcome"] == "no_results"
+
+
+def test_an_abort_while_arr_refreshes_its_health_stops_the_run(db_path):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, releases={})
+    agent.wait_or_stop = lambda seconds: True
+    SearchMissingSkill().execute(agent)
+    assert log_rows() == []
+    assert [p for p, _ in agent.gets if p == HEALTH] == []
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
 
 
 def test_a_grab_without_a_clear_answer_blocks_the_title(db_path):
