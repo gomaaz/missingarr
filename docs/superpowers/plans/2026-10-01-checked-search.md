@@ -70,7 +70,7 @@ Welle 2 startet erst, wenn G1 und G2 gemergt sind und die Gesamtsuite auf `feat/
 |---|---|---|
 | Ablauf pro Titel 1–5 (Daten, `/release` mit eigener Wartezeit, nur `approved`, Zuordnung zum Titel, `/parse`, Laden per `POST /release` mit `shouldOverride`, Protokoll) | `runner._TitleCheck.load/search/mapped_here/verdict/grab/run` | G3.1 |
 | Ziel-Festlegung beim Laden (Spec Ablauf 4, Codex K1): Treffer nur, wenn `GET /release` ihn genau diesem Titel zugeordnet hat; POST mit `shouldOverride`, `movieId` bzw. `seriesId`/`episodeIds`, `quality`, `languages` wie gemeldet | `_Release.mapped_*`, `quality_raw`, `languages_raw`, `REASON_TARGET`, `_TitleCheck.grab` | G1.1, G3.1 |
-| Fehler: `/movie`, `/episode`, `/series` → „Fehler“, aktiv Verlaufseintrag `failed` ohne Cache (Codex K4); `/release` → `failed`; `/parse` → Kandidat „parse error“; `POST` abgelehnt → `grab_failed`, `failed` ohne Cache; `POST` unklar → `grab_uncertain`, `failed` **mit** Cache (Codex K2); kein zweiter Kandidat; Fehler zählen nicht zur Probelauf-Runde („Titel nicht gemerkt“) | `runner._TitleCheck.run`, `_refused`, `run_checked`, `record_checked(cache=)`, `dry_run_keys` (`outcome != 'error'`) | G2.2, G2.3, G3.1 |
+| Fehler: `/movie`, `/episode`, `/series` → „Fehler“, aktiv Verlaufseintrag `failed` ohne Cache (Codex K4); `/release` → `failed`; `/parse` → Kandidat Urteil `error` mit „parse error“ (nie geladen, keine Regel-Ablehnung), besteht keiner → „Fehler“, `failed` ohne Cache (Codex-Prüfung 0.9.0); `POST` abgelehnt → `grab_failed`, `failed` ohne Cache; `POST` unklar → `grab_uncertain`, `failed` **mit** Cache (Codex K2); kein zweiter Kandidat; Fehler zählen nicht zur Probelauf-Runde („Titel nicht gemerkt“) | `runner._TitleCheck.run`, `_refused`, `run_checked`, `record_checked(cache=)`, `dry_run_keys` (`outcome != 'error'`) | G2.2, G2.3, G3.1 |
 | Grab gespeichert gescheitert → im Speicher halten, sperrt den Titel, nächster Lauf speichert nach (Codex K2) | `skills.base.UnsavedCheckedGrab`, `store_unsaved_submissions`, `unsaved_cache_keys` | G3.1 |
 | Zeitbudget ab Start des Laufs (Codex K9), Abbruch zwischen Titeln, nach der Release-Suche, vor jedem `/parse` und vor dem `POST` | `run_checked(clock=…, started=…)`, `_Stopped` | G3.1 |
 | Rate-Limit: eine Aktion pro Titel | `agent.reserve_action()` je Titel; Rückgabe nur, wenn keine Indexer-Suche lief (`load` gescheitert, `/release` nachweislich nicht gesendet oder 3xx/4xx; Codex K5) | G3.1 |
@@ -287,7 +287,7 @@ def iter_csv(instance_id=None, mode=None, outcome=None, search=None, only_differ
 
 `current_round`: Probelauf-Zeilen nur mit `dry_run_round = instances.dry_run_round`; aktive Zeilen immer. `profile_changed`: die Zeile trägt einen Fingerabdruck, die Instanz hat ihre Profile schon einmal gelesen (Grundlinie gesetzt; auch eine leere Profilliste zählt, Codex-Runde 3, G6), und der aktuelle Fingerabdruck ihres Profils (`profile_id`) ist ein anderer (gelöschtes Profil: geändert, auch das letzte); Zeilen ohne `profile_id`: keiner der aktuellen ist der der Zeile. `iter_csv` liest alles aus einer Lesetransaktion (ein Datenbankstand, kein `OFFSET`; Codex-Runde 3, G5).
 
-Kandidat im JSON `candidates` (vom Runner geschrieben): `{"title", "indexer", "score", "size", "quality", "verdict": "pass"|"reject"|"unchecked", "reasons": [..], "notes": [..], "chosen": bool, "arr_choice": bool}`.
+Kandidat im JSON `candidates` (vom Runner geschrieben): `{"title", "indexer", "score", "size", "quality", "verdict": "pass"|"reject"|"unchecked"|"error", "reasons": [..], "notes": [..], "chosen": bool, "arr_choice": bool}`. `error`: `/parse` scheiterte (Grund `parse error`), zählt nicht zu `rejected_count`.
 „only differences“: `arr_pick IS NOT NULL AND (pick IS NULL OR pick != arr_pick)`.
 
 `backend/db/history.py`
@@ -4736,9 +4736,9 @@ Ablauf pro Titel (`_TitleCheck.run`), genau nach Spec:
 1. Radarr `GET /api/v3/movie/{id}`; Sonarr `GET /api/v3/episode/{id}` und `GET /api/v3/series/{seriesId}`. Fehler → `error`; aktiv Verlaufseintrag `failed` ohne Cache (Codex K4: sonst endete ein Lauf mit einem Ladefehler und einem Grab als `success` statt `partial`, `record_failed_submission` und `skills/base.py` halten das seit 0.8.0 so), Probelauf nur Protokoll; Rate-Slot zurück (es lief keine Suche). Der Profil-Fingerabdruck des Titels kommt ab hier aus dem gerade geladenen Film bzw. der Serie (`qualityProfileId`; Codex K3), nur ohne Treffer im Profilstand aus dem Datensatz der Liste.
 2. `GET /api/v3/release?movieId=` bzw. `?episodeId=` mit `timeout=release_timeout_seconds`. Fehler → `error`; aktiv Verlaufseintrag `failed` (kein Cache), Probelauf nur Protokoll (die Zeile zählt nicht zur Runde, G2.2). Rate-Slot (Codex K5): zurück nur, wenn die Anfrage \*arr nachweislich nicht erreicht hat (`ConnectTimeout`, oder `ConnectionError` mit `MaxRetryError(reason=NewConnectionError)` — Verbindung abgelehnt, Name nicht auflösbar) oder \*arr mit 3xx/4xx ablehnt (`_refused`). Jede andere `ConnectionError` (Reset oder Schließen nach dem Senden, hängender Antwortkörper: requests packt `ProtocolError` und `ReadTimeoutError` des Körpers in `ConnectionError`, `adapters.py:500f`, `models.py:821f`), `ReadTimeout`, 5xx oder eine unlesbare Antwort lassen ihn belegt: Radarr und Sonarr rufen die Suche ohne Abbruchsignal auf (`ReleaseController.cs` `MovieSearch`/`EpisodeSearch` ohne `CancellationToken`), sie läuft zu Ende (Spec: „zählt als eine Aktion gegen das Rate-Limit“).
 3. **Abbruch prüfen** (direkt nach der Suche). Dann nur `approved is True`, in der gelieferten Reihenfolge; der erste ist, was der Such-Befehl geladen hätte (`arr_pick`). Keiner → `no_results` (aktiv: `no_hit` + Cache).
-4. Je Kandidat, **vor jedem** `/parse` (auch vor dem ersten) Abbruch prüfen, dann `GET /api/v3/parse?title=` (Standard-Wartezeit 10 s). Scheitert es → Grund `parse error`. Ohne `/parse` verworfen werden: Treffer, die `GET /release` nicht genau diesem Titel zugeordnet hat oder die keine Qualität (`dict`) und Sprachen (`list`) melden (Grund `not mapped to this title`; Radarr `mappedMovieId == movieId`, Sonarr `mappedSeriesId` = Serie der Folge und die Folge in `mappedEpisodeInfo`), Sonarr-Treffer mit `fullSeason` (Grund `season pack`) und Sonarr-Treffer, deren `mappedEpisodeInfo` mehr als eine Folge nennt (Grund `multi-episode release`; Entscheidung Daniel 01.10.2026, Codex-Runde 2, F4: Sonarr gibt `S01E01E02` bei der Suche nach E01 frei, `SingleEpisodeSearchMatchSpecification.cs:59` verlangt nur, dass die gesuchte Folge enthalten ist; S3/S4 und der Cache-Eintrag deckten aber nur die gesuchte Folge ab, die zweite würde ungeprüft geladen und blieb ohne Sperre). Ein Abbruch beendet den Lauf, der Titel bekommt keine Zeile.
-5. Aktiv: erster bestehender Kandidat → **Abbruch prüfen** → `POST /api/v3/release` mit `timeout=release_timeout_seconds` und **festgelegtem Ziel** (Codex K1): `{"guid", "indexerId", "shouldOverride": true, "quality", "languages"}` plus Radarr `movieId`, Sonarr `seriesId` und `episodeIds` (genau die gesuchte Folge, `[episodeId]`; Mehrfachfolgen kommen nicht bis hier). `quality` und `languages` gehen unverändert zurück, wie `GET /release` sie lieferte. Die übrigen Kandidaten gehen als `unchecked` ins Protokoll. Erfolg → `grabbed` (Item + Cache mit `grabbed_at` + Protokoll in einer Transaktion, mit Fingerabdruck). Fehler (Codex K2, `_refused` wie oben): abgelehnt → `grab_failed`, Item `failed`, kein Cache; sonst → `grab_uncertain`, Item `failed` mit Hinweis auf die Warteschlange, **mit** Cache und `grabbed_at` (der Download läuft vielleicht). In beiden Fällen **kein zweiter Kandidat**. Keiner besteht → `no_clean_hit` (Item `no_hit` + Cache).
-6. Probelauf: höchstens `dry_run_max_releases` Kandidaten prüfen, der Rest `unchecked`; Ergebnis `would_grab` oder `no_clean_hit`; nur Protokoll (mit Profil-Fingerabdruck, Runde und Einstellungs-Fingerabdruck).
+4. Je Kandidat, **vor jedem** `/parse` (auch vor dem ersten) Abbruch prüfen, dann `GET /api/v3/parse?title=` (Standard-Wartezeit 10 s). Scheitert es (Zeitüberschreitung, HTTP-Fehler, unlesbare Antwort; `_ParseFailed`) → Urteil `error` mit Grund `parse error`: nie geladen, aber keine Regel-Ablehnung (zählt nicht zu „Rejected“, Codex-Prüfung 0.9.0). Ohne `/parse` verworfen werden: Treffer, die `GET /release` nicht genau diesem Titel zugeordnet hat oder die keine Qualität (`dict`) und Sprachen (`list`) melden (Grund `not mapped to this title`; Radarr `mappedMovieId == movieId`, Sonarr `mappedSeriesId` = Serie der Folge und die Folge in `mappedEpisodeInfo`), Sonarr-Treffer mit `fullSeason` (Grund `season pack`) und Sonarr-Treffer, deren `mappedEpisodeInfo` mehr als eine Folge nennt (Grund `multi-episode release`; Entscheidung Daniel 01.10.2026, Codex-Runde 2, F4: Sonarr gibt `S01E01E02` bei der Suche nach E01 frei, `SingleEpisodeSearchMatchSpecification.cs:59` verlangt nur, dass die gesuchte Folge enthalten ist; S3/S4 und der Cache-Eintrag deckten aber nur die gesuchte Folge ab, die zweite würde ungeprüft geladen und blieb ohne Sperre). Ein Abbruch beendet den Lauf, der Titel bekommt keine Zeile.
+5. Aktiv: erster bestehender Kandidat → **Abbruch prüfen** → `POST /api/v3/release` mit `timeout=release_timeout_seconds` und **festgelegtem Ziel** (Codex K1): `{"guid", "indexerId", "shouldOverride": true, "quality", "languages"}` plus Radarr `movieId`, Sonarr `seriesId` und `episodeIds` (genau die gesuchte Folge, `[episodeId]`; Mehrfachfolgen kommen nicht bis hier). `quality` und `languages` gehen unverändert zurück, wie `GET /release` sie lieferte. Die übrigen Kandidaten gehen als `unchecked` ins Protokoll. Erfolg → `grabbed` (Item + Cache mit `grabbed_at` + Protokoll in einer Transaktion, mit Fingerabdruck). Fehler (Codex K2, `_refused` wie oben): abgelehnt → `grab_failed`, Item `failed`, kein Cache; sonst → `grab_uncertain`, Item `failed` mit Hinweis auf die Warteschlange, **mit** Cache und `grabbed_at` (der Download läuft vielleicht). In beiden Fällen **kein zweiter Kandidat**. Keiner besteht → `no_clean_hit` (Item `no_hit` + Cache). Keiner besteht und mindestens ein `/parse` scheiterte → `error` mit dem `/parse`-Fehler in `error_message`, Item `failed`, **kein** Cache, Rate-Slot belegt (die Suche lief): Der nicht prüfbare Treffer kann der richtige sein, ein `no_hit` sperrte den Titel bei `retry_hours=0` für immer. Besteht ein Kandidat nach einem nicht prüfbaren, wird er wie sonst geladen (er hat alle Regeln bestanden, es leidet höchstens der Rang; ein `/parse`, das für einen Release-Namen jedes Mal scheitert, ließe den Titel sonst nie laden und kostete jeden Lauf eine Indexer-Suche).
+6. Probelauf: höchstens `dry_run_max_releases` Kandidaten prüfen, der Rest `unchecked`; Ergebnis `would_grab` oder `no_clean_hit`, oder `error` wie in 5, wenn keiner besteht und ein `/parse` scheiterte (zählt nicht zur Runde); nur Protokoll (mit Profil-Fingerabdruck, Runde und Einstellungs-Fingerabdruck).
 
 **Warum das Ziel festgelegt wird (Codex K1, am Quellcode bestätigt).** Radarr und Sonarr legen jede Entscheidung einer Suche 30 Minuten in einen prozessweiten Zwischenspeicher, Schlüssel `indexerId + "_" + guid` (Radarr `ReleaseController.cs:65,175–185`, Sonarr `:66,237–247`); jede Suche, die denselben Treffer liefert, überschreibt den Eintrag mit *ihrer* Zuordnung (`ParsingService` ordnet ohne passende ID über Titel, Alias oder die gesuchte Folge zu). Ohne `shouldOverride` lädt `POST` den Treffer für das Ziel aus dem Zwischenspeicher (`movieId`/`seriesId` wirken nur, wenn dort keins steht). Überlappen kann sich vieles: die beiden Skills derselben Instanz (eigene APScheduler-Jobs, je eigene Sperre), Handsuchen, andere Clients, RSS-Abfragen. Mit `shouldOverride` setzt \*arr Film bzw. Serie und Folgen, Qualität und Sprachen aus dem POST (Radarr `:83–106`, Sonarr `:84–112`); aus dem Zwischenspeicher bleiben nur der Treffer selbst (dieselbe Download-Adresse), die Titel-Zerlegung und Verlaufsdaten (Custom Formats, Punkte). Fehlt der Eintrag (abgelaufen): 404 → `grab_failed`.
 
@@ -5308,13 +5308,68 @@ def test_a_failed_release_search_keeps_the_rate_slot_unless_it_never_ran(db_path
 
 
 def test_parse_error_rejects_only_that_candidate(db_path):
+    # A clean release after one /parse could not check is still grabbed: it
+    # passed every rule. Only the rank may suffer, not the title.
     inst = make_instance(checked_search="active")
     parses = {**PARSES, WRONG: requests.exceptions.ConnectionError("parse down")}
     agent = the_thing_agent(inst, parses=parses)
     SearchMissingSkill().execute(agent)
     [row] = log_rows()
-    assert row["candidates"][0]["reasons"] == ["parse error"]
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("error", ["parse error"]), ("pass", [])]
     assert row["outcome"] == "grabbed"
+    assert row["rejected_count"] == 0
+
+
+PARSE_TIMEOUT = requests.exceptions.ReadTimeout("parse slow")
+
+
+@pytest.mark.parametrize("error", [PARSE_TIMEOUT, http_error(503)], ids=["timeout", "5xx"])
+def test_parse_failures_on_every_release_leave_the_title_free(db_path, error):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, parses={WRONG: error, RIGHT: error})
+    SearchMissingSkill().execute(agent)
+
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("error", ["parse error"])] * 2
+    assert row["rejected_count"] == 0
+    assert "/parse failed for 2 release(s)" in row["error_message"] and str(error) in row["error_message"]
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"].startswith("All 1 submission(s) failed")
+    assert agent.get_rate_used() == 1           # the indexer search did run
+    assert any(m.startswith("Checked search for ") and "/parse failed" in m for m in activity_messages())
+
+
+def test_a_rule_rejection_next_to_a_parse_failure_is_no_clean_miss(db_path):
+    # The release /parse could not check may have been the right one.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, parses={**PARSES, RIGHT: PARSE_TIMEOUT})
+    SearchMissingSkill().execute(agent)
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [
+        ("reject", ["year"]), ("error", ["parse error"])]
+    assert row["rejected_count"] == 1
+    assert "/parse failed for 1 release(s)" in row["error_message"]
+    assert last_run()["status"] == "error"
+
+
+@pytest.mark.parametrize("mode,recovered", [("active", "grabbed"), ("dry_run", "would_grab")])
+def test_a_title_is_searched_again_once_parse_answers(db_path, mode, recovered):
+    inst = make_instance(checked_search=mode)
+    SearchMissingSkill().execute(the_thing_agent(inst, parses={WRONG: PARSE_TIMEOUT, RIGHT: PARSE_TIMEOUT}))
+    assert [r["outcome"] for r in log_rows()] == ["error"]
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert len([p for p, _ in again.gets if p == RELEASE]) == 1
+    assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
 
 
 def test_a_grab_without_a_clear_answer_blocks_the_title(db_path):
@@ -6406,6 +6461,14 @@ grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
 after a grab). Neither tries a second release.
 
+A release /parse could not check (timeout, HTTP error) is never grabbed,
+and it is no rule rejection either: when no release passes and at least one
+could not be checked, the title ends as an error (not cached, not counted
+for the dry-run round), so a later run searches it again. A release that
+passes after such a one is still grabbed: it passed every rule, only its
+rank may be lower, and a /parse failing for one release name every time
+would otherwise keep the title from ever being grabbed.
+
 Secrets: a release from *arr carries downloadUrl (with the indexer's API
 key), infoUrl, magnetUrl and guid. Only the fields below are kept; guid,
 the mapping, quality and languages live in memory for the one POST and are
@@ -6448,6 +6511,7 @@ INDEXER_PATH = "/api/v3/indexer"
 VERDICT_PASS = "pass"
 VERDICT_REJECT = "reject"
 VERDICT_UNCHECKED = "unchecked"
+VERDICT_ERROR = "error"       # /parse failed: not checked, not a rule rejection
 
 
 @dataclass(frozen=True)
@@ -6511,6 +6575,10 @@ class _Result:
 
 class _Stopped(Exception):
     """Abort requested (instance off, deleted, shutdown) while a title was checked."""
+
+
+class _ParseFailed(Exception):
+    """GET /parse failed for one release: it could not be checked."""
 
 
 def _int(value) -> int | None:
@@ -6677,8 +6745,8 @@ class _TitleCheck:
             return Verdict((REASON_MULTI_EPISODE,))
         try:
             parsed = self.agent.http_get(PARSE_PATH, params={"title": release.title})
-        except Exception:
-            return Verdict((REASON_PARSE_ERROR,))
+        except Exception as exc:
+            raise _ParseFailed(f"{release.title}: {exc}") from exc
         if self.arr_type == "radarr":
             return radarr_rules.evaluate(info, release.title,
                                          radarr_rules.parse_from_resource(parsed, release.movie_titles),
@@ -6757,6 +6825,7 @@ class _TitleCheck:
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
         candidates: list[dict] = []
         pick: _Release | None = None
+        parse_failures: list[str] = []
         for index, release in enumerate(releases):
             # The first approved release is what the search command would have grabbed.
             arr_choice = index == 0
@@ -6765,7 +6834,13 @@ class _TitleCheck:
                 candidates.append(_candidate(release, VERDICT_UNCHECKED, arr_choice=arr_choice))
                 continue
             self.stop_check()
-            verdict = self.verdict(task, info, release)
+            try:
+                verdict = self.verdict(task, info, release)
+            except _ParseFailed as exc:
+                parse_failures.append(str(exc))
+                candidates.append(_candidate(release, VERDICT_ERROR, (REASON_PARSE_ERROR,),
+                                             arr_choice=arr_choice))
+                continue
             chosen = verdict.ok and pick is None
             if chosen:
                 pick = release
@@ -6773,6 +6848,12 @@ class _TitleCheck:
                                          verdict.reasons, verdict.notes, chosen, arr_choice))
 
         common = {"arr_pick": releases[0].title, "pick": _pick(pick), "candidates": candidates}
+        if pick is None and parse_failures:
+            # Not a clean miss: the release /parse could not check may be the
+            # right one. Failed item without a cache entry, searched again later.
+            error = (f"/parse failed for {len(parse_failures)} release(s) and no release passed — "
+                     f"first: {parse_failures[0]}")
+            return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
         if pick is None:
             return _Result(OUTCOME_NO_CLEAN_HIT, "", entry(OUTCOME_NO_CLEAN_HIT, **common), ITEM_NO_HIT)
         if self.mode == MODE_DRY_RUN:

@@ -23,6 +23,14 @@ grabbed, the title stays free) or has no clear answer (timeout, connection
 lost after sending, 5xx: it may be downloading, the title is cached like
 after a grab). Neither tries a second release.
 
+A release /parse could not check (timeout, HTTP error) is never grabbed,
+and it is no rule rejection either: when no release passes and at least one
+could not be checked, the title ends as an error (not cached, not counted
+for the dry-run round), so a later run searches it again. A release that
+passes after such a one is still grabbed: it passed every rule, only its
+rank may be lower, and a /parse failing for one release name every time
+would otherwise keep the title from ever being grabbed.
+
 Secrets: a release from *arr carries downloadUrl (with the indexer's API
 key), infoUrl, magnetUrl and guid. Only the fields below are kept; guid,
 the mapping, quality and languages live in memory for the one POST and are
@@ -65,6 +73,7 @@ INDEXER_PATH = "/api/v3/indexer"
 VERDICT_PASS = "pass"
 VERDICT_REJECT = "reject"
 VERDICT_UNCHECKED = "unchecked"
+VERDICT_ERROR = "error"       # /parse failed: not checked, not a rule rejection
 
 
 @dataclass(frozen=True)
@@ -128,6 +137,10 @@ class _Result:
 
 class _Stopped(Exception):
     """Abort requested (instance off, deleted, shutdown) while a title was checked."""
+
+
+class _ParseFailed(Exception):
+    """GET /parse failed for one release: it could not be checked."""
 
 
 def _int(value) -> int | None:
@@ -294,8 +307,8 @@ class _TitleCheck:
             return Verdict((REASON_MULTI_EPISODE,))
         try:
             parsed = self.agent.http_get(PARSE_PATH, params={"title": release.title})
-        except Exception:
-            return Verdict((REASON_PARSE_ERROR,))
+        except Exception as exc:
+            raise _ParseFailed(f"{release.title}: {exc}") from exc
         if self.arr_type == "radarr":
             return radarr_rules.evaluate(info, release.title,
                                          radarr_rules.parse_from_resource(parsed, release.movie_titles),
@@ -374,6 +387,7 @@ class _TitleCheck:
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
         candidates: list[dict] = []
         pick: _Release | None = None
+        parse_failures: list[str] = []
         for index, release in enumerate(releases):
             # The first approved release is what the search command would have grabbed.
             arr_choice = index == 0
@@ -382,7 +396,13 @@ class _TitleCheck:
                 candidates.append(_candidate(release, VERDICT_UNCHECKED, arr_choice=arr_choice))
                 continue
             self.stop_check()
-            verdict = self.verdict(task, info, release)
+            try:
+                verdict = self.verdict(task, info, release)
+            except _ParseFailed as exc:
+                parse_failures.append(str(exc))
+                candidates.append(_candidate(release, VERDICT_ERROR, (REASON_PARSE_ERROR,),
+                                             arr_choice=arr_choice))
+                continue
             chosen = verdict.ok and pick is None
             if chosen:
                 pick = release
@@ -390,6 +410,12 @@ class _TitleCheck:
                                          verdict.reasons, verdict.notes, chosen, arr_choice))
 
         common = {"arr_pick": releases[0].title, "pick": _pick(pick), "candidates": candidates}
+        if pick is None and parse_failures:
+            # Not a clean miss: the release /parse could not check may be the
+            # right one. Failed item without a cache entry, searched again later.
+            error = (f"/parse failed for {len(parse_failures)} release(s) and no release passed — "
+                     f"first: {parse_failures[0]}")
+            return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error, **common), ITEM_FAILED)
         if pick is None:
             return _Result(OUTCOME_NO_CLEAN_HIT, "", entry(OUTCOME_NO_CLEAN_HIT, **common), ITEM_NO_HIT)
         if self.mode == MODE_DRY_RUN:

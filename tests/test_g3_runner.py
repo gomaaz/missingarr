@@ -552,13 +552,68 @@ def test_a_failed_release_search_keeps_the_rate_slot_unless_it_never_ran(db_path
 
 
 def test_parse_error_rejects_only_that_candidate(db_path):
+    # A clean release after one /parse could not check is still grabbed: it
+    # passed every rule. Only the rank may suffer, not the title.
     inst = make_instance(checked_search="active")
     parses = {**PARSES, WRONG: requests.exceptions.ConnectionError("parse down")}
     agent = the_thing_agent(inst, parses=parses)
     SearchMissingSkill().execute(agent)
     [row] = log_rows()
-    assert row["candidates"][0]["reasons"] == ["parse error"]
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("error", ["parse error"]), ("pass", [])]
     assert row["outcome"] == "grabbed"
+    assert row["rejected_count"] == 0
+
+
+PARSE_TIMEOUT = requests.exceptions.ReadTimeout("parse slow")
+
+
+@pytest.mark.parametrize("error", [PARSE_TIMEOUT, http_error(503)], ids=["timeout", "5xx"])
+def test_parse_failures_on_every_release_leave_the_title_free(db_path, error):
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, parses={WRONG: error, RIGHT: error})
+    SearchMissingSkill().execute(agent)
+
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [("error", ["parse error"])] * 2
+    assert row["rejected_count"] == 0
+    assert "/parse failed for 2 release(s)" in row["error_message"] and str(error) in row["error_message"]
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"].startswith("All 1 submission(s) failed")
+    assert agent.get_rate_used() == 1           # the indexer search did run
+    assert any(m.startswith("Checked search for ") and "/parse failed" in m for m in activity_messages())
+
+
+def test_a_rule_rejection_next_to_a_parse_failure_is_no_clean_miss(db_path):
+    # The release /parse could not check may have been the right one.
+    inst = make_instance(checked_search="active")
+    agent = the_thing_agent(inst, parses={**PARSES, RIGHT: PARSE_TIMEOUT})
+    SearchMissingSkill().execute(agent)
+    assert agent.posts == []
+    assert sql("SELECT command_status, cache_key FROM search_history_items") == [("failed", "")]
+    assert sql("SELECT COUNT(*) FROM searched_items")[0][0] == 0
+    [row] = log_rows()
+    assert row["outcome"] == "error"
+    assert [(c["verdict"], c["reasons"]) for c in row["candidates"]] == [
+        ("reject", ["year"]), ("error", ["parse error"])]
+    assert row["rejected_count"] == 1
+    assert "/parse failed for 1 release(s)" in row["error_message"]
+    assert last_run()["status"] == "error"
+
+
+@pytest.mark.parametrize("mode,recovered", [("active", "grabbed"), ("dry_run", "would_grab")])
+def test_a_title_is_searched_again_once_parse_answers(db_path, mode, recovered):
+    inst = make_instance(checked_search=mode)
+    SearchMissingSkill().execute(the_thing_agent(inst, parses={WRONG: PARSE_TIMEOUT, RIGHT: PARSE_TIMEOUT}))
+    assert [r["outcome"] for r in log_rows()] == ["error"]
+    again = the_thing_agent(inst)
+    SearchMissingSkill().execute(again)
+    assert len([p for p, _ in again.gets if p == RELEASE]) == 1
+    assert [r["outcome"] for r in log_rows()] == [recovered, "error"]
 
 
 def test_a_grab_without_a_clear_answer_blocks_the_title(db_path):
