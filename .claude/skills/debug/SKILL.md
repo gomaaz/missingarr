@@ -66,6 +66,7 @@ app.js forceRun()
           → concurrent run guard          ← waits up to 90s
           → skill.execute(force=True)
             → hours_after_release filter  ← skipped when force=True
+            → Radarr isAvailable check    ← NOT skipped when force=True ("not yet available in Radarr")
             → seen_keys dedup             ← in-run deduplication
             → DB cache check              ← skipped when force=True
             → HTTP POST to *arr
@@ -91,6 +92,7 @@ htmx polls /api/instances/{id}/status every 5s
 ### Search-related
 - [ ] `search_missing_enabled` / `search_upgrades_enabled` flag in DB — is it actually `1`?
 - [ ] `hours_after_release` > 0 and all items are fresh → scheduled runs return 0
+- [ ] Radarr: a movie Radarr does not report as available (`isAvailable` false) is skipped as well, also in force runs, and shows up as "not yet available in Radarr" in the run summary
 - [ ] Cache key mismatch between modes (episode vs season_packs vs smart)
 - [ ] `seen_keys` set present in candidate selection loop
 - [ ] For Sonarr: `season_number` can be `None` → use `(season_number or 0):02d`

@@ -54,6 +54,7 @@ forceRun(id, skill) in app.js
           → concurrent run guard (wait up to 90s)
           → skill.execute(agent, force=True)
             → hours_after_release skipped (force)
+            → Radarr isAvailable false → skipped even in force runs ("not yet available in Radarr" in the run summary)
             → seen_keys dedup
             → DB cache skipped (force)
             → HTTP POST to *arr API
@@ -66,7 +67,7 @@ forceRun(id, skill) in app.js
 | Symptom | Likely cause | Check |
 |---------|-------------|-------|
 | Force trigger: "Run triggered!" but nothing happens | Auth redirect (login page returned) | `resp.redirected` in app.js `forceRun()` |
-| Force trigger: no searches, 0 triggered | `hours_after_release` filter, skill disabled, rate cap | `search_missing.py` execute(), `base.py` _run_skill() |
+| Force trigger: no searches, 0 triggered | `hours_after_release` filter, skill disabled, rate cap, Radarr movie not available (`isAvailable` false; skipped in force runs too, "not yet available in Radarr" in the run summary) | `search_missing.py` execute(), `base.py` _run_skill() |
 | Items searched again despite cache | Cache key mismatch, wrong mode, seen_keys missing | `_cache_key()` in search_missing.py |
 | Same series searched twice per run | Missing `seen_keys` dedup in candidate loop | candidate selection loop in execute() |
 | UI badge stays WAIT while running | `updateCardState()` not finding `data-status-badge` | card.html data attributes, app.js updateCardState |

@@ -881,6 +881,47 @@ out.counted = counted;
     assert out["counted"] == 2
 
 
+@needs_node
+def test_leaving_the_page_during_the_list_load_starts_no_proposal_request(client, tmp_path):
+    out = run_page(tmp_path, page_script(client), f"""
+route('GET', '/api/imports', (url) => held(url));
+route('GET', '/api/imports/1/proposal', (url) => held(url));
+const loading = page.load();
+await until(() => pending.length === 1);
+page.destroy();
+pending[0].resolve(answer(200, {json.dumps(listing('a/1', 'b 2'))}));
+await loading;
+for (let i = 0; i < 20; i++) await tick();
+out.proposals = calls.filter(c => c[1].includes('/proposal?')).length;
+out.instances = page.instances.length;
+out.toasts = toasts;
+""")
+    assert out["proposals"] == 0
+    assert out["instances"] == 0
+    assert out["toasts"] == []
+
+
+@needs_node
+def test_leaving_the_page_during_a_discard_keeps_the_counter_but_loads_nothing(client, tmp_path):
+    out = run_page(tmp_path, page_script(client), setup_one(proposal()) + f"""
+globalThis.refreshImportsCount = async () => {{ counted += 1; calls.push(['COUNT', '', null]); }};
+route('POST', '/api/imports/1/discard', (url) => held(url));
+const discarding = page.discard(inst, d);
+await until(() => pending.length === 1);
+page.destroy();
+pending[0].resolve(answer(200, {{ download_id: 'a/1', title: '{TITLE}', blocklist: true, queue_id: 11 }}));
+await discarding;
+for (let i = 0; i < 20; i++) await tick();
+out.counted = counted;
+out.lists = calls.filter(c => c[1] === '/api/imports').length;
+out.proposals = calls.filter(c => c[1].includes('/proposal?')).length;
+out.busy = page.busy;
+""")
+    assert out["counted"] == 1
+    assert out["lists"] == 0 and out["proposals"] == 0
+    assert out["busy"] == {}
+
+
 # ── The counter functions of app.js in node ──────────────────────────────────
 
 APP_PRELUDE = r"""
