@@ -295,6 +295,8 @@ def finish_search_run(
     notes = list(notes)
     failed = len(outcome.errors)
     succeeded = outcome.triggered + outcome.handled
+    # A dry run submits nothing: its failures are titles (0.10.1).
+    noun = "title(s)" if (agent.config.get("checked_search") or "off") == "dry_run" else "submission(s)"
     if outcome.stopped:
         notes.append("Stopped early: instance disabled or deleted")
 
@@ -308,13 +310,13 @@ def finish_search_run(
         notes.insert(0, outcome.paused)
     elif failed and succeeded == 0:
         status = "error"
-        notes.insert(0, f"All {failed} submission(s) failed — first error: {outcome.errors[0]}")
+        notes.insert(0, f"All {failed} {noun} failed — first error: {outcome.errors[0]}")
     elif outcome.stopped and succeeded == 0:
         status = "error"
     else:
         status = "success"
         if failed:
-            notes.insert(0, f"{failed} of {failed + succeeded} submission(s) failed "
+            notes.insert(0, f"{failed} of {failed + succeeded} {noun} failed "
                             f"— first error: {outcome.errors[0]}")
 
     db.history.finish_run(run_id, wanted, outcome.triggered, status, "; ".join(notes) or None)

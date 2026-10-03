@@ -53,12 +53,16 @@ class _Stats:
     skipped_queue: int = 0
     skipped_paused: int = 0
     skipped_unavailable: int = 0
+    # Checked-search dry run: skipped_cache counts titles checked in this
+    # round, the search cache is not asked (0.10.1).
+    dry_run: bool = False
     notes: list = field(default_factory=list)
 
     def describe(self) -> str:
+        cached = "already checked in this dry-run round" if self.dry_run else "already searched"
         return (
             f"checked {self.examined} of {self.total} missing item(s) on {self.pages} page(s): "
-            f"{self.skipped_cache} already searched, {self.skipped_window} inside the release "
+            f"{self.skipped_cache} {cached}, {self.skipped_window} inside the release "
             f"window, {self.skipped_file} with a file"
             + (f", {self.skipped_unavailable} not yet available in Radarr" if self.skipped_unavailable else "")
             + (f", {self.skipped_queue} in the *arr queue" if self.skipped_queue else "")
@@ -139,7 +143,10 @@ class SearchMissingSkill(BaseSkill):
             wanted_count = len(candidates)
 
             if not candidates:
-                agent.log("info", self.name, f"Nothing to search — {stats.describe()}")
+                # A dry run has checked its round: only a new round checks again.
+                hint = (" — Reset dry run on the Pre-filter page starts a new round"
+                        if stats.dry_run and stats.skipped_cache else "")
+                agent.log("info", self.name, f"Nothing to search — {stats.describe()}{hint}")
                 finish_search_run(self.name, agent, run_id, 0, outcome, stats.notes)
                 return
             # Movies Radarr keeps back are named on every run, not only when
@@ -176,7 +183,7 @@ class SearchMissingSkill(BaseSkill):
 
     def _collect_random(self, agent, cfg, per_run, mode, cutoff, force, round_keys=None, profiles=None,
                         queued=frozenset(), paused=frozenset()):
-        stats = _Stats()
+        stats = _Stats(dry_run=round_keys is not None)
         page_size = min(max(per_run * 10, 50), 250)
         probe = agent.http_get(WANTED_PATH, params={"page": 1, "pageSize": 1, "monitored": "true"})
         stats.total = int(probe.get("totalRecords", 0) or 0)
@@ -209,7 +216,7 @@ class SearchMissingSkill(BaseSkill):
     def _collect_ordered(self, agent, cfg, per_run, mode, order, cutoff, force, round_keys=None, profiles=None,
                          queued=frozenset(), paused=frozenset()):
         """Read the whole wanted list, sort it here, then walk it in order (A3/A4)."""
-        stats = _Stats()
+        stats = _Stats(dry_run=round_keys is not None)
         records: list = []
         seen_ids: set = set()
         page = 1
