@@ -86,4 +86,20 @@ TOOLTIPS = {
         "Off: cached titles stay blocked whatever the profile. A dry run always checks a title again after a "
         "profile change."
     ),
+    # Imports (0.10.0)
+    "imports_verdict": (
+        "missingarr's own check of a held-back download with the pre-filter rules of the checked search:\n"
+        "• fits: no rule objects\n"
+        "• foreign?: a rule objects; the reasons and details are shown\n"
+        "• cannot judge: the app cannot read the release name, or a read failed\n"
+        "Radarr: the measured movie rules (V6). Sonarr: rules S1–S4, not measured; the title is only compared "
+        "when Sonarr maps the release name to a series of your library. The verdict never locks Import."
+    ),
+    "imports_discard_blocklist": (
+        "On: if the app grabbed this release itself, it marks it as failed, puts it on the blocklist and may "
+        "search again (Radarr only for a monitored, available movie; Sonarr as its Redownload Failed settings "
+        "allow). A download added by hand is only removed.\n"
+        "Off: the download is only removed: not blocklisted, no new search.\n"
+        "Both remove the download and its files from the download client."
+    ),
 }

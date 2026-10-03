@@ -47,7 +47,7 @@ def test_no_page_contains_the_api_key(client):
     login(client)
     instance_id = make_instance(api_key=SECRET)["id"]
     for path in ("/", "/instances", f"/instances/{instance_id}/edit", f"/instances/{instance_id}/card",
-                 "/instances/new", "/history", "/logs", "/searched"):
+                 "/instances/new", "/history", "/logs", "/searched", "/imports"):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert SECRET not in resp.text, path

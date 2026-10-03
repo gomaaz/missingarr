@@ -172,6 +172,9 @@ body {
 .btn-toggle-off { background: transparent; color: var(--text-muted); border-color: var(--border); }
 .btn-toggle-off:hover { color: var(--text-secondary); border-color: #4d5270; }
 
+/* The hidden attribute wins over display rules such as .badge's inline-flex */
+[hidden] { display: none !important; }
+
 /* Status badges */
 .badge {
     display: inline-flex;

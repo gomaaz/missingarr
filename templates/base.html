@@ -26,6 +26,8 @@
         <a href="/history" class="nav-link {% if '/history' in request.url.path %}active{% endif %}">History</a>
         <a href="/searched" class="nav-link {% if '/searched' in request.url.path %}active{% endif %}">Progressed</a>
         <a href="/checked-search" class="nav-link {% if '/checked-search' in request.url.path %}active{% endif %}">Pre-filter</a>
+        <a href="/imports" class="nav-link {% if '/imports' in request.url.path %}active{% endif %}">Imports
+            <span class="badge badge-error" data-imports-count hidden x-data x-init="startImportsCount()"></span></a>
         <a href="/logs" class="nav-link {% if '/logs' in request.url.path %}active{% endif %}">Logs</a>
         <a href="/help" class="nav-link {% if '/help' in request.url.path %}active{% endif %}">Help</a>
     </div>

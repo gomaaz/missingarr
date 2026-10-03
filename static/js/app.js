@@ -382,3 +382,80 @@ async function toggleInstance(instanceId, enabled) {
         if (!isSessionExpired(err)) toast('Failed to toggle instance', 'error');
     }
 }
+
+// ── Imports counter (menu badge and dashboard line) ──────────────────────────
+// Filled from GET /api/imports/count by one loader: the menu's poll every 60 s
+// and the refresh after every action on the Imports page. "?" stands for 0
+// while an app could not be read or has just restarted.
+var IMPORTS_COUNT_POLL_MS = 60000;
+
+function importsCountText(data) {
+    const total = Number(data && data.total) || 0;
+    if (total > 0) return String(total);
+    return data && data.complete === true ? '' : '?';
+}
+
+function importsDashboardText(data) {
+    const total = Number(data && data.total) || 0;
+    const complete = !!data && data.complete === true;
+    if (total === 0) {
+        return complete ? 'No imports waiting' : 'Imports: unknown — an app could not be read or has just restarted';
+    }
+    const waiting = total === 1 ? '1 import waiting' : `${total} imports waiting`;
+    // The badge shows only the number; the dashboard line says when an app is missing from it.
+    return complete ? waiting : `${waiting} — an app could not be read or has just restarted`;
+}
+
+function updateImportsCount(responseText) {
+    let data;
+    try {
+        data = JSON.parse(responseText);
+    } catch (_) {
+        return;
+    }
+    if (!data || typeof data !== 'object') return;
+    const text = importsCountText(data);
+    document.querySelectorAll('[data-imports-count]').forEach(el => {
+        el.textContent = text;
+        el.hidden = text === '';
+    });
+    const summary = importsDashboardText(data);
+    document.querySelectorAll('[data-imports-dashboard]').forEach(el => {
+        el.textContent = summary;
+        el.hidden = false;
+    });
+}
+
+// The loader's state lives on window: hx-boost runs this file again on every
+// navigation, and an answer may arrive after that.
+function importsCountLoader() {
+    if (!window.importsCountLoaderState) window.importsCountLoaderState = { sequence: 0, timer: null };
+    return window.importsCountLoaderState;
+}
+
+// Every request, poll or refresh, takes the next number of one sequence. Its
+// answer is used only if no later request started by the time its body is
+// read: an older answer never puts back a count an action already changed.
+async function refreshImportsCount() {
+    const loader = importsCountLoader();
+    const sequence = ++loader.sequence;
+    try {
+        const resp = await apiFetch('/api/imports/count');
+        if (!resp.ok) return;
+        const text = await resp.text();
+        if (sequence !== loader.sequence) return;     // a later request started: its answer counts
+        updateImportsCount(text);
+    } catch (_) {
+        // A lost session is handled by apiFetch; the next poll tries again.
+    }
+}
+
+// Called by the menu badge (x-init) on every page view, a full load or a
+// boosted navigation: reads at once, then every IMPORTS_COUNT_POLL_MS. The
+// timer of the page before is stopped first, so only one runs.
+function startImportsCount() {
+    const loader = importsCountLoader();
+    clearInterval(loader.timer);
+    loader.timer = setInterval(refreshImportsCount, IMPORTS_COUNT_POLL_MS);
+    return refreshImportsCount();
+}
