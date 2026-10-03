@@ -5,6 +5,7 @@ from backend import db
 from backend.agents.base import TRIGGER_BUSY, TRIGGER_UNKNOWN_SKILL
 from backend.agents.orchestrator import TRIGGER_NOT_FOUND
 from backend.checked_search.settings import CheckedSearchSettings
+from backend.imports import service as imports_service
 from backend.models.instance import InstanceCreate, InstanceUpdate, checked_mode_conflict
 
 router = APIRouter(prefix="/instances")
@@ -79,7 +80,13 @@ def update_instance(instance_id: int, data: InstanceUpdate, request: Request):
     conflict = checked_mode_conflict(payload["type"], effective, payload["missing_mode"])
     if conflict:
         raise HTTPException(422, conflict)
+    # The Imports page forgets its caches and sent imports of the instance (it
+    # may point to another app now) and raises its revision, right before and
+    # right after the database write, not after the agent restarted (seconds):
+    # an import or discard that began earlier sends nothing from then on.
+    imports_service.forget_instance(instance_id)
     inst = db.instances.update(instance_id, payload)
+    imports_service.forget_instance(instance_id)
     _get_orchestrator(request).reload_agent(instance_id)
     return public_instance(inst)
 
@@ -102,7 +109,11 @@ def delete_instance(instance_id: int, request: Request):
             message += (" A checked search waits for *arr's release search to finish "
                         "(up to the release search timeout) before it stops.")
         raise HTTPException(409, message)
+    # As in update_instance: the Imports page forgets the instance right
+    # before and right after the write.
+    imports_service.forget_instance(instance_id)
     db.instances.delete(instance_id)
+    imports_service.forget_instance(instance_id)
 
 
 @router.post("/{instance_id}/toggle-skill")
@@ -210,7 +221,11 @@ def test_connection(instance_id: int):
 
 @router.post("/{instance_id}/toggle")
 def toggle_instance(instance_id: int, enabled: bool, request: Request):
+    # As in update_instance: before and right after the write, not after the
+    # agent started or stopped (stopping it can take seconds).
+    imports_service.forget_instance(instance_id)
     inst = db.instances.toggle_enabled(instance_id, enabled)
+    imports_service.forget_instance(instance_id)
     if not inst:
         raise HTTPException(404, "Instance not found")
     orchestrator = _get_orchestrator(request)

@@ -17,7 +17,7 @@ from backend.database import init_db
 from backend.crypto import get_session_secret, init_crypto
 from backend.log_broadcaster import broadcaster
 from backend.agents.orchestrator import Orchestrator
-from backend.api import health, instances, activity, history, searched, checked_search
+from backend.api import health, instances, activity, history, searched, checked_search, imports
 from backend.api.instances import public_instance
 from backend.checked_search.settings import (
     FIELD_LABELS, GENERAL_FIELDS, RADARR_FIELDS, SETTING_BOUNDS, SONARR_FIELDS, CheckedSearchSettings,
@@ -156,6 +156,7 @@ app.include_router(activity.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(searched.router, prefix="/api")
 app.include_router(checked_search.router, prefix="/api")
+app.include_router(imports.router, prefix="/api")
 
 
 # ─── UI routes ─────────────────────────────────────────────────────────────────
@@ -245,6 +246,12 @@ async def checked_search_page(request: Request):
         request, "checked_search.html",
         template_ctx(request, instances=instances, summary=db.checked_search_log.summary(current_round=True)),
     )
+
+
+@app.get("/imports", response_class=HTMLResponse)
+async def imports_page(request: Request):
+    # No instance data in the template: the page reads everything from /api/imports.
+    return templates.TemplateResponse(request, "imports.html", template_ctx(request))
 
 
 @app.get("/help", response_class=HTMLResponse)
