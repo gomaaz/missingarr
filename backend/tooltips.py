@@ -32,7 +32,12 @@ TOOLTIPS = {
     "missing_per_run": "Maximum number of missing titles searched per run. Must be at least 1 while missing search is enabled.",
     "upgrades_per_run": "Maximum number of upgrade candidates searched per run. Must be at least 1 while upgrade search is enabled.",
     "seconds_between_actions": "Delay in seconds between individual API calls. Prevents overloading the instance.",
-    "hours_after_release": "Wait X hours after the release date before searching for a title. Set to 0 to search immediately.",
+    "hours_after_release": (
+        "Wait X hours after the release date before searching for a title. Set to 0 to search immediately. "
+        "Search Missing in Radarr: a movie is only searched once Radarr counts it as available (its "
+        "Minimum Availability plus the Availability Delay). Both must be met: these hours still count "
+        "from the release date, not from the moment Radarr counts the movie as available."
+    ),
     "upgrade_source": (
         "Source for upgrade candidates (Radarr only):\n"
         "• Wanted List Only: Uses Radarr's built-in upgrade list (cutoff unmet)\n"

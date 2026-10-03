@@ -20,3 +20,20 @@ def test_readme_explains_the_bcrypt_hash_and_the_upgrade():
     assert "bcrypt" in readme
     assert "Upgrading to 0.8.0" in readme
     assert "passlib" not in readme
+
+
+def test_docs_explain_radarr_availability():
+    from backend.tooltips import TOOLTIPS
+    tooltip = TOOLTIPS["hours_after_release"]
+    assert "Search Missing in Radarr" in tooltip
+    assert "Minimum Availability" in tooltip
+    assert "not from the moment Radarr" in tooltip
+    readme = (ROOT / "README.md").read_text()
+    assert "Search Missing in Radarr: a movie is only searched once Radarr reports it available" in readme
+    assert "not from the moment Radarr reports it available" in readme
+    assert "In Search Missing, Force Runs skip this wait" in readme
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    section = changelog[changelog.index("## [0.10.0]"):changelog.index("## [0.9.0]")]
+    assert "not yet available in Radarr" in section
+    assert "a separate condition, still counted from the release date" in section
+    assert section.index("### Added") < section.index("### Changed") < section.index("### Security")

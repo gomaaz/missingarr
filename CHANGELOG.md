@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Help card "Imports" and info icons for the verdict and the blocklist switch.
 - API: `GET /api/imports`, `GET /api/imports/count`, `GET /api/imports/<id>/proposal?download_id=…`, `POST /api/imports/<id>/import`, `GET /api/imports/<id>/commands/<command_id>` (only for imports this missingarr sent to that instance), `POST /api/imports/<id>/discard`. Every import and discard writes a line to the activity log (skill `imports`).
 
+### Changed
+
+- Search Missing (Radarr) leaves out movies Radarr does not report as available yet (`isAvailable` false in the Wanted list: the movie's *Minimum Availability* plus Radarr's *Availability Delay* not reached), in every search order, with checked search (dry run and active) and in Force Runs. Radarr treats a search sent through its API as started by a user and then skips its own availability check, so missingarr could search and grab movies that were not out yet. Such movies take no place of *Missing per run*, are not remembered as searched and are searched as soon as Radarr reports them available; the run summary counts them ("N not yet available in Radarr"). *Hours after release* stays a separate condition, still counted from the release date, not from the moment Radarr reports a movie available. Upgrade searches and Sonarr are unchanged.
+
 ### Security
 
 - The page and `/api/imports/*` sit behind the login; Import and Discard are POST requests and covered by the cross-site check.
