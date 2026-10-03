@@ -143,7 +143,9 @@ def test_oldest_first_starts_with_the_globally_oldest(db_path):
     assert episode_ids(agent) == [1500, 1499, 1498, 1497, 1496]
     wanted_params = [p for path, p in agent.gets if path == WANTED]
     assert {p["page"] for p in wanted_params} == {1, 2}
-    assert all(set(p) == {"page", "pageSize", "monitored"} for p in wanted_params)
+    # No server-side sort key; Sonarr embeds the series (profile, series type).
+    assert all(p == {"page": p["page"], "pageSize": 1000, "monitored": "true", "includeSeries": "true"}
+               for p in wanted_params)
 
 
 def test_newest_first_starts_with_the_globally_newest(db_path):

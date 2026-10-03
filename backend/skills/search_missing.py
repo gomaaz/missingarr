@@ -42,6 +42,16 @@ CHECK_CHUNK = 1000
 RADARR_DATES = ("inCinemas", "digitalRelease", "physicalRelease")
 
 
+def _wanted_params(cfg: dict, page: int, size: int) -> dict:
+    """Query of GET /api/v3/wanted/missing. Sonarr: includeSeries embeds each
+    episode's series, which names its quality profile (ProfileState.
+    profile_of), so no run reads the whole series list (0.10.1)."""
+    params = {"page": page, "pageSize": size, "monitored": "true"}
+    if cfg["type"] == "sonarr":
+        params["includeSeries"] = "true"
+    return params
+
+
 @dataclass
 class _Stats:
     total: int = 0
@@ -98,9 +108,6 @@ class SearchMissingSkill(BaseSkill):
             # The checked search handles single episodes only; the form and
             # the API refuse other modes while it is on (spec: Sonarr).
             mode = "episode" if checked != "off" else cfg.get("missing_mode", "episode")
-            # Fingerprints of the quality profiles: a cached title whose
-            # profile changed may be searched again (spec addendum).
-            profiles = refresh_profiles(self.name, agent)
             if checked != "off":
                 # Every checked run reads the indexer list before it collects,
                 # also one that will find nothing to search: a lasting pause
@@ -110,6 +117,10 @@ class SearchMissingSkill(BaseSkill):
                     agent.log("warn", self.name, pause)
                     finish_search_run(self.name, agent, run_id, 0, SubmitOutcome(paused=pause))
                     return
+            # Fingerprints of the quality profiles: a cached title whose
+            # profile changed may be searched again (spec addendum). After
+            # the pause check: a paused run reads nothing more (0.10.1).
+            profiles = refresh_profiles(self.name, agent)
             # Active checked search: titles with a download in the *arr queue
             # take no place of "per run" (the runner would skip them
             # unsearched, and a fixed order would never get past them).
@@ -185,7 +196,7 @@ class SearchMissingSkill(BaseSkill):
                         queued=frozenset(), paused=frozenset()):
         stats = _Stats(dry_run=round_keys is not None)
         page_size = min(max(per_run * 10, 50), 250)
-        probe = agent.http_get(WANTED_PATH, params={"page": 1, "pageSize": 1, "monitored": "true"})
+        probe = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, 1, 1))
         stats.total = int(probe.get("totalRecords", 0) or 0)
 
         pages = list(range(1, max(1, math.ceil(stats.total / page_size)) + 1))
@@ -198,9 +209,7 @@ class SearchMissingSkill(BaseSkill):
             if len(candidates) >= per_run or agent.stop_requested():
                 break
             try:
-                resp = agent.http_get(
-                    WANTED_PATH, params={"page": page, "pageSize": page_size, "monitored": "true"}
-                )
+                resp = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, page, page_size))
             except Exception as exc:
                 if stats.pages == 0:
                     raise
@@ -228,9 +237,7 @@ class SearchMissingSkill(BaseSkill):
                 )
             if agent.stop_requested():
                 break
-            resp = agent.http_get(
-                WANTED_PATH, params={"page": page, "pageSize": ORDERED_PAGE_SIZE, "monitored": "true"}
-            )
+            resp = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, page, ORDERED_PAGE_SIZE))
             batch = resp.get("records") or []
             stats.total = int(resp.get("totalRecords", 0) or 0)
             stats.pages += 1

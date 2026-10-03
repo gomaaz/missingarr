@@ -140,8 +140,11 @@ class FakeArr(BaseAgent):
     def __init__(self, config, missing=(), cutoff=(), movies=(), episodes=(), series=(), releases=None,
                  parses=None, get_errors=None, post_error=None, abort_after_parses=None, abort_on_release=False,
                  profiles=None, custom_formats=None, release_profiles=None, indexers=None, on_get=None,
-                 health=None, quality_definitions=None, indexer_config=None, queue=None):
+                 health=None, quality_definitions=None, indexer_config=None, queue=None, embed_series=True):
         super().__init__(config)
+        # Like Sonarr: the wanted lists embed each episode's series with
+        # includeSeries=true. False: an answer that comes without it.
+        self.embed_series = embed_series
         # GET /queue/details: entries as *arr reports them; anything but a
         # list is answered as it is.
         self.queue = [] if queue is None else queue
@@ -193,10 +196,12 @@ class FakeArr(BaseAgent):
         for pattern, error in self.get_errors.items():
             if self._matches(path, pattern):
                 raise error
-        if path == WANTED:
-            return self._page(self.missing, params)
-        if path == CUTOFF:
-            return self._page(self.cutoff, params)
+        if path in (WANTED, CUTOFF):
+            page = self._page(self.missing if path == WANTED else self.cutoff, params)
+            if self.embed_series and params.get("includeSeries") == "true":
+                page["records"] = [{**r, "series": copy.deepcopy(self.series[r["seriesId"]])}
+                                   if r.get("seriesId") in self.series else r for r in page["records"]]
+            return page
         if path == QUALITY_PROFILES:
             return copy.deepcopy(self.profiles)
         if path == "/api/v3/customformat":
@@ -2170,12 +2175,14 @@ def test_a_failed_first_baseline_write_releases_nothing(db_path, monkeypatch, ch
     assert db.instances.get_by_id(inst["id"])["profile_fingerprints_baseline"] == {"1": stored_fingerprint(inst)}
 
 
-def test_sonarr_takes_the_profile_from_the_series_list(db_path):
+def test_sonarr_takes_the_profile_from_the_embedded_series(db_path):
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="off")
     first = agent_for(inst, missing=[guest_episode()], episodes=[guest_episode()], series=[GUEST_SERIES])
     SearchMissingSkill().execute(first)
     assert first.commands == [{"name": "EpisodeSearch", "episodeIds": [3]}]
     assert sql("SELECT profile_fingerprint FROM searched_items") == [(stored_fingerprint(inst),)]
+    # Neither the series list nor the one series: includeSeries named the profile.
+    assert [p for p, _ in first.gets if p.startswith("/api/v3/series")] == []
     changed = agent_for(inst, missing=[guest_episode()], episodes=[guest_episode()], series=[GUEST_SERIES],
                         profiles=changed_profiles())
     SearchMissingSkill().execute(changed)
@@ -2183,19 +2190,17 @@ def test_sonarr_takes_the_profile_from_the_series_list(db_path):
 
 
 BASELINE = {"1": "aaaaaaaaaaaaaaaa"}   # a profile state from before a change
-SERIES_LIST_DOWN = {"/api/v3/series$": requests.exceptions.ConnectionError("down")}
 
 
 @pytest.mark.parametrize("checked", ["active", "dry_run"])
-def test_a_checked_episode_keeps_its_profile_when_the_series_list_fails(db_path, checked):
-    # Without the list the episode's profile is unknown while candidates are
-    # picked, but the checked search loads the series anyway and stores its
-    # fingerprint — not NULL, which would count as searched under the baseline.
+def test_a_checked_episode_keeps_its_profile_when_the_wanted_list_names_no_series(db_path, checked):
+    # Without its series the episode's profile is unknown while candidates
+    # are picked, but the checked search loads the series anyway and stores
+    # its fingerprint — not NULL, which would count as searched under the baseline.
     inst = make_instance(name="Sonarr", type="sonarr", checked_search=checked)
     db.instances.store_profile_fingerprints(inst["id"], BASELINE)
     episode = guest_episode()
-    broken = agent_for(inst, missing=[episode], episodes=[episode], series=[GUEST_SERIES],
-                       get_errors=SERIES_LIST_DOWN)
+    broken = agent_for(inst, missing=[episode], episodes=[episode], series=[GUEST_SERIES], embed_series=False)
     SearchMissingSkill().execute(broken)
     current = stored_fingerprint(inst)
     assert current != BASELINE["1"]
@@ -2207,12 +2212,11 @@ def test_a_checked_episode_keeps_its_profile_when_the_series_list_fails(db_path,
     assert [p for p, _ in again.gets if p == RELEASE] == []
 
 
-def test_the_command_search_asks_for_the_series_when_the_list_fails(db_path):
+def test_the_command_search_asks_for_the_series_when_the_wanted_list_names_none(db_path):
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="off")
     db.instances.store_profile_fingerprints(inst["id"], BASELINE)
     episode = guest_episode()
-    broken = agent_for(inst, missing=[episode], episodes=[episode], series=[GUEST_SERIES],
-                       get_errors=SERIES_LIST_DOWN)
+    broken = agent_for(inst, missing=[episode], episodes=[episode], series=[GUEST_SERIES], embed_series=False)
     SearchMissingSkill().execute(broken)
     assert broken.commands == [{"name": "EpisodeSearch", "episodeIds": [3]}]
     assert ("/api/v3/series/10", {}) in broken.gets

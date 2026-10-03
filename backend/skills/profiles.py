@@ -16,12 +16,13 @@ for that run, so a failed write releases nothing either.
 Which profile a title has: Radarr movies carry qualityProfileId (wanted,
 cutoff and movie lists). Sonarr episodes do not; their series has it, and
 the wanted lists name the series only with includeSeries=true, which
-missingarr does not send. So a Sonarr run reads the series list once. If
-that fails, nothing is released while candidates are picked, but a title
-that is searched is still stored with its fingerprint: the checked search
-takes it from the series it loads anyway, the command search asks for the
-one series (stored_fingerprint). A NULL fingerprint would count as searched
-under the baseline and could release the title again at once.
+missingarr sends since 0.10.1 (before, every Sonarr run read the whole
+series list). A record without its series is not released while
+candidates are picked, but a title that is searched is still stored with
+its fingerprint: the checked search takes it from the series it loads
+anyway, the command search asks for the one series (stored_fingerprint). A
+NULL fingerprint would count as searched under the baseline and could
+release the title again at once.
 
 The dry run also compares the rule settings: a row counts for the round only
 under the fingerprint of the settings in force (settings_fingerprint).
@@ -43,7 +44,7 @@ from backend.checked_search.settings import CheckedSearchSettings
 PROFILE_PATHS = ("/api/v3/qualityprofile", "/api/v3/customformat", "/api/v3/releaseprofile",
                  "/api/v3/qualitydefinition", "/api/v3/config/indexer")
 SERIES_PATH = "/api/v3/series"
-# Read once per run; a large Sonarr library takes a while to list its series.
+# Read once per run.
 PROFILE_TIMEOUT = 60
 
 
@@ -54,7 +55,7 @@ class ProfileState:
     series_profiles: dict = field(default_factory=dict)  # Sonarr: series id -> quality profile id
     search_again: bool = True                            # "Search again after profile changes"
     settings_fingerprint: Optional[str] = None           # rule settings of the instance (dry run)
-    # Sonarr when the series list could not be read: GET /series/{id}.
+    # Sonarr: GET /series/{id} for a record that came without its series.
     series_loader: Optional[Callable] = None
     loaded_series: dict = field(default_factory=dict)    # series id -> quality profile id (this run)
 
@@ -71,9 +72,9 @@ class ProfileState:
 
     def stored_fingerprint(self, record: dict) -> Optional[str]:
         """The fingerprint a search of this record is stored under. Like
-        fingerprint(profile_of(record)); when the Sonarr series list could
-        not be read, the record's series is asked for (once per series and
-        run, only for titles that are searched)."""
+        fingerprint(profile_of(record)); when a Sonarr record came without
+        its series, the series is asked for (once per series and run, only
+        for titles that are searched)."""
         current = self.fingerprint(self.profile_of(record))
         if current is not None or self.series_loader is None:
             return current
@@ -149,16 +150,7 @@ def refresh(skill_name: str, agent) -> ProfileState:
                 state.baseline = dict(current)
         state.current = current
     if cfg.get("type") == "sonarr":
-        try:
-            series = agent.http_get(SERIES_PATH, timeout=PROFILE_TIMEOUT)
-        except Exception as exc:
-            agent.log("warn", skill_name,
-                      f"Could not read the series list — the series of each searched episode is asked instead: {exc}")
-            state.series_loader = lambda series_id: agent.http_get(f"{SERIES_PATH}/{series_id}")
-        else:
-            state.series_profiles = {
-                s["id"]: s.get("qualityProfileId")
-                for s in (series if isinstance(series, list) else [])
-                if isinstance(s, dict) and "id" in s
-            }
+        # The wanted lists embed each episode's series (includeSeries); one
+        # that comes without it asks for its series when it is searched.
+        state.series_loader = lambda series_id: agent.http_get(f"{SERIES_PATH}/{series_id}")
     return state

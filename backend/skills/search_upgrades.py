@@ -52,9 +52,6 @@ class SearchUpgradesSkill(BaseSkill):
 
             agent.log("info", self.name, "Searching for upgrade candidates...")
             checked = cfg.get("checked_search") or "off"
-            # Fingerprints of the quality profiles: a cached title whose
-            # profile changed may be searched again (spec addendum).
-            profiles = refresh_profiles(self.name, agent)
             if checked != "off":
                 # Before collecting: a run without candidates pauses visibly too.
                 pause = indexer_pause(agent)
@@ -62,6 +59,10 @@ class SearchUpgradesSkill(BaseSkill):
                     agent.log("warn", self.name, pause)
                     finish_search_run(self.name, agent, run_id, 0, SubmitOutcome(paused=pause))
                     return
+            # Fingerprints of the quality profiles: a cached title whose
+            # profile changed may be searched again (spec addendum). After
+            # the pause check: a paused run reads nothing more (0.10.1).
+            profiles = refresh_profiles(self.name, agent)
             # Active checked search: titles with a download in the *arr queue
             # take no place of "per run" (the runner would skip them unsearched).
             queued, unread_queue = queued_before_collecting(self.name, agent, checked, cfg["type"])
@@ -304,8 +305,12 @@ class SearchUpgradesSkill(BaseSkill):
         for page in pages[:budget]:
             if len(found) >= limit or agent.stop_requested():
                 return
+            params = {"pageSize": pool, "page": page, "monitored": "true"}
+            if arr_type == "sonarr":
+                # The embedded series names the episode's quality profile (0.10.1).
+                params["includeSeries"] = "true"
             try:
-                resp = agent.http_get(CUTOFF_PATH, params={"pageSize": pool, "page": page, "monitored": "true"})
+                resp = agent.http_get(CUTOFF_PATH, params=params)
             except Exception as exc:
                 if loaded == 0:
                     raise
@@ -340,7 +345,8 @@ class SearchUpgradesSkill(BaseSkill):
         else:
             label = episode_title or f"Episode #{record['id']}"
         return {"id": record["id"], "label": label,
-                "series_id": record.get("seriesId"), "season_number": season_number}
+                "series_id": record.get("seriesId"), "season_number": season_number,
+                "qualityProfileId": series.get("qualityProfileId")}
 
     def _collect_monitored(self, agent, cfg, per_run, force, found, seen, checked=False, round_keys=None,
                            profiles=None, **left_out) -> None:
