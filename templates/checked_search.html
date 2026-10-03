@@ -7,7 +7,9 @@ var CHECKED_OUTCOMES = {
     grabbed: ['badge-online', 'grabbed'],
     would_grab: ['badge-scheduled', 'would grab'],
     no_clean_hit: ['badge-unknown', 'no clean hit'],
-    no_results: ['badge-unknown', 'no results'],
+    // Not one release *arr approved; the row says how many came back and why
+    // *arr rejected them (0.10.1).
+    no_results: ['badge-unknown', 'no approved release'],
     error: ['badge-offline', 'error'],
     grab_failed: ['badge-offline', 'grab failed'],
     grab_uncertain: ['badge-offline', 'grab uncertain'],
@@ -118,7 +120,7 @@ function checkedSearchPage() {
         <tr data-summary-instance="{{ s.instance_id }}" data-summary-mode="{{ s.mode }}">
             <td>{{ s.instance_name }}</td>
             <td>{{ 'dry run' if s.mode == 'dry_run' else 'active' }}</td>
-            <td>{{ s.outcome.replace('_', ' ') }}</td>
+            <td>{{ 'no approved release' if s.outcome == 'no_results' else s.outcome.replace('_', ' ') }}</td>
             <td>{{ s.n }}</td>
         </tr>
         {% endfor %}
@@ -158,7 +160,7 @@ function checkedSearchPage() {
         <option value="grabbed">Grabbed</option>
         <option value="would_grab">Would grab</option>
         <option value="no_clean_hit">No clean hit</option>
-        <option value="no_results">No results</option>
+        <option value="no_results">No approved release</option>
         <option value="error">Error</option>
         <option value="grab_failed">Grab failed</option>
         <option value="grab_uncertain">Grab uncertain</option>

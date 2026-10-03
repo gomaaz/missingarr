@@ -87,6 +87,7 @@ never logged or stored.
 
 import copy
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -244,6 +245,22 @@ def _approved(payload) -> list[_Release]:
             guid=str(item.get("guid") or ""),
         ))
     return releases
+
+
+def _no_approved_note(payload) -> str:
+    """What a search without an approved release returned (0.10.1): the
+    number of releases and *arr's most frequent rejection reasons (top 3,
+    each counted once per release). Kept in the log row's error_message of
+    the outcome no_results, which the Pre-filter page shows."""
+    items = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+    if not items:
+        return "no release returned"
+    reasons: Counter = Counter()
+    for item in items:
+        texts = [r.get("reason") if isinstance(r, dict) else r for r in item.get("rejections") or []]
+        reasons.update(list(dict.fromkeys(t.strip() for t in texts if isinstance(t, str) and t.strip())))
+    top = "; ".join(f"{text} ({count})" for text, count in reasons.most_common(3))
+    return f"{len(items)} release(s) returned, none approved" + (f" — most frequent rejections: {top}" if top else "")
 
 
 def _not_sent(exc: Exception) -> bool:
@@ -490,11 +507,12 @@ class _TitleCheck:
                 return current
         return task.profile_fingerprint
 
-    def search(self, task: CheckedTask) -> list[_Release]:
+    def search(self, task: CheckedTask) -> tuple[list[_Release], str]:
+        """(the approved releases in *arr's order, _no_approved_note)."""
         key = "movieId" if self.arr_type == "radarr" else "episodeId"
         payload = self.agent.http_get(RELEASE_PATH, params={key: task.arr_id},
                                       timeout=self.settings.release_timeout_seconds)
-        return _approved(payload)
+        return _approved(payload), _no_approved_note(payload)
 
     def mapped_here(self, task: CheckedTask, info, release: _Release) -> bool:
         """Did GET /release map the release to this very title, with quality
@@ -634,7 +652,7 @@ class _TitleCheck:
                                searched=False)
 
         try:
-            releases = self.search(task)
+            releases, note = self.search(task)
         except Exception as exc:
             error = f"release search failed: {exc}"
             return _Result(OUTCOME_ERROR, error, entry(OUTCOME_ERROR, error_message=error),
@@ -644,7 +662,8 @@ class _TitleCheck:
             failure = self.indexer_failure(tags)
             if failure:
                 return _Result(OUTCOME_ERROR, failure, entry(OUTCOME_ERROR, error_message=failure), ITEM_FAILED)
-            return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS), ITEM_NO_HIT)
+            # The page shows why: nothing came back, or *arr rejected all of it.
+            return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS, error_message=note), ITEM_NO_HIT)
 
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
         candidates: list[dict] = []
@@ -854,4 +873,4 @@ def _log_title(agent, skill_name, mode, task, result, entry, error) -> None:
         agent.log("debug" if mode == MODE_DRY_RUN else "info", skill_name,
                   f"No clean release for {task.title} — {rejected} rejected")
     else:
-        agent.log("debug", skill_name, f"No approved release for {task.title}")
+        agent.log("debug", skill_name, f"No approved release for {task.title} — {entry.get('error_message')}")
