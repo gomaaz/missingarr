@@ -257,7 +257,10 @@ def _no_approved_note(payload) -> str:
         return "no release returned"
     reasons: Counter = Counter()
     for item in items:
-        texts = [r.get("reason") if isinstance(r, dict) else r for r in item.get("rejections") or []]
+        rejections = item.get("rejections")
+        # Only a list counts: a string would be counted letter by letter.
+        texts = [r.get("reason") if isinstance(r, dict) else r
+                 for r in (rejections if isinstance(rejections, list) else [])]
         reasons.update(list(dict.fromkeys(t.strip() for t in texts if isinstance(t, str) and t.strip())))
     top = "; ".join(f"{text} ({count})" for text, count in reasons.most_common(3))
     return f"{len(items)} release(s) returned, none approved" + (f" — most frequent rejections: {top}" if top else "")
@@ -499,7 +502,8 @@ class _TitleCheck:
 
     def fingerprint(self, task: CheckedTask, profile_id) -> str | None:
         """The profile fingerprint the title is checked and stored under: from
-        the resource just loaded (the Sonarr series list may have failed);
+        the resource just loaded (the wanted record may have come without
+        its series);
         the record's value only when that profile is not in the state."""
         if self.profiles is not None:
             current = self.profiles.fingerprint(profile_id)

@@ -11,7 +11,7 @@ from backend.checked_search.runner import (
 )
 from backend.checked_search.settings import CheckedSearchSettings
 from backend.database import ANCESTOR_RULE_SINCE_SETTING
-from backend.skills.profiles import ProfileState
+from backend.skills.profiles import PROFILE_TIMEOUT, ProfileState, trim_embedded_series
 from backend.skills.profiles import refresh as refresh_profiles
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, parse_arr_date,
@@ -50,6 +50,20 @@ def _wanted_params(cfg: dict, page: int, size: int) -> dict:
     if cfg["type"] == "sonarr":
         params["includeSeries"] = "true"
     return params
+
+
+def _read_wanted(agent, cfg: dict, page: int, size: int) -> dict:
+    """One page of the wanted list. Sonarr pages embed each episode's series:
+    they get the timeout of the series-list read they replace
+    (PROFILE_TIMEOUT), and the embedded series are trimmed at once
+    (trim_embedded_series), since ordered orders keep every record until the
+    run ends (0.10.1)."""
+    params = _wanted_params(cfg, page, size)
+    if cfg["type"] != "sonarr":
+        return agent.http_get(WANTED_PATH, params=params)
+    resp = agent.http_get(WANTED_PATH, params=params, timeout=PROFILE_TIMEOUT)
+    trim_embedded_series(resp.get("records"))
+    return resp
 
 
 @dataclass
@@ -200,7 +214,7 @@ class SearchMissingSkill(BaseSkill):
                         queued=frozenset(), paused=frozenset()):
         stats = _Stats(dry_run=round_keys is not None)
         page_size = min(max(per_run * 10, 50), 250)
-        probe = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, 1, 1))
+        probe = _read_wanted(agent, cfg, 1, 1)
         stats.total = int(probe.get("totalRecords", 0) or 0)
 
         pages = list(range(1, max(1, math.ceil(stats.total / page_size)) + 1))
@@ -213,7 +227,7 @@ class SearchMissingSkill(BaseSkill):
             if len(candidates) >= per_run or agent.stop_requested():
                 break
             try:
-                resp = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, page, page_size))
+                resp = _read_wanted(agent, cfg, page, page_size)
             except Exception as exc:
                 if stats.pages == 0:
                     raise
@@ -241,7 +255,7 @@ class SearchMissingSkill(BaseSkill):
                 )
             if agent.stop_requested():
                 break
-            resp = agent.http_get(WANTED_PATH, params=_wanted_params(cfg, page, ORDERED_PAGE_SIZE))
+            resp = _read_wanted(agent, cfg, page, ORDERED_PAGE_SIZE)
             batch = resp.get("records") or []
             stats.total = int(resp.get("totalRecords", 0) or 0)
             stats.pages += 1

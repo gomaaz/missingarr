@@ -8,12 +8,19 @@ import pytest
 from backend import database
 from backend.checked_search import runner
 from backend.config import settings
+from backend.skills.profiles import PROFILE_TIMEOUT
 from backend.skills.search_missing import SearchMissingSkill
 from backend.skills.search_upgrades import SearchUpgradesSkill
 from tests.test_g3_runner import (
-    GUEST_SERIES, INDEXERS, WANTED, agent_for, guest_episode, make_instance, sql, stored_fingerprint,
+    CUTOFF, GUEST_SERIES, INDEXERS, WANTED, agent_for, guest_episode, make_instance, sql, stored_fingerprint,
     the_thing_agent,
 )
+
+# A series as Sonarr embeds it: far more than missingarr reads.
+FULL_SERIES = {**GUEST_SERIES, "seriesType": "standard", "overview": "x" * 500,
+               "images": [{"coverType": "poster", "url": "/poster.jpg"}],
+               "seasons": [{"seasonNumber": 1, "monitored": True}], "statistics": {"episodeCount": 8}}
+TRIMMED_SERIES = {"id": 10, "title": "The Guest", "qualityProfileId": 1, "seriesType": "standard"}
 
 
 @pytest.fixture
@@ -66,3 +73,49 @@ def test_a_paused_checked_run_reads_no_profiles(db_path, skill):
     agent = the_thing_agent(inst, indexers=differing)
     skill().execute(agent)
     assert [path for path, _ in agent.gets] == ["/api/v3/indexer"]
+
+
+@pytest.mark.parametrize("order", ["random", "oldest_first", "smart"])
+def test_sonarr_wanted_pages_get_the_long_timeout_and_trimmed_series(db_path, monkeypatch, order):
+    """Both collection paths (random pages, ordered whole list) trim the
+    embedded series right after the page is read; the profile still counts."""
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_order=order)
+    agent = agent_for(inst, missing=[guest_episode()], episodes=[guest_episode()], series=[FULL_SERIES])
+    seen = []
+    take_eligible = SearchMissingSkill._take_eligible
+
+    def spy(self, agent, cfg, records, *args, **kwargs):
+        seen.extend(records)
+        return take_eligible(self, agent, cfg, records, *args, **kwargs)
+
+    monkeypatch.setattr(SearchMissingSkill, "_take_eligible", spy)
+    SearchMissingSkill().execute(agent)
+    assert seen and all(record["series"] == TRIMMED_SERIES for record in seen)
+    assert agent.timeouts[WANTED] == PROFILE_TIMEOUT
+    assert agent.commands
+    assert sql("SELECT profile_fingerprint FROM searched_items") == [(stored_fingerprint(inst),)]
+
+
+def test_radarr_wanted_pages_keep_the_default_timeout(db_path):
+    inst = make_instance(checked_search="off")
+    agent = the_thing_agent(inst)
+    SearchMissingSkill().execute(agent)
+    assert agent.timeouts[WANTED] == 10
+
+
+def test_sonarr_cutoff_pages_get_the_long_timeout_and_trimmed_series(db_path, monkeypatch):
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True)
+    episode = {**guest_episode(), "hasFile": True}
+    agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[FULL_SERIES])
+    seen = []
+    cutoff_item = SearchUpgradesSkill._cutoff_item
+
+    def spy(arr_type, record):
+        seen.append(record)
+        return cutoff_item(arr_type, record)
+
+    monkeypatch.setattr(SearchUpgradesSkill, "_cutoff_item", staticmethod(spy))
+    SearchUpgradesSkill().execute(agent)
+    assert seen and all(record["series"] == TRIMMED_SERIES for record in seen)
+    assert agent.timeouts[CUTOFF] == PROFILE_TIMEOUT
+    assert sql("SELECT profile_fingerprint FROM searched_items") == [(stored_fingerprint(inst),)]

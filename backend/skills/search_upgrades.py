@@ -8,7 +8,7 @@ from backend.checked_search.runner import (
     run_checked,
 )
 from backend.checked_search.settings import CheckedSearchSettings
-from backend.skills.profiles import ProfileState
+from backend.skills.profiles import PROFILE_TIMEOUT, ProfileState, trim_embedded_series
 from backend.skills.profiles import refresh as refresh_profiles
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, store_unsaved_submissions,
@@ -306,11 +306,16 @@ class SearchUpgradesSkill(BaseSkill):
             if len(found) >= limit or agent.stop_requested():
                 return
             params = {"pageSize": pool, "page": page, "monitored": "true"}
+            timeout = {}
             if arr_type == "sonarr":
-                # The embedded series names the episode's quality profile (0.10.1).
+                # The embedded series names the episode's quality profile; such
+                # pages get the timeout of the series-list read they replace
+                # and their series are trimmed at once (0.10.1).
                 params["includeSeries"] = "true"
+                timeout = {"timeout": PROFILE_TIMEOUT}
             try:
-                resp = agent.http_get(CUTOFF_PATH, params=params)
+                resp = agent.http_get(CUTOFF_PATH, params=params, **timeout)
+                trim_embedded_series(resp.get("records"))
             except Exception as exc:
                 if loaded == 0:
                     raise

@@ -79,7 +79,7 @@ out.asked = asked;
     assert out["asked"] == [
         'Reset searched cache for "Sonarr"? It will be re-searched on the next run.',
         'Reset searched cache for "Radarr"? "Radarr" is in dry run, which uses its own rounds and not this '
-        f'cache: {hint}',
+        f'cache (Reset still ends its error pauses): {hint}',
         'Reset ALL searched items? All instances will re-search everything on the next run. Instances in '
-        f'dry run use their own rounds and not this cache: {hint}',
+        f'dry run use their own rounds and not this cache (Reset still ends their error pauses): {hint}',
     ]

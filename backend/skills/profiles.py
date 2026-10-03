@@ -44,8 +44,23 @@ from backend.checked_search.settings import CheckedSearchSettings
 PROFILE_PATHS = ("/api/v3/qualityprofile", "/api/v3/customformat", "/api/v3/releaseprofile",
                  "/api/v3/qualitydefinition", "/api/v3/config/indexer")
 SERIES_PATH = "/api/v3/series"
-# Read once per run.
+# Read once per run. Also the timeout of the Sonarr wanted/cutoff pages that
+# embed each episode's series (includeSeries, 0.10.1).
 PROFILE_TIMEOUT = 60
+# What missingarr reads from a series embedded in a wanted/cutoff record:
+# profile_of (qualityProfileId), the anime rule (seriesType), labels (title).
+EMBEDDED_SERIES_FIELDS = ("id", "title", "qualityProfileId", "seriesType")
+
+
+def trim_embedded_series(records) -> None:
+    """Cut each record's embedded series down to EMBEDDED_SERIES_FIELDS, in
+    place, right after a page is read: an ordered run keeps the whole wanted
+    list until it ends, and a full SeriesResource per episode would add up
+    on a large backlog (0.10.1)."""
+    for record in records or []:
+        series = record.get("series") if isinstance(record, dict) else None
+        if isinstance(series, dict):
+            record["series"] = {name: series[name] for name in EMBEDDED_SERIES_FIELDS if name in series}
 
 
 @dataclass

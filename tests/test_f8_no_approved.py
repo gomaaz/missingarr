@@ -68,6 +68,12 @@ def test_releases_without_reasons_are_counted(db_path):
     assert log_rows()[0]["error_message"] == "1 release(s) returned, none approved"
 
 
+def test_rejections_count_only_as_a_list():
+    payload = [{"rejections": "Not wanted"}, {"rejections": ["Not wanted"]}]
+    assert runner._no_approved_note(payload) == (
+        "2 release(s) returned, none approved — most frequent rejections: Not wanted (1)")
+
+
 def test_the_page_names_the_outcome_no_approved_release(client):
     inst = make_page_instance(checked_search="dry_run")
     db.checked_search_log.insert({"instance_id": inst["id"], "mode": "dry_run", "skill": "search_missing",

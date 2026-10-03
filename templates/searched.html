@@ -5,7 +5,8 @@
 <script>
 // A checked-search dry run does not use this cache: it checks every title
 // once per round, and only "Reset dry run" on the Pre-filter page starts a
-// new round (0.10.1).
+// new round (0.10.1). Reset still ends the instance's error pauses
+// (db.searched.clear), which dry runs keep too.
 var SEARCHED_DRY_RUN_IDS = {{ instances | selectattr('checked_search', 'equalto', 'dry_run') | map(attribute='id') | list | tojson }};
 var SEARCHED_DRY_RUN_HINT = 'use "Reset dry run" on the Pre-filter page to check every title again.';
 
@@ -76,7 +77,7 @@ function searchedPage() {
 
         async reset(id, name) {
             const question = SEARCHED_DRY_RUN_IDS.includes(id)
-                ? `Reset searched cache for "${name}"? "${name}" is in dry run, which uses its own rounds and not this cache: ${SEARCHED_DRY_RUN_HINT}`
+                ? `Reset searched cache for "${name}"? "${name}" is in dry run, which uses its own rounds and not this cache (Reset still ends its error pauses): ${SEARCHED_DRY_RUN_HINT}`
                 : `Reset searched cache for "${name}"? It will be re-searched on the next run.`;
             if (!confirm(question)) return;
             try {
@@ -100,7 +101,7 @@ function searchedPage() {
 
         async resetAll() {
             const dryRuns = SEARCHED_DRY_RUN_IDS.length
-                ? ` Instances in dry run use their own rounds and not this cache: ${SEARCHED_DRY_RUN_HINT}` : '';
+                ? ` Instances in dry run use their own rounds and not this cache (Reset still ends their error pauses): ${SEARCHED_DRY_RUN_HINT}` : '';
             if (!confirm('Reset ALL searched items? All instances will re-search everything on the next run.' + dryRuns)) return;
             try {
                 const resp = await apiFetch('/api/searched', { method: 'DELETE' });

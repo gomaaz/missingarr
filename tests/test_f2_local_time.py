@@ -71,6 +71,20 @@ def test_an_old_database_converts_its_utc_log_lines_once(db_file):
     assert db.app_settings.get_value(database.LOCAL_TIMESTAMPS_SETTING)
 
 
+def test_an_unparsable_log_time_stays_and_the_start_succeeds(db_file):
+    conn = old_database(db_file)
+    conn.execute("INSERT INTO activity_log (instance_name, level, message) VALUES ('Sonarr', 'info', 'old line')")
+    conn.execute("INSERT INTO activity_log (instance_name, level, message, created_at) "
+                 "VALUES ('Sonarr', 'info', 'odd line', 'not a time')")
+    conn.commit()
+    conn.close()
+    database.init_db()
+    stored = dict(rows("SELECT message, created_at FROM activity_log"))
+    assert stored["odd line"] == "not a time"
+    assert is_local_now(stored["old line"])
+    assert db.app_settings.get_value(database.LOCAL_TIMESTAMPS_SETTING)
+
+
 def test_cache_rows_take_the_time_of_the_history_item_that_wrote_them(db_file):
     conn = old_database(db_file)
     conn.execute("INSERT INTO instances (name, type, url, api_key) VALUES ('Sonarr', 'sonarr', 'http://127.0.0.1:9', 'x')")

@@ -345,7 +345,11 @@ def _convert_utc_timestamps(conn: sqlite3.Connection) -> None:
     if conn.execute("SELECT 1 FROM app_settings WHERE key=?", (LOCAL_TIMESTAMPS_SETTING,)).fetchone():
         return
     if _utc_default(conn, "activity_log"):
-        conn.execute("UPDATE activity_log SET created_at = datetime(created_at, 'localtime')")
+        # A value datetime() cannot parse stays as it is (NULL would break
+        # NOT NULL and stop the start).
+        conn.execute(
+            "UPDATE activity_log SET created_at = COALESCE(datetime(created_at, 'localtime'), created_at)"
+        )
     if _utc_default(conn, "searched_items"):
         conn.execute(
             "UPDATE searched_items SET searched_at = ("

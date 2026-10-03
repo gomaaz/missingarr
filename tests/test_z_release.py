@@ -42,7 +42,8 @@ def test_readme_changelog_help_and_tooltips_document_0_10_1():
                  "already checked in this dry-run round", "type *Anime*", "no approved release",
                  "includeSeries=true", "50 seconds instead of 60",
                  "With *Minimum Availability* Released, Radarr never reports",
-                 "searched on its own, also with *Missing Mode*", "at most 50 seconds old"):
+                 "searched on its own, also with *Missing Mode*", "at most 50 seconds old",
+                 "With a small backlog a run reads much less", "a run can read more than before"):
         assert text in section, text
     assert "fresh count" not in section
     readme = (ROOT / "README.md").read_text()
@@ -51,7 +52,9 @@ def test_readme_changelog_help_and_tooltips_document_0_10_1():
                  "series of type *Anime* per run", '("no approved release")', "only *Reset dry run* starts a new round",
                  "at most once every 50 seconds", "converts them to local time, once",
                  "with *Minimum Availability* Released, Radarr would never report",
-                 "searched on its own, also with *Missing Mode*", "gets a count at most 50 seconds old"):
+                 "searched on its own, also with *Missing Mode*", "gets a count at most 50 seconds old",
+                 "delete the row `local_timestamps_since` from the table `app_settings`",
+                 "a run that pauses there does not read them"):
         assert text in readme, text
     assert "fresh count" not in readme
     assert '("no results")' not in readme

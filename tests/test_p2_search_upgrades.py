@@ -60,7 +60,7 @@ class FakeArr(BaseAgent):
         size, page = int(params["pageSize"]), int(params["page"])
         return {"totalRecords": len(records), "records": records[(page - 1) * size: page * size]}
 
-    def http_get(self, path, params=None):
+    def http_get(self, path, params=None, timeout=10):
         params = dict(params or {})
         self.gets.append((path, params))
         if path in self.get_errors:
