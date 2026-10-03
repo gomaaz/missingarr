@@ -804,6 +804,83 @@ out.second = {{ ids: page.instances[0].downloads.map(d => d.download_id), toasts
     assert out["second"] == {"ids": ["c&3"], "toasts": [], "loading": False}
 
 
+@needs_node
+def test_leaving_the_page_stops_the_proposal_workers(client, tmp_path):
+    # hx-boost keeps the JS context: Alpine calls destroy() when the page is left. The two
+    # running proposal requests end, but write nothing, and no further request starts.
+    out = run_page(tmp_path, page_script(client), f"""
+route('GET', '/api/imports', () => answer(200, {json.dumps(listing('a/1', 'b 2', 'c&3'))}));
+route('GET', '/api/imports/1/proposal', (url) => held(url));
+const loading = page.load();
+await until(() => pending.length === 2);
+const before = JSON.parse(JSON.stringify(page.proposals));
+page.destroy();
+pending[0].resolve(answer(200, {json.dumps(proposal())}));
+pending[1].resolve(answer(409, {{ detail: 'Already handled — this download no longer waits in the queue' }}));
+await loading;
+for (let i = 0; i < 20; i++) await tick();
+out.urls = pending.map(p => p.url.split('=')[1]);
+out.unchanged = JSON.stringify(page.proposals) === JSON.stringify(before);
+out.ids = page.instances[0].downloads.map(d => d.download_id);
+out.calls = calls.length;
+""")
+    assert out["urls"] == ["a%2F1", "b%202"]
+    assert out["unchanged"] is True
+    assert out["ids"] == ["a/1", "b 2", "c&3"]          # the 409 of the left page removed no card
+    assert out["calls"] == 3
+
+
+@needs_node
+def test_leaving_the_page_during_an_import_skips_the_reload_but_keeps_toast_and_counter(client, tmp_path):
+    out = run_page(tmp_path, page_script(client), setup_one(proposal()) + f"""
+route('POST', '/api/imports/1/import', () => answer(200, {{ state: 'sent', command_id: 506, files: 1, title: '{TITLE}', target: 'Some Show S01E01', message: '' }}));
+route('GET', '/api/imports/1/commands/506', (url) => held(url));
+const importing = page.importDownload(inst, d);
+await until(() => pending.length === 1);
+page.destroy();
+pending[0].resolve(answer(200, {{ command_id: 506, state: 'imported', status: 'completed', message: 'Imported' }}));
+await importing;
+for (let i = 0; i < 20; i++) await tick();
+out.calls = calls.map(c => [c[0], c[1]]); out.toasts = toasts; out.counted = counted; out.busy = page.busy;
+""")
+    assert out["calls"] == [["POST", "/api/imports/1/import"], ["GET", "/api/imports/1/commands/506"]]
+    assert out["toasts"] == [[f"Imported: {TITLE}", "success"]]
+    assert out["counted"] == 1 and out["busy"] == {}
+
+
+@needs_node
+def test_the_counter_is_refreshed_before_the_cards_reload(client, tmp_path):
+    # After a discard and after the end of an import the menu counter is asked at once,
+    # not only after every proposal of the reloaded list has come back.
+    out = run_page(tmp_path, page_script(client), setup_one(proposal()) + f"""
+globalThis.refreshImportsCount = async () => {{ counted += 1; calls.push(['COUNT', '', null]); }};
+route('GET', '/api/imports/1/proposal', (url) => held(url));
+route('POST', '/api/imports/1/discard', (url, body) => answer(200, {{ download_id: body.download_id, title: '{TITLE}', blocklist: body.blocklist, queue_id: 11 }}));
+const discarding = page.discard(inst, d);
+await until(() => pending.length === 1);
+out.discard = {{ counted, calls: calls.map(c => [c[0], c[1]]) }};
+pending[0].resolve(answer(200, {json.dumps(proposal())}));
+await discarding;
+calls.length = 0;
+route('POST', '/api/imports/1/import', () => answer(200, {{ state: 'sent', command_id: 507, files: 1, title: '{TITLE}', target: 'Some Show S01E01', message: '' }}));
+route('GET', '/api/imports/1/commands/507', () => answer(200, {{ command_id: 507, state: 'imported', status: 'completed', message: 'Imported' }}));
+const importing = page.importDownload(inst, d);
+await until(() => pending.length === 2);
+out.import = {{ counted, calls: calls.map(c => [c[0], c[1]]) }};
+pending[1].resolve(answer(200, {json.dumps(proposal())}));
+await importing;
+out.counted = counted;
+""")
+    assert out["discard"] == {"counted": 1, "calls": [["POST", "/api/imports/1/discard"], ["COUNT", ""],
+                                                      ["GET", "/api/imports"],
+                                                      ["GET", "/api/imports/1/proposal?download_id=a%2F1"]]}
+    assert out["import"] == {"counted": 2, "calls": [["POST", "/api/imports/1/import"],
+                                                     ["GET", "/api/imports/1/commands/507"], ["COUNT", ""],
+                                                     ["GET", "/api/imports"],
+                                                     ["GET", "/api/imports/1/proposal?download_id=a%2F1"]]}
+    assert out["counted"] == 2
+
+
 # ── The counter functions of app.js in node ──────────────────────────────────
 
 APP_PRELUDE = r"""

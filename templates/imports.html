@@ -45,10 +45,24 @@ function importsPage() {
         _request: 0,
         // Order of the list requests: only the latest one counts.
         _listRequest: 0,
+        // Set by destroy(): the page was left, nothing loads any more.
+        _left: false,
 
         key(inst, d) { return inst.id + ':' + d.download_id; },
 
+        // Alpine calls this when the page is left. hx-boost keeps the JS context,
+        // so the old component would go on asking for proposals (the app runs
+        // ffprobe for them) and hold the app's two proposal slots. Running
+        // requests end, but write nothing and start no further one; a running
+        // import still shows its toast and refreshes the menu counter.
+        destroy() {
+            this._left = true;
+            this._request += 1;
+            this._listRequest += 1;
+        },
+
         async load() {
+            if (this._left) return;
             const listRequest = ++this._listRequest;
             this.loading = true;
             let data = null;
@@ -204,8 +218,9 @@ function importsPage() {
             } finally {
                 delete this.busy[k];
             }
-            await this.load();
+            // The counter first: the cards wait for every proposal.
             await refreshImportsCount();
+            await this.load();
         },
 
         // Asks every IMPORTS_POLL_MS while the command runs or the app's queue
@@ -276,8 +291,8 @@ function importsPage() {
             } finally {
                 delete this.busy[k];
             }
-            await this.load();
             await refreshImportsCount();
+            await this.load();
         },
 
         // The app's own queue on the host this page came from; port and base
