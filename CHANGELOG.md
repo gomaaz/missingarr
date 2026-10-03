@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-03
+
+### Fixed
+
+- Search Missing (Radarr) left out every movie Radarr does not report as available, also movies without any cinema, digital or physical release date. With *Minimum Availability* Released, Radarr never reports such a movie available, so it was never searched again. Now only a movie with at least one of these dates that Radarr does not report as available yet is left out; a movie without any date counts as available (the checked search's rules still guard against foreign releases). The run summary is an info line whenever it counts such movies ("N not yet available in Radarr").
+- Times of the Logs page and of new Searched cache entries were stored in UTC on databases created before 25 March 2026: the Logs page was one or two hours behind the other pages, live lines could show twice, and cache entries looked older than they were (*Retry* released them early). Log lines, cache entries and instances now store local time. On the first start of 0.10.1 such a database converts its log lines and the cache entries whose search is still in the History, once.
+- Saving an instance, switching it on or restarting missingarr put off the next search by a whole interval. A search now runs one interval after its last run started, at the earliest 30 seconds after the start. The card shows *Wanted* and *Last sync* of the last runs right away instead of 0 and nothing.
+- The card showed QUIET until the next search after the quiet hours, and not yet before the first skipped run. It now follows the clock. A run skipped for quiet hours writes one line per quiet window to the Logs page instead of a debug line only.
+- Dry run texts: the run summary says "already checked in this dry-run round" instead of "already searched", "Nothing to search" points to *Reset dry run* on the Pre-filter page, failed titles are counted as "title(s)" instead of "submission(s)", and *Reset* on the Progressed page says that an instance in dry run uses its own rounds.
+
+### Changed
+
+- Search Missing (Sonarr) takes at most one episode of a series of type *Anime* per run, with the search command and the checked search, in every search order. Sonarr searches anime by absolute episode number, and the indexers answer with thousands of foreign releases. Further anime episodes wait for later runs: they take no place of *Missing per run* and are not remembered. The anime episode is searched on its own, also with *Missing Mode* Season Packs, Show Batch or Smart.
+- Pre-filter: the outcome "no results" is now called "no approved release" and names how many releases the app returned and its three most frequent rejection reasons.
+- Sonarr runs no longer read the whole series list (`GET /api/v3/series`, tens of megabytes on a large library) on every run: the wanted and cutoff lists are read with `includeSeries=true`, and the quality profile comes from the embedded series. A checked run that pauses for the indexer settings no longer reads the profiles.
+- The Imports counter keeps a count for 50 seconds instead of 60, less than the 60 seconds between the page's polls: a count the page gets is at most 50 seconds old, before it was often almost a minute old.
+
 ## [0.10.0] - 2026-10-03
 
 ### Added

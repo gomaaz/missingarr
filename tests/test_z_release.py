@@ -31,13 +31,45 @@ def test_readme_and_changelog_document_imports():
     assert changelog.index("## [Unreleased]") < changelog.index("## [0.10.0]") < changelog.index("## [0.9.0]")
 
 
+def test_readme_changelog_help_and_tooltips_document_0_10_1():
+    from backend.tooltips import TOOLTIPS
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert changelog.index("## [Unreleased]") < changelog.index("## [0.10.1]") < changelog.index("## [0.10.0]")
+    section = changelog[changelog.index("## [0.10.1]"):changelog.index("## [0.10.0]")]
+    assert section.index("### Fixed") < section.index("### Changed")
+    for text in ("without any cinema, digital or physical release date", "25 March 2026",
+                 "at the earliest 30 seconds after the start", "It now follows the clock",
+                 "already checked in this dry-run round", "type *Anime*", "no approved release",
+                 "includeSeries=true", "50 seconds instead of 60",
+                 "With *Minimum Availability* Released, Radarr never reports",
+                 "searched on its own, also with *Missing Mode*", "at most 50 seconds old"):
+        assert text in section, text
+    assert "fresh count" not in section
+    readme = (ROOT / "README.md").read_text()
+    assert readme.index("## Upgrading to 0.10.1") < readme.index("## Upgrading to 0.10.0")
+    for text in ("at the earliest 30 seconds later", "The card shows QUIET while the window lasts",
+                 "series of type *Anime* per run", '("no approved release")', "only *Reset dry run* starts a new round",
+                 "at most once every 50 seconds", "converts them to local time, once",
+                 "with *Minimum Availability* Released, Radarr would never report",
+                 "searched on its own, also with *Missing Mode*", "gets a count at most 50 seconds old"):
+        assert text in readme, text
+    assert "fresh count" not in readme
+    assert '("no results")' not in readme
+    help_page = (ROOT / "templates" / "help.html").read_text()
+    assert "The card shows QUIET while the quiet hours last" in help_page
+    assert "the Reset on the Progressed page does not" in help_page
+    assert "anime series per run" in TOOLTIPS["missing_per_run"]
+    assert "no approved release" in TOOLTIPS["cs_search_again_after_days"]
+
+
 def test_no_host_details_in_new_files():
     files = [ROOT / "README.md", *sorted((ROOT / "backend" / "checked_search").glob("*.py")),
              ROOT / "backend" / "db" / "checked_search_log.py", ROOT / "backend" / "skills" / "profiles.py",
              ROOT / "templates" / "checked_search.html", *sorted((ROOT / "tests").glob("test_g*_*.py")),
              *sorted((ROOT / "backend" / "imports").glob("*.py")), ROOT / "backend" / "api" / "imports.py",
              ROOT / "templates" / "imports.html", *sorted((ROOT / "tests").glob("test_h*_*.py")),
-             ROOT / "tests" / "imports_fake_arr.py", ROOT / "CHANGELOG.md"]
+             ROOT / "tests" / "imports_fake_arr.py", ROOT / "CHANGELOG.md",
+             *sorted((ROOT / "tests").glob("test_f*_*.py"))]
     for path in files:
         text = path.read_text()
         for marker in ("/root/", "/home/", "/tmp/", "/mnt/", "/srv/"):

@@ -4,8 +4,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VARIABLES = ["SECRET_KEY", "COOKIE_SECURE", "HISTORY_RETENTION_DAYS", "PUID", "PGID", "AUTH_PASSWORD"]
 
 
-def test_version_is_0_10_0():
-    assert (ROOT / "VERSION").read_text().strip() == "0.10.0"
+def test_version_is_0_10_1():
+    assert (ROOT / "VERSION").read_text().strip() == "0.10.1"
 
 
 def test_every_new_variable_is_documented():
@@ -29,7 +29,10 @@ def test_docs_explain_radarr_availability():
     assert "Minimum Availability" in tooltip
     assert "not from the moment Radarr" in tooltip
     readme = (ROOT / "README.md").read_text()
-    assert "Search Missing in Radarr: a movie is only searched once Radarr reports it available" in readme
+    assert ("Search Missing in Radarr: a movie with a known cinema, digital or physical release date is only "
+            "searched once Radarr reports it available") in readme
+    assert "A movie without any of these dates counts as available" in readme
+    assert "a movie without any of these dates counts as available" in tooltip
     assert "not from the moment Radarr reports it available" in readme
     assert "In Search Missing, Force Runs skip this wait" in readme
     changelog = (ROOT / "CHANGELOG.md").read_text()

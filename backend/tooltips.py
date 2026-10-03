@@ -29,13 +29,17 @@ TOOLTIPS = {
         "• Show Batch: Search for the entire series at once\n"
         "• Smart: Auto-selects Season Pack if ≥50% of a season is missing, otherwise Episode"
     ),
-    "missing_per_run": "Maximum number of missing titles searched per run. Must be at least 1 while missing search is enabled.",
+    "missing_per_run": (
+        "Maximum number of missing titles searched per run. Must be at least 1 while missing search is enabled. "
+        "Sonarr: at most one episode of an anime series per run; further ones wait for later runs."
+    ),
     "upgrades_per_run": "Maximum number of upgrade candidates searched per run. Must be at least 1 while upgrade search is enabled.",
     "seconds_between_actions": "Delay in seconds between individual API calls. Prevents overloading the instance.",
     "hours_after_release": (
         "Wait X hours after the release date before searching for a title. Set to 0 to search immediately. "
-        "Search Missing in Radarr: a movie is only searched once Radarr counts it as available (its "
-        "Minimum Availability plus the Availability Delay). Both must be met: these hours still count "
+        "Search Missing in Radarr: a movie with a known cinema, digital or physical release date is only "
+        "searched once Radarr counts it as available (its Minimum Availability plus the Availability Delay); "
+        "a movie without any of these dates counts as available. Both must be met: these hours still count "
         "from the release date, not from the moment Radarr counts the movie as available."
     ),
     "upgrade_source": (
@@ -66,7 +70,7 @@ TOOLTIPS = {
     "cs_release_timeout_seconds": "How long to wait for *arr's release search (GET /release runs the indexer search before it answers). 10 to 600 seconds. A timeout counts as a failed search; the title is tried again after its error pause (6 hours at first).",
     "cs_time_budget_minutes": "No new title is started once a run has been going this long (1 to 1440 minutes). The rest waits for the next run.",
     "cs_dry_run_max_releases": "Dry run only: check at most this many approved releases per title (1 to 1000). The rest are listed as unchecked.",
-    "cs_search_again_after_days": "Active only: a title the checked search grabbed that is still in the Wanted list (missing, or cutoff unmet) after this many days is searched again, checked, whatever Retry says. A title whose search returned no approved release at all (\"no results\" — an indexer failure may have hidden it) is searched again after this many days as well, also with Retry 0; a shorter Retry still frees it earlier. Titles whose results the filter rejected (\"no clean hit\") stay with Retry. 1 to 365 days. It takes the place of *arr's \"Redownload Failed from Interactive Search\" — switch that off in Radarr and Sonarr: a grab through the API counts as interactive.",
+    "cs_search_again_after_days": "Active only: a title the checked search grabbed that is still in the Wanted list (missing, or cutoff unmet) after this many days is searched again, checked, whatever Retry says. A title whose search returned no approved release at all (\"no approved release\" — an indexer failure may have hidden it) is searched again after this many days as well, also with Retry 0; a shorter Retry still frees it earlier. Titles whose results the filter rejected (\"no clean hit\") stay with Retry. 1 to 365 days. It takes the place of *arr's \"Redownload Failed from Interactive Search\" — switch that off in Radarr and Sonarr: a grab through the API counts as interactive.",
     "cs_year_tolerance": "Radarr rule a: the year in the release name may be this many years away from a year of the movie (year, secondary year and — if switched on — the years of its release dates). 0 to 10.",
     "cs_count_release_dates": "Radarr rule a: also accept the years of the cinema, digital and physical release as the movie's years.",
     "cs_veto_other_movie": "Radarr rule b: reject a release with a year that Radarr's /parse assigns to another movie of your library.",
