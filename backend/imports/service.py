@@ -14,11 +14,13 @@ import itertools
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import requests
+import urllib3.exceptions
 
 from backend.checked_search import import_check
 from backend.checked_search.import_check import ImportTarget, ImportVerdict
@@ -558,3 +560,474 @@ def reset_caches() -> None:
         _busy.clear()
         _revision.clear()
         _uncertain.clear()
+
+
+# ─── Import, command status, discard ──────────────────────────────────────────
+
+COMMAND_NAME = "ManualImport"
+IMPORT_MODE = "auto"                     # with SABnzbd: move
+COMMAND_TIMEOUT = 30                     # s for POST /command
+RUNNING_STATUSES = ("queued", "started")
+FAILED_STATUSES = ("failed", "aborted", "cancelled")
+KNOWN_STATUSES = (*RUNNING_STATUSES, "completed", *FAILED_STATUSES, "orphaned")
+STATUS_OTHER = "other"                   # reported instead of a status the apps do not have
+CONFIRM_SECONDS = 100                    # after the POST: "confirming", then "unconfirmed"; ends inside the
+                                         # page's 120 s, which start only with the import answer
+UNCERTAIN_GUARD_SECONDS = 600            # a lost POST answer guards its download at most this long
+SENT_KEEP_SECONDS = 24 * 3600            # registry entries older than this are dropped on insert
+HISTORY_PATH = "/api/v3/history"
+IMPORTED_EVENT_TYPE = 3                  # downloadFolderImported (query value)
+IMPORTED_EVENT_NAMES = ("downloadFolderImported", IMPORTED_EVENT_TYPE)   # records answer the name
+
+STATE_SENT = "sent"                      # import_download: the app took the command
+STATE_UNCERTAIN = "uncertain"            # import_download: the answer got lost, the command may run
+STATE_RUNNING = "running"
+STATE_CONFIRMING = "confirming"          # completed, the download still queued: not final yet
+STATE_IMPORTED = "imported"
+STATE_UNCONFIRMED = "unconfirmed"        # completed, the queue did not confirm it within CONFIRM_SECONDS
+STATE_FAILED = "failed"
+STATE_UNKNOWN = "unknown"
+
+# 409 texts (str(ImportConflict)) and 404 text (str(UnknownCommand))
+ACTION_BUSY = "Another action for this download is running"
+IMPORT_MAY_RUN = "An import may still be running in the app — try again in a few minutes"
+INSTANCE_CHANGED = "The instance was changed — reload the page"
+UNKNOWN_COMMAND = "Unknown command — missingarr did not send it to this instance"
+
+# Fixed texts only: never a command's exception or message and never an error
+# body of the app in an answer, a toast or the activity log.
+MSG_UNCERTAIN = "The app may still run the import — check the queue"
+MSG_IMPORTED = "Imported"
+MSG_UNCONFIRMED_RADARR = "The app ran the import; the queue has not confirmed it yet — check it in the app"
+MSG_UNCONFIRMED_SONARR = ("The app ran the import; the queue has not confirmed it yet — it may have imported only "
+                          "some episodes; check it in the app")
+UNCONFIRMED_MESSAGES = {"radarr": MSG_UNCONFIRMED_RADARR, "sonarr": MSG_UNCONFIRMED_SONARR}
+MSG_NO_RECORD = "The download left the queue, but the app has no import record of it — check it in the app"
+MSG_RESTARTED = "The app may have restarted since the import was sent — check it in the app"
+MSG_FAILED = "The import failed in the app — see the app's log"
+MSG_ABORTED = "The import was aborted in the app — check the queue"
+MSG_CANCELLED = "The import was cancelled in the app — check the queue"
+FAILED_MESSAGES = {"failed": MSG_FAILED, "aborted": MSG_ABORTED, "cancelled": MSG_CANCELLED}
+MSG_ORPHANED = "The app restarted during the import — check the queue"
+MSG_GONE = "The app no longer knows this command — check the queue"
+MSG_ODD_STATUS = "The app reports an unexpected command status — check the queue"
+
+
+class UnknownCommand(Exception):
+    """command_status() of a command this process did not send to this app
+    (or no longer remembers) -> HTTP 404, str(exc) is the detail."""
+
+
+@dataclass(frozen=True)
+class ImportStarted:
+    state: str               # STATE_SENT or STATE_UNCERTAIN
+    command_id: int | None   # None when uncertain
+    files: int
+    title: str               # BlockedDownload.title
+    target: str              # entries.target_text(videos, type)
+    message: str             # "" when sent, MSG_UNCERTAIN when uncertain
+
+
+@dataclass(frozen=True)
+class SentImport:
+    download_id: str
+    title: str
+    target: str
+    scope: Scope             # the app it went to: (instance id, type, URL)
+    sent_at: float           # clock() right after the POST answer
+    logged: bool = False     # final result written to the activity log
+
+
+@dataclass(frozen=True)
+class CommandState:
+    command_id: int
+    state: str               # STATE_RUNNING, STATE_CONFIRMING, STATE_IMPORTED, STATE_UNCONFIRMED,
+                             # STATE_FAILED or STATE_UNKNOWN
+    status: str              # *arr command status, one of KNOWN_STATUSES or STATUS_OTHER ("" after a 404)
+    message: str             # "" while running, the unconfirmed text while confirming, else one of the MSG_* texts
+
+
+@dataclass(frozen=True)
+class DiscardResult:
+    download_id: str
+    title: str
+    blocklist: bool
+    queue_id: int
+
+
+@contextmanager
+def _action(instance_id: int, download_id: str):
+    """One import or discard per download at a time. Never waits: a second
+    action is refused at once (409), from the first read to the POST or
+    DELETE of the first one. An outside auto-import is not covered; the
+    command check right before sending narrows that race."""
+    key = (instance_id, download_id)
+    with _lock:
+        if key in _busy:
+            raise ImportConflict(ACTION_BUSY)
+        _busy.add(key)
+    try:
+        yield
+    finally:
+        with _lock:
+            _busy.discard(key)
+
+
+def _manual_imports(agent) -> list[dict]:
+    """GET COMMAND_PATH: every ManualImport the app knows, in any status (the
+    name compared without case). Answer no list -> ValueError."""
+    answer = agent.http_get(COMMAND_PATH)
+    if not isinstance(answer, list):
+        raise ValueError("command list is not a list")
+    return [command for command in answer
+            if isinstance(command, dict) and str(command.get("name") or "").lower() == COMMAND_NAME.lower()]
+
+
+def _touches(command: dict, paths, download_id: str | None) -> bool:
+    """Has the command a file with one of these paths, or a file of this download?"""
+    body = command.get("body") if isinstance(command.get("body"), dict) else {}
+    files = body.get("files") if isinstance(body.get("files"), list) else []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        if item.get("path") in paths:
+            return True
+        if download_id is not None and item.get("downloadId") == download_id:
+            return True
+    return False
+
+
+def _running(commands: list[dict], paths, download_id: str | None) -> bool:
+    return any(command.get("status") in RUNNING_STATUSES and _touches(command, paths, download_id)
+               for command in commands)
+
+
+def running_import(agent, paths: set[str] | frozenset[str] = frozenset(), download_id: str | None = None) -> bool:
+    """Is a ManualImport queued or started with one of these files, or with
+    a file of this download? The app merges a second command with the same
+    paths into the first, whatever its targets, and a file the first one
+    moved makes the second fail. A discard would delete the files under a
+    queued import (disk commands run one after another in the app)."""
+    return _running(_manual_imports(agent), paths, download_id)
+
+
+def _command_ids(commands: list[dict], download_id: str) -> frozenset[int]:
+    """The ids of the ManualImport commands with a file of this download. A
+    command without an integer id cannot be told apart and is left out."""
+    return frozenset(command["id"] for command in commands
+                     if isinstance(command.get("id"), int) and not isinstance(command["id"], bool)
+                     and _touches(command, (), download_id))
+
+
+def _guard(scope: Scope, download_id: str, before: frozenset[int]) -> None:
+    """A POST whose answer got lost may still reach the app (a proxy can
+    forward it late): the download is guarded from now on. before: the ids
+    of the download's ManualImport commands that GET /command showed before
+    the POST. The app keeps ended commands in that list for a few minutes,
+    and none of them is the command that was sent."""
+    with _lock:
+        _uncertain[(scope, download_id)] = (clock(), frozenset(before))
+
+
+def _check_guard(scope: Scope, download_id: str, commands: list[dict]) -> None:
+    """A guarded download (see _guard) refuses a further import or discard
+    (IMPORT_MAY_RUN) until GET /command shows a new ManualImport of it, one
+    whose id was not in the list before the POST (then the usual check of
+    running imports applies), or UNCERTAIN_GUARD_SECONDS have passed.
+    An older ManualImport of the download, ended or not, ends nothing, and
+    neither does a queue without the download (it may be out of sight for a
+    while: download client not readable, app restarted)."""
+    key = (scope, download_id)
+    with _lock:
+        guard = _uncertain.get(key)
+        if guard is None:
+            return
+        stamp, before = guard
+        seen = bool(_command_ids(commands, download_id) - before)
+        if not seen and clock() - stamp < UNCERTAIN_GUARD_SECONDS:
+            raise ImportConflict(IMPORT_MAY_RUN)
+        del _uncertain[key]
+
+
+def _check_revision(instance_id: int, revision: int) -> None:
+    """Right before a POST or DELETE: the instance was not edited, switched
+    or deleted since the action began; else nothing is sent."""
+    with _lock:
+        if _revision.get(instance_id, 0) != revision:
+            raise ImportConflict(INSTANCE_CHANGED)
+
+
+def _command_id(answer) -> int:
+    value = answer.get("id") if isinstance(answer, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("command answer without an id")
+    return value
+
+
+def _not_taken(exc: BaseException) -> bool:
+    """The app certainly did not take the command: no connection could be
+    opened (refused, name not resolved, connect timeout), or it answered
+    3xx/4xx. Anything else (read timeout, connection lost after sending, 5xx,
+    an answer without a command id) may have reached the app, and the command
+    may run all the same. Same rule as the grab of the checked search."""
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        inner = exc.args[0] if exc.args else None
+        return isinstance(inner, urllib3.exceptions.MaxRetryError) and isinstance(
+            inner.reason, urllib3.exceptions.NewConnectionError)
+    response = getattr(exc, "response", None)
+    return isinstance(exc, requests.exceptions.HTTPError) and response is not None and response.status_code < 500
+
+
+def _remember(instance_id: int, command_id: int, entry: SentImport, revision: int) -> bool:
+    """Registers a sent import, unless the instance changed since the action
+    began: checked under the lock forget_instance() takes, so a command of a
+    forgotten configuration is never followed."""
+    now = clock()
+    with _lock:
+        if _revision.get(instance_id, 0) != revision:
+            return False
+        for key in [key for key, old in _sent.items() if now - old.sent_at >= SENT_KEEP_SECONDS]:
+            del _sent[key]
+        _sent[(instance_id, command_id)] = entry
+        return True
+
+
+def import_download(agent, download_id: str, proposal_key: str, revision: int | None = None) -> ImportStarted:
+    """Sends the app's own proposal as a ManualImport command. Only the two
+    strings come from the browser: queue and proposal are read again here,
+    and the command is built from that fresh answer. A POST that may have
+    reached the app all the same ends as STATE_UNCERTAIN, not as an error.
+    revision: the instance's configuration revision when the request began
+    (the API takes it before it reads the instance); None takes it now."""
+    instance_id = _instance_id(agent)
+    arr_type = _arr_type(agent)
+    scope = _scope(agent)
+    if revision is None:
+        revision = instance_revision(instance_id)
+    with _action(instance_id, download_id):
+        download = find_download(agent, download_id, fresh=True)
+        proposal = load_proposal(agent, download_id, fresh=True)
+        if proposal.key != proposal_key:
+            raise ImportConflict(PROPOSAL_CHANGED)
+        assessment = proposal.assessment
+        if not assessment.importable:
+            raise ImportConflict(IMPORT_LOCKED.format(why_not=assessment.why_not))
+        videos = list(assessment.videos)
+        commands = _manual_imports(agent)
+        _check_guard(scope, download_id, commands)
+        if _running(commands, {str(video.get("path") or "") for video in videos}, download_id):
+            raise ImportConflict(IMPORT_RUNNING)
+        # The ManualImports of the download the app lists now: none of them is the one sent below.
+        before = _command_ids(commands, download_id)
+        body = entries.command_body(videos, download_id, arr_type)
+        target = entries.target_text(videos, arr_type)
+        _check_revision(instance_id, revision)
+        try:
+            command_id = _command_id(agent.http_post(COMMAND_PATH, body, timeout=COMMAND_TIMEOUT))
+        except Exception as exc:
+            invalidate(instance_id, download_id)
+            text = arr_error(exc)[1]
+            if _not_taken(exc):
+                agent.log("error", SKILL,
+                          f"Import of '{download.title}' failed: {text} — the app did not take the command")
+                raise
+            # The command may run all the same, and the POST may even reach
+            # the app later: the next import or discard of this download is
+            # refused until GET /command shows a new ManualImport of it (409).
+            _guard(scope, download_id, before)
+            agent.log("warn", SKILL,
+                      f"Import sent, answer lost — '{download.title}' → {target} ({len(videos)} file(s)): {text}; "
+                      "the app may still run it, check the queue")
+            return ImportStarted(state=STATE_UNCERTAIN, command_id=None, files=len(videos), title=download.title,
+                                 target=target, message=MSG_UNCERTAIN)
+        entry = SentImport(download_id, download.title, target, scope, clock())
+        registered = _remember(instance_id, command_id, entry, revision)
+        invalidate(instance_id, download_id)
+        if not registered:
+            # The instance was edited, switched or deleted while the POST ran:
+            # missingarr does not follow a command of a configuration it forgot.
+            # Its id is known: it counts as new in any case, so the guard ends
+            # as soon as GET /command shows this command.
+            _guard(scope, download_id, before - {command_id})
+            agent.log("warn", SKILL,
+                      f"Import sent — '{download.title}' → {target} (command {command_id}, {len(videos)} file(s)), "
+                      "but the instance was changed meanwhile: missingarr does not follow it, check the queue")
+            return ImportStarted(state=STATE_UNCERTAIN, command_id=None, files=len(videos), title=download.title,
+                                 target=target, message=MSG_UNCERTAIN)
+        agent.log("info", SKILL,
+                  f"Import sent — '{download.title}' → {target} (command {command_id}, {len(videos)} file(s))")
+        return ImportStarted(state=STATE_SENT, command_id=command_id, files=len(videos), title=download.title,
+                             target=target, message="")
+
+
+def download_queued(agent, download_id: str) -> bool:
+    """Is any queue record of this download left, in whatever state
+    (importing, importPending, importBlocked …)? One snapshot of the whole
+    queue (read_queue_details), never pages."""
+    return _has_record(read_queue_details(agent), download_id)
+
+
+def import_recorded(agent, download_id: str) -> bool:
+    """Did the app record an import of this download (history eventType 3,
+    downloadFolderImported)? Only each record's eventType is looked at;
+    "data" is never read."""
+    answer = agent.http_get(HISTORY_PATH, params={"downloadId": download_id, "eventType": IMPORTED_EVENT_TYPE})
+    if not isinstance(answer, dict) or not isinstance(answer.get("records"), list):
+        raise ValueError("history answer without a record list")
+    return any(isinstance(record, dict) and record.get("eventType") in IMPORTED_EVENT_NAMES
+               for record in answer["records"])
+
+
+def _start_time(agent) -> datetime | None:
+    """startTime of GET SYSTEM_STATUS_PATH; None when missing or unreadable.
+    Errors of the request propagate."""
+    system = agent.http_get(SYSTEM_STATUS_PATH)
+    return parse_utc(system.get("startTime")) if isinstance(system, dict) else None
+
+
+def _completed(agent, command_id: int, sent: SentImport, resource: dict) -> CommandState:
+    """"Imported" needs evidence from one lifetime of the app: its start time,
+    read before and after queue and history, is the same both times and
+    earlier than the command's "queued" (right after a start the queue is
+    empty, so a restart must be ruled out); no queue record of the download
+    is left (in any state); the history has an import record. A download
+    still in the queue proves nothing either way (the app drops an imported
+    download only at its next queue refresh): "confirming" while the page
+    asks (CONFIRM_SECONDS after the POST), then "unconfirmed", never "failed".
+    Known limit: while the app cannot read its download client its queue is
+    empty, and its health shows that only later; a partly imported Sonarr
+    download can look imported then."""
+    queued = parse_utc(resource.get("queued"))
+    started = _start_time(agent)
+    if started is None or queued is None or started >= queued:
+        return CommandState(command_id, STATE_UNKNOWN, "completed", MSG_RESTARTED)
+    still_queued = download_queued(agent, sent.download_id)
+    recorded = not still_queued and import_recorded(agent, sent.download_id)
+    if _start_time(agent) != started:
+        # The app restarted while queue and history were read: they may come from two lifetimes.
+        return CommandState(command_id, STATE_UNKNOWN, "completed", MSG_RESTARTED)
+    if still_queued:
+        message = UNCONFIRMED_MESSAGES[_arr_type(agent)]
+        if clock() - sent.sent_at < CONFIRM_SECONDS:
+            return CommandState(command_id, STATE_CONFIRMING, "completed", message)
+        return CommandState(command_id, STATE_UNCONFIRMED, "completed", message)
+    if recorded:
+        return CommandState(command_id, STATE_IMPORTED, "completed", MSG_IMPORTED)
+    return CommandState(command_id, STATE_UNKNOWN, "completed", MSG_NO_RECORD)
+
+
+def _result_line(sent: SentImport, command_id: int, state: CommandState) -> tuple[str, str]:
+    if state.state == STATE_IMPORTED:
+        return "info", f"Import done — '{sent.title}' imported (command {command_id})"
+    if state.state == STATE_UNCONFIRMED:
+        return "warn", f"Import not confirmed — '{sent.title}' (command {command_id}): {state.message}"
+    if state.state == STATE_FAILED:
+        return "error", f"Import failed — '{sent.title}' (command {command_id}): {state.message}"
+    return "warn", f"Import result unknown — '{sent.title}' (command {command_id}): {state.message}"
+
+
+def _final(agent, command_id: int, state: CommandState) -> CommandState:
+    """A final state of an import sent here: one log line, once."""
+    key = (_instance_id(agent), command_id)
+    with _lock:
+        sent = _sent.get(key)
+        first = sent is not None and not sent.logged
+        if first:
+            _sent[key] = replace(sent, logged=True)
+    if first:
+        invalidate(key[0], sent.download_id)
+        level, line = _result_line(sent, command_id, state)
+        agent.log(level, SKILL, line)
+    return state
+
+
+def command_known(instance_id: int, command_id: int) -> bool:
+    """Does this process follow an import with this command id at this
+    instance? forget_instance() ends that (edit, switch on or off, delete).
+    The API asks before it checks whether the instance is switched on, so
+    the page gets the 404 of an unknown command and stops asking."""
+    with _lock:
+        return (instance_id, command_id) in _sent
+
+
+def command_status(agent, command_id: int) -> CommandState:
+    """What became of an import this process sent to this app. Any other
+    command id raises UnknownCommand before the app is asked. The command's
+    "exception", "message" and "result" are never read: the answer and the
+    log carry fixed texts only."""
+    with _lock:
+        sent = _sent.get((_instance_id(agent), command_id))
+    if sent is None or sent.scope != _scope(agent):
+        raise UnknownCommand(UNKNOWN_COMMAND)
+    try:
+        resource = agent.http_get(f"{COMMAND_PATH}/{command_id}")
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # Restarted app or command older than a day.
+            return _final(agent, command_id, CommandState(command_id, STATE_UNKNOWN, "", MSG_GONE))
+        raise
+    if not isinstance(resource, dict):
+        raise ValueError("command answer is not an object")
+    status = resource.get("status")
+    status = status if status in KNOWN_STATUSES else STATUS_OTHER
+    if status in RUNNING_STATUSES:
+        return CommandState(command_id, STATE_RUNNING, status, "")
+    if status == "completed":
+        state = _completed(agent, command_id, sent, resource)
+        if state.state == STATE_CONFIRMING:
+            return state
+    elif status in FAILED_STATUSES:
+        state = CommandState(command_id, STATE_FAILED, status, FAILED_MESSAGES[status])
+    elif status == "orphaned":
+        state = CommandState(command_id, STATE_UNKNOWN, status, MSG_ORPHANED)
+    else:
+        state = CommandState(command_id, STATE_UNKNOWN, status, MSG_ODD_STATUS)
+    return _final(agent, command_id, state)
+
+
+def discard_download(agent, download_id: str, blocklist: bool, revision: int | None = None) -> DiscardResult:
+    """Removes the download and its files from the download client. One
+    queue id is enough: the app removes the whole download, all episode
+    records. changeCategory stays false: SABnzbd does not support it. With
+    the blocklist the app marks only a release it grabbed itself as failed
+    (blocklist, maybe a new search); a download added by hand is only removed.
+    revision: as for import_download."""
+    instance_id = _instance_id(agent)
+    scope = _scope(agent)
+    if revision is None:
+        revision = instance_revision(instance_id)
+    with _action(instance_id, download_id):
+        download = find_download(agent, download_id, fresh=True)
+        if not download.queue_ids:
+            raise ValueError("download without a queue id")
+        commands = _manual_imports(agent)
+        _check_guard(scope, download_id, commands)
+        if _running(commands, frozenset(), download_id):
+            raise ImportConflict(IMPORT_RUNNING)
+        queue_id = download.queue_ids[0]
+        params = {"removeFromClient": "true", "blocklist": "true" if blocklist else "false",
+                  "skipRedownload": "false", "changeCategory": "false"}
+        _check_revision(instance_id, revision)
+        try:
+            agent.http_delete(f"{QUEUE_PATH}/{queue_id}", params=params)
+        except requests.exceptions.HTTPError as exc:
+            invalidate(instance_id, download_id)
+            if exc.response is not None and exc.response.status_code == 404:
+                raise ImportConflict(ALREADY_HANDLED) from None
+            agent.log("error", SKILL, f"Discard of '{download.title}' failed: {arr_error(exc)[1]}")
+            raise
+        except Exception as exc:
+            invalidate(instance_id, download_id)
+            agent.log("error", SKILL, f"Discard of '{download.title}' failed: {arr_error(exc)[1]}")
+            raise
+        invalidate(instance_id, download_id)
+        if blocklist:
+            line = (f"Discarded — '{download.title}' (blocklist on: if the app grabbed this release itself, it "
+                    "marks it as failed, puts it on the blocklist and may search again; a download added by hand "
+                    "is only removed)")
+        else:
+            line = f"Discarded — '{download.title}' (not blocklisted, no new search)"
+        agent.log("info", SKILL, line)
+        return DiscardResult(download_id=download_id, title=download.title, blocklist=blocklist, queue_id=queue_id)

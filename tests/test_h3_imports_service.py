@@ -675,3 +675,871 @@ def test_forget_instance_drops_everything_of_that_instance_only():
     service.blocked_downloads(first, fresh=False)
     service.blocked_downloads(first, fresh=False)
     assert reads(first, QUEUE) == 2
+
+
+# ── Import ───────────────────────────────────────────────────────────────────
+
+def send(fake, download_id="dl-1"):
+    """Imports a download the way the page does: with the key it was shown."""
+    key = service.proposal_view(fake, download_id)["proposal_key"]
+    return service.import_download(fake, download_id, key)
+
+
+def leaky_error(status=500):
+    """An HTTP error whose message names the key, as a URL in a log might."""
+    response = requests.Response()
+    response.status_code = status
+    return requests.exceptions.HTTPError(f"{status} for http://127.0.0.1:9/api/v3/command?apikey={API_KEY}",
+                                         response=response)
+
+
+class TimedArr(FakeArr):
+    def http_post(self, path, body, timeout=10):
+        self.post_timeout = timeout
+        return super().http_post(path, body, timeout)
+
+
+class NoIdArr(FakeArr):
+    def http_post(self, path, body, timeout=10):
+        super().http_post(path, body, timeout)
+        return {"name": "ManualImport"}
+
+
+def test_import_reads_queue_and_proposal_again():
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    fake.gets.clear()
+    started = service.import_download(fake, "dl-1", key)
+    assert paths(fake) == [QUEUE_DETAILS, MANUAL_IMPORT, COMMAND]     # cached snapshot and proposal not used
+    assert started == service.ImportStarted(state="sent", command_id=500, files=1, title=TITLE,
+                                            target="Some Show S01E01", message="")
+
+
+def test_import_of_a_vanished_download_is_refused():
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    fake.queue.clear()          # imported elsewhere meanwhile
+    with pytest.raises(service.ImportConflict) as caught:
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == service.ALREADY_HANDLED
+    assert (fake.posts, fake.logged) == ([], [])
+
+
+def test_import_with_a_changed_proposal_is_refused():
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    fake.manual_imports["dl-1"] = [sonarr_item(PATH1, SHOW, 1, [EP2])]    # now another episode
+    with pytest.raises(service.ImportConflict) as caught:
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == service.PROPOSAL_CHANGED
+    assert fake.posts == []
+
+
+def test_locked_import_is_refused_with_the_reason():
+    reason = "Not an upgrade for existing episode file(s). Existing quality: WEBDL-1080p. New Quality WEBDL-1080p."
+    fake = sonarr_fake(manual_imports={"dl-1": [sonarr_item(PATH1, SHOW, 1, [EP1], rejections=(reason,))]})
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    with pytest.raises(service.ImportConflict) as caught:
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == "Import is locked: " + entries.WHY_REJECTED.format(reasons=reason)
+    assert (fake.posts, fake.logged) == ([], [])
+
+
+OTHER = "/downloads/complete/Other/Other.mkv"
+
+
+@pytest.mark.parametrize("name,status,file,refused_import", [
+    ("ManualImport", "started", {"path": PATH1}, True),
+    ("manualimport", "queued", {"path": PATH1}, True),
+    ("ManualImport", "queued", {"path": OTHER, "downloadId": "dl-1"}, True),
+    ("ManualImport", "started", {"path": PATH2}, False),
+    ("ManualImport", "completed", {"path": PATH1}, False),
+    ("RefreshMonitoredDownloads", "started", {"path": PATH1}, False),
+])
+def test_running_manual_import_of_the_files_or_the_download_blocks(name, status, file, refused_import):
+    fake = sonarr_fake()
+    fake.commands[77] = {"id": 77, "name": name, "status": status, "body": {"files": [file]}}
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    if refused_import:
+        with pytest.raises(service.ImportConflict) as caught:
+            service.import_download(fake, "dl-1", key)
+        assert str(caught.value) == service.IMPORT_RUNNING
+        assert fake.posts == []
+    else:
+        assert service.import_download(fake, "dl-1", key).command_id == 500
+
+
+def test_command_list_must_be_a_list():
+    with pytest.raises(ValueError):
+        service.running_import(OddArr({"records": []}), {PATH1})
+
+
+def test_sonarr_command_body_names_series_and_episodes():
+    fake = sonarr_fake()
+    send(fake)
+    assert fake.posts == [(COMMAND, {"name": "ManualImport", "importMode": service.IMPORT_MODE, "files": [{
+        "path": PATH1, "folderName": "Some.Show.S01E01.German.1080p", "quality": quality(),
+        "languages": [{"id": 4, "name": "German"}], "releaseGroup": "GRP", "indexerFlags": 0,
+        "downloadId": "dl-1", "seriesId": 10, "episodeIds": [3], "releaseType": "singleEpisode"}]})]
+    assert "changeCategory" not in json.dumps(fake.posts)
+
+
+def test_radarr_command_body_names_the_movie():
+    fake = radarr_fake()
+    started = send(fake, "dl-r")
+    assert fake.posts == [(COMMAND, {"name": "ManualImport", "importMode": "auto", "files": [{
+        "path": RPATH, "folderName": "Some.Movie.2020.German.1080p", "quality": quality(),
+        "languages": [{"id": 4, "name": "German"}], "releaseGroup": "GRP", "indexerFlags": 0,
+        "downloadId": "dl-r", "movieId": 1}]})]
+    assert (started.target, started.files) == ("Some Movie (2020)", 1)
+
+
+def test_command_name_and_mode_are_the_ones_entries_sends():
+    body = entries.command_body([sonarr_item(PATH1, SHOW, 1, [EP1])], "dl-1", "sonarr")
+    assert (body["name"], body["importMode"]) == (service.COMMAND_NAME, service.IMPORT_MODE)
+
+
+def test_import_is_sent_with_its_own_timeout_and_logged():
+    fake = sonarr_fake(cls=TimedArr)
+    send(fake)
+    assert fake.post_timeout == 30
+    assert fake.logged == [("info", "imports", f"Import sent — '{TITLE}' → Some Show S01E01 (command 500, 1 file(s))")]
+
+
+def test_import_drops_the_caches_of_the_download():
+    fake = sonarr_fake()
+    send(fake)
+    fake.gets.clear()
+    service.blocked_downloads(fake, fresh=False)
+    service.load_proposal(fake, "dl-1")
+    assert paths(fake) == [QUEUE, MANUAL_IMPORT]
+
+
+@pytest.mark.parametrize("error,text", [
+    (refused(), "Cannot connect to instance"),
+    (requests.exceptions.ConnectTimeout(), "Connection timed out"),
+    (leaky_error(404), "HTTP 404 from instance"),
+    (http_error(401), "Invalid API key"),
+])
+def test_a_post_the_app_did_not_take_is_a_failure(error, text):
+    # No connection was made, or the app answered 3xx/4xx: the command does not run.
+    fake = sonarr_fake(post_error=error)
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    with pytest.raises(type(error)):
+        service.import_download(fake, "dl-1", key)
+    assert fake.logged == [("error", "imports",
+                            f"Import of '{TITLE}' failed: {text} — the app did not take the command")]
+    fake.gets.clear()
+    service.blocked_downloads(fake, fresh=False)      # dropped all the same
+    assert paths(fake) == [QUEUE]
+
+
+@pytest.mark.parametrize("fields,text", [
+    ({"post_lost": timed_out()}, "Connection timed out"),                                   # taken, answer lost
+    ({"post_lost": requests.exceptions.ConnectionError("Connection aborted.")}, "Cannot connect to instance"),
+    ({"post_lost": http_error(502)}, "HTTP 502 from instance"),
+    ({"post_error": leaky_error(500)}, "HTTP 500 from instance"),                           # maybe taken
+    ({"cls": NoIdArr}, "Unexpected answer from instance"),                                  # 2xx without an id
+])
+def test_a_post_whose_answer_got_lost_is_uncertain(fields, text):
+    fake = sonarr_fake(**fields)
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    started = service.import_download(fake, "dl-1", key)
+    assert started == service.ImportStarted(state="uncertain", command_id=None, files=1, title=TITLE,
+                                            target="Some Show S01E01", message=service.MSG_UNCERTAIN)
+    assert fake.logged == [("warn", "imports",
+                            f"Import sent, answer lost — '{TITLE}' → Some Show S01E01 (1 file(s)): {text}; "
+                            "the app may still run it, check the queue")]
+    assert API_KEY not in json.dumps(fake.logged)
+    fake.gets.clear()
+    service.blocked_downloads(fake, fresh=False)
+    assert paths(fake) == [QUEUE]
+
+
+def test_after_a_lost_answer_the_next_action_is_refused_while_the_import_runs():
+    # The app took the command, the answer got lost: a second import or a
+    # discard of the download is refused (409) while that command is queued or running.
+    fake = sonarr_fake(post_lost=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_lost = None
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    for action in (lambda: service.import_download(fake, "dl-1", key),
+                   lambda: service.discard_download(fake, "dl-1", True)):
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.IMPORT_RUNNING
+    assert len(fake.posts) == 1 and fake.deletes == []
+    fake.finish_command(500)
+    fake.imported("dl-1")
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+
+
+def test_a_post_that_reaches_the_app_late_keeps_the_download_guarded(clock):
+    # A proxy forwards the POST after missingarr gave up on the answer: until the app shows
+    # the command, neither a second import nor a discard (it would delete the files) runs.
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    actions = (lambda: service.import_download(fake, "dl-1", key),
+               lambda: service.discard_download(fake, "dl-1", True))
+    clock.advance(service.UNCERTAIN_GUARD_SECONDS - 1)
+    for action in actions:
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.IMPORT_MAY_RUN == (
+            "An import may still be running in the app — try again in a few minutes")
+    assert len(fake.posts) == 1 and fake.deletes == [] and len(fake.logged) == 1
+    assert fake.arrive() == [500]                      # the POST reaches the app now
+    for action in actions:
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.IMPORT_RUNNING     # the guard ended, the usual check applies
+    fake.finish_command(500, "failed")
+    assert service.discard_download(fake, "dl-1", True).queue_id == 11
+
+
+def guarded_actions(fake, download_id="dl-1"):
+    """Import (with the key the page was shown) and discard of a download."""
+    key = service.proposal_view(fake, download_id)["proposal_key"]
+    return (lambda: service.import_download(fake, download_id, key),
+            lambda: service.discard_download(fake, download_id, True))
+
+
+def refused_with(actions, text):
+    for action in actions:
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == text
+
+
+def test_a_download_that_left_the_queue_and_came_back_is_still_guarded():
+    # A fresh /queue/details shows only that the download is out of sight now, not that the
+    # lost POST will never come: a queue without the download ends no guard.
+    fake = with_second_download(sonarr_fake(post_delayed=timed_out()))
+    assert send(fake, "dl-1").state == "uncertain" and send(fake, "dl-2").state == "uncertain"
+    fake.post_delayed = None
+    record = next(r for r in fake.queue if r.get("downloadId") == "dl-2")
+    fake.queue.remove(record)                          # dl-2 is not in the queue for a while
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-2", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+    fake.queue.append(record)                          # back again: its guard is still there
+    for download_id in ("dl-2", "dl-1"):
+        with pytest.raises(service.ImportConflict) as caught:
+            service.discard_download(fake, download_id, True)
+        assert str(caught.value) == service.IMPORT_MAY_RUN
+    assert fake.deletes == [] and len(fake.posts) == 2
+
+
+def test_a_download_client_outage_keeps_the_guard_until_the_app_shows_the_command(clock):
+    # The app cannot read its download client: its queue is empty for a while (it keeps
+    # only what the clients returned), then the download is back. The lost POST may still
+    # arrive; only the command itself (or ten minutes) ends the guard.
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    actions = guarded_actions(fake)
+    held, fake.queue = fake.queue, []                  # the client read failed
+    refused_with(actions, service.ALREADY_HANDLED)     # nothing to act on, nothing deleted
+    fake.queue = held                                  # the client answers again
+    clock.advance(service.UNCERTAIN_GUARD_SECONDS - 1)
+    refused_with(actions, service.IMPORT_MAY_RUN)
+    assert len(fake.posts) == 1 and fake.deletes == []
+    assert fake.arrive() == [500]                      # the new command: the usual check
+    refused_with(actions, service.IMPORT_RUNNING)
+    assert len(fake.posts) == 1 and fake.deletes == []
+
+
+def test_an_app_restart_keeps_the_guard_until_the_app_shows_the_command(clock):
+    # After a restart the app's queue is empty until it read its download clients again,
+    # and its start time is new. The POST may still reach the restarted app.
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    actions = guarded_actions(fake)
+    held, fake.queue = fake.queue, []
+    fake.system_status = {"appName": "Sonarr", "startTime": "2026-10-02T12:00:30Z"}
+    clock.advance(60)
+    refused_with(actions, service.ALREADY_HANDLED)
+    fake.queue = held                                  # filled again after the start
+    refused_with(actions, service.IMPORT_MAY_RUN)
+    assert len(fake.posts) == 1 and fake.deletes == []
+    assert fake.arrive() == [500]
+    refused_with(actions, service.IMPORT_RUNNING)
+    assert len(fake.posts) == 1 and fake.deletes == []
+
+
+def test_the_guard_ends_after_ten_minutes(clock):
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    clock.advance(service.UNCERTAIN_GUARD_SECONDS - 1)
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", False)
+    assert str(caught.value) == service.IMPORT_MAY_RUN
+    clock.advance(1)                                   # ten minutes: the POST never arrived
+    assert service.discard_download(fake, "dl-1", False).queue_id == 11
+    assert fake.delayed and fake.commands == {} and service._uncertain == {}
+
+
+def test_an_older_import_of_the_download_does_not_end_the_guard():
+    # The app keeps ended commands in GET /command for some minutes: an earlier
+    # ManualImport of the download that failed is not the POST whose answer got lost.
+    older = {"id": 77, "name": "ManualImport", "status": "failed",
+             "body": {"files": [{"path": PATH1, "downloadId": "dl-1"}]}}
+    fake = sonarr_fake(post_delayed=timed_out(), commands=[older])
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    actions = (lambda: service.import_download(fake, "dl-1", key),
+               lambda: service.discard_download(fake, "dl-1", True))
+    for action in (*actions, *actions):                # seen again and again, it ends nothing
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.IMPORT_MAY_RUN
+    assert len(fake.posts) == 1 and fake.deletes == []
+    assert fake.arrive() == [500]                      # the new command: the usual check
+    for action in actions:
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.IMPORT_RUNNING
+    assert len(fake.posts) == 1 and fake.deletes == []
+
+
+def test_a_download_only_no_longer_held_back_keeps_its_guard():
+    # importPending/ok is not held back ("Already handled"), but the download is still in
+    # the queue: the lost POST may still reach the app, so the guard stays.
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    record = fake.queue[0]
+    record.update(trackedDownloadState="importPending", trackedDownloadStatus="ok")
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+    record.update(trackedDownloadState="importBlocked", trackedDownloadStatus="warning")   # held back again
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.IMPORT_MAY_RUN
+    assert len(fake.posts) == 1 and fake.deletes == []
+
+
+def test_a_stale_paged_snapshot_that_misses_the_download_keeps_its_guard(monkeypatch):
+    # Only a fresh answer of the whole queue shows that a download left it. Read page by
+    # page, dl-1 slips past when a record before it leaves between two pages; the
+    # snapshot of that read is served for up to 60 s.
+    fake = sonarr_fake(post_delayed=timed_out())
+    assert send(fake).state == "uncertain"
+    fake.post_delayed = None
+    fake.queue.insert(0, queue_record(5, "dl-0", TITLE2, series_id=10, episode_id=4, season=1))
+    fake.on_get[QUEUE] = lambda f: reads(f, QUEUE) == 2 and f.queue.pop(0)     # dl-0 leaves after page 1
+    monkeypatch.setattr(service, "QUEUE_PAGE_SIZE", 1)
+    fake.gets.clear()
+    assert [d.download_id for d in service.list_open(fake)] == ["dl-0"]        # dl-1 slipped past
+    with pytest.raises(service.ImportConflict) as caught:
+        service.proposal_view(fake, "dl-1")             # from that snapshot
+    assert str(caught.value) == service.ALREADY_HANDLED
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)    # /queue/details still has it
+    assert str(caught.value) == service.IMPORT_MAY_RUN
+    assert len(fake.posts) == 1 and fake.deletes == []
+
+
+# ── One action per download ──────────────────────────────────────────────────
+
+def during_the_command_check(fake, action, outcome):
+    """Runs action() while the first action is between its checks and its
+    POST or DELETE (its GET /command), and keeps what happened."""
+    def hook(f):
+        f.on_get.pop(COMMAND)
+        try:
+            outcome.append(action())
+        except service.ImportConflict as exc:
+            outcome.append(str(exc))
+    fake.on_get[COMMAND] = hook
+
+
+def test_discard_is_refused_while_an_import_of_the_download_runs():
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    outcome = []
+    during_the_command_check(fake, lambda: service.discard_download(fake, "dl-1", True), outcome)
+    assert service.import_download(fake, "dl-1", key).state == "sent"
+    assert outcome == [service.ACTION_BUSY]
+    assert fake.deletes == [] and len(fake.posts) == 1
+
+
+@pytest.mark.parametrize("second", ["import", "discard"])
+def test_a_second_action_is_refused_while_a_discard_of_the_download_runs(second):
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    outcome = []
+    action = ((lambda: service.import_download(fake, "dl-1", key)) if second == "import"
+              else (lambda: service.discard_download(fake, "dl-1", False)))
+    during_the_command_check(fake, action, outcome)
+    assert service.discard_download(fake, "dl-1", True).queue_id == 11
+    assert outcome == [service.ACTION_BUSY]
+    assert fake.posts == [] and len(fake.deletes) == 1
+
+
+def test_actions_on_other_downloads_go_on_and_the_lock_is_released():
+    fake = with_second_download(sonarr_fake())
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    outcome = []
+    during_the_command_check(fake, lambda: service.discard_download(fake, "dl-2", True), outcome)
+    service.import_download(fake, "dl-1", key)
+    assert [result.download_id for result in outcome] == ["dl-2"]
+    with pytest.raises(service.ImportConflict) as caught:       # a refusal releases the lock as well
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == service.IMPORT_RUNNING
+    fake.finish_command(500)
+    fake.imported("dl-1")
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+
+
+# ── The instance changes while an action runs ────────────────────────────────
+# backend/api/instances.py calls forget_instance() right before and right after
+# it stores an edit, a switch on or off or a delete; the hooks below call it
+# while a read is held.
+
+def forget_meanwhile(path):
+    def hook(f):
+        f.on_get.pop(path)
+        service.forget_instance(1)
+    return hook
+
+
+@pytest.mark.parametrize("held", [MANUAL_IMPORT, COMMAND])
+def test_an_instance_changed_during_an_import_sends_nothing(held):
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    fake.on_get[held] = forget_meanwhile(held)       # while the proposal or the command list is read
+    with pytest.raises(service.ImportConflict) as caught:
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == service.INSTANCE_CHANGED == "The instance was changed — reload the page"
+    assert fake.posts == [] and fake.logged == []
+    assert service.import_download(fake, "dl-1", key).state == "sent"     # a new action, a new revision
+
+
+def test_an_instance_changed_during_a_discard_deletes_nothing():
+    fake = sonarr_fake(on_get={COMMAND: forget_meanwhile(COMMAND)})
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.INSTANCE_CHANGED
+    assert fake.deletes == [] and fake.logged == []
+
+
+def test_a_revision_taken_before_the_instance_was_read_fences_the_action():
+    # The API takes the revision before it reads the instance: an edit right after that read counts.
+    fake = sonarr_fake()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    revision = service.instance_revision(1)
+    service.forget_instance(1)
+    for action in (lambda: service.import_download(fake, "dl-1", key, revision),
+                   lambda: service.discard_download(fake, "dl-1", True, revision)):
+        with pytest.raises(service.ImportConflict) as caught:
+            action()
+        assert str(caught.value) == service.INSTANCE_CHANGED
+    assert fake.posts == [] and fake.deletes == []
+
+
+def test_a_command_answered_after_an_instance_change_is_not_followed():
+    # The instance is edited or switched off while the app answers the POST: the command
+    # runs, but missingarr no longer follows a configuration it forgot.
+    fake = sonarr_fake(on_post={COMMAND: lambda f: service.forget_instance(1)})
+    assert send(fake) == service.ImportStarted(state="uncertain", command_id=None, files=1, title=TITLE,
+                                               target="Some Show S01E01", message=service.MSG_UNCERTAIN)
+    assert fake.logged == [("warn", "imports",
+                            f"Import sent — '{TITLE}' → Some Show S01E01 (command 500, 1 file(s)), but the instance "
+                            "was changed meanwhile: missingarr does not follow it, check the queue")]
+    with pytest.raises(service.UnknownCommand):
+        service.command_status(fake, 500)
+    fake.on_post.clear()
+    key = service.proposal_view(fake, "dl-1")["proposal_key"]
+    with pytest.raises(service.ImportConflict) as caught:      # the command waits in the app: the usual check
+        service.import_download(fake, "dl-1", key)
+    assert str(caught.value) == service.IMPORT_RUNNING
+    assert len(fake.posts) == 1
+
+
+# ── Command status ───────────────────────────────────────────────────────────
+
+def test_queued_and_started_commands_are_running():
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="running", status="queued", message="")
+    fake.commands[command_id]["status"] = "started"
+    assert service.command_status(fake, command_id).state == "running"
+    assert len(fake.logged) == 1               # only "Import sent"
+
+
+def test_completed_gone_and_recorded_is_imported_and_logged_once():
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    fake.imported("dl-1")
+    fake.gets.clear()
+    expected = service.CommandState(command_id=500, state="imported", status="completed", message="Imported")
+    assert service.command_status(fake, command_id) == expected
+    # The start time before and after queue and history: one lifetime of the app.
+    assert fake.gets == [(f"{COMMAND}/500", {}), (SYSTEM_STATUS, {}), (QUEUE_DETAILS, {}),
+                         (HISTORY, {"downloadId": "dl-1", "eventType": 3}), (SYSTEM_STATUS, {})]
+    assert service.command_status(fake, command_id) == expected
+    assert fake.logged[1:] == [("info", "imports", f"Import done — '{TITLE}' imported (command 500)")]
+
+
+def test_gone_without_an_import_record_is_unknown():
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    fake.queue = [record for record in fake.queue if record.get("downloadId") != "dl-1"]   # only a grab record left
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unknown", status="completed", message=service.MSG_NO_RECORD)
+    assert fake.logged[1:] == [("warn", "imports",
+                                f"Import result unknown — '{TITLE}' (command 500): {service.MSG_NO_RECORD}")]
+
+
+@pytest.mark.parametrize("arr", ["sonarr", "radarr"])
+@pytest.mark.parametrize("state,status", [("importing", "ok"), ("importPending", "ok"), ("importBlocked", "warning")])
+def test_a_download_still_queued_in_any_state_is_never_imported_nor_failed(clock, arr, state, status):
+    # The app drops an imported download only at its next queue refresh: still queued proves nothing.
+    fake, download_id = (sonarr_fake(), "dl-1") if arr == "sonarr" else (radarr_fake(), "dl-r")
+    command_id = send(fake, download_id).command_id
+    fake.finish_command(command_id)
+    for record in fake.queue:
+        record["trackedDownloadState"], record["trackedDownloadStatus"] = state, status
+    fake.history[download_id] = [import_record(download_id)]      # a record is no proof while the download waits
+    hint = service.UNCONFIRMED_MESSAGES[arr]
+    assert service.command_status(fake, command_id) == service.CommandState(500, "confirming", "completed", hint)
+    clock.advance(service.CONFIRM_SECONDS)
+    assert service.command_status(fake, command_id) == service.CommandState(500, "unconfirmed", "completed", hint)
+
+
+def test_a_sonarr_import_the_queue_does_not_confirm_is_unconfirmed_after_confirm_seconds(clock):
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    assert service.command_status(fake, command_id).state == "confirming"
+    clock.advance(service.CONFIRM_SECONDS - 1)
+    assert service.command_status(fake, command_id).state == "confirming"
+    assert fake.logged[1:] == []                      # not final yet
+    clock.advance(1)
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unconfirmed", status="completed", message=service.MSG_UNCONFIRMED_SONARR)
+    assert service.command_status(fake, command_id).state == "unconfirmed"
+    assert service.MSG_UNCONFIRMED_SONARR == ("The app ran the import; the queue has not confirmed it yet — it may "
+                                              "have imported only some episodes; check it in the app")
+    assert fake.logged[1:] == [("warn", "imports",
+                                f"Import not confirmed — '{TITLE}' (command 500): {service.MSG_UNCONFIRMED_SONARR}")]
+
+
+def test_a_radarr_import_the_queue_does_not_confirm_is_unconfirmed_never_failed(clock):
+    fake = radarr_fake()
+    command_id = send(fake, "dl-r").command_id
+    fake.finish_command(command_id)
+    assert service.command_status(fake, command_id).state == "confirming"
+    clock.advance(service.CONFIRM_SECONDS)
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unconfirmed", status="completed", message=service.MSG_UNCONFIRMED_RADARR)
+    assert service.MSG_UNCONFIRMED_RADARR == ("The app ran the import; the queue has not confirmed it yet — check it "
+                                              "in the app")
+    assert fake.logged[1:] == [("warn", "imports",
+                                f"Import not confirmed — '{RTITLE}' (command 500): {service.MSG_UNCONFIRMED_RADARR}")]
+
+
+def test_confirming_turns_into_imported_when_the_queue_catches_up(clock):
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    assert service.command_status(fake, command_id).state == "confirming"
+    clock.advance(60)
+    fake.imported("dl-1")                             # the app's next queue refresh
+    assert service.command_status(fake, command_id).state == "imported"
+
+
+def test_confirming_counts_from_the_post_not_from_the_end_of_the_command(clock):
+    # CONFIRM_SECONDS count from the POST; a command that waited in the app has less of
+    # that time left. "ended" is not needed.
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    clock.advance(90)
+    fake.finish_command(command_id, ended=None)
+    assert service.command_status(fake, command_id).state == "confirming"
+    clock.advance(10)
+    assert service.command_status(fake, command_id).state == "unconfirmed"
+
+
+PAGE_POLL_SECONDS = 3          # IMPORTS_POLL_MS of templates/imports.html (Task 7; h5 pins it)
+PAGE_BUDGET_SECONDS = 120      # IMPORTS_POLL_BUDGET_MS: a hard limit, counted from the import answer
+
+
+def test_a_page_polling_for_its_whole_budget_gets_unconfirmed_and_one_log_line(clock):
+    # CONFIRM_SECONDS count from the POST and end inside the page's budget, which starts only
+    # with the import answer: with prompt answers one of the page's polls gets the final
+    # "unconfirmed", and the service writes "Import not confirmed" exactly once.
+    fake = sonarr_fake()
+    command_id = send(fake).command_id          # the page's budget starts now at the earliest
+    fake.finish_command(command_id)             # done, but the queue still holds the download
+    deadline, states = clock.mono + PAGE_BUDGET_SECONDS, []
+    while clock.mono < deadline:                # pollCommand, with answers that take no time
+        clock.advance(min(PAGE_POLL_SECONDS, deadline - clock.mono))
+        if clock.mono >= deadline:
+            break
+        states.append(service.command_status(fake, command_id).state)
+        if states[-1] not in ("running", "confirming"):
+            break
+    assert states[-1] == "unconfirmed" and set(states[:-1]) == {"confirming"}
+    service.command_status(fake, command_id)    # asked once more (another tab): still one line
+    assert [line for line in fake.logged if line[2].startswith("Import not confirmed")] == [
+        ("warn", "imports", f"Import not confirmed — '{TITLE}' (command 500): {service.MSG_UNCONFIRMED_SONARR}")]
+
+
+@pytest.mark.parametrize("system", [{"appName": "Sonarr", "startTime": "2026-10-02T12:00:30Z"},   # after "queued"
+                                    {"appName": "Sonarr", "startTime": "2026-10-02T12:00:00Z"},   # same second
+                                    {"appName": "Sonarr"}])                                       # no start time
+def test_a_restart_after_the_command_was_queued_makes_the_result_unknown(system):
+    # Right after a start the queue is empty: "gone" proves nothing then.
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    fake.imported("dl-1")
+    fake.system_status = system
+    fake.gets.clear()
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unknown", status="completed", message=service.MSG_RESTARTED)
+    assert paths(fake) == [f"{COMMAND}/500", SYSTEM_STATUS]
+    assert fake.logged[1:] == [("warn", "imports",
+                                f"Import result unknown — '{TITLE}' (command 500): {service.MSG_RESTARTED}")]
+
+
+@pytest.mark.parametrize("held", [QUEUE_DETAILS, HISTORY])
+def test_a_restart_while_the_evidence_is_read_makes_the_result_unknown(held):
+    # The start time was read, then the app restarted: an empty queue right after the start
+    # and an older import record must not add up to "imported".
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id)
+    fake.history["dl-1"] = [import_record("dl-1")]
+    if held == HISTORY:
+        fake.queue.clear()
+
+    def restart(f):
+        f.on_get.pop(held)
+        f.queue.clear()
+        f.system_status = {"appName": "Sonarr", "startTime": "2026-10-02T12:00:10Z"}
+
+    fake.on_get[held] = restart
+    fake.gets.clear()
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unknown", status="completed", message=service.MSG_RESTARTED)
+    assert paths(fake) == [f"{COMMAND}/500", SYSTEM_STATUS, QUEUE_DETAILS, HISTORY, SYSTEM_STATUS]
+
+
+SECRET_TEXT = f"System.Net.WebException: GET http://127.0.0.1:9/api?apikey={API_KEY} failed\n   at Some.Method()"
+
+
+@pytest.mark.parametrize("status,message", [
+    ("failed", "The import failed in the app — see the app's log"),
+    ("aborted", "The import was aborted in the app — check the queue"),
+    ("cancelled", "The import was cancelled in the app — check the queue"),
+])
+def test_failed_commands_get_a_fixed_text_never_the_apps(status, message):
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id, status, exception=SECRET_TEXT, message=SECRET_TEXT)
+    state = service.command_status(fake, command_id)
+    assert state == service.CommandState(command_id=500, state="failed", status=status, message=message)
+    assert fake.logged[1:] == [("error", "imports", f"Import failed — '{TITLE}' (command 500): {message}")]
+    assert API_KEY not in repr(state) and API_KEY not in json.dumps(fake.logged)
+
+
+@pytest.mark.parametrize("status,reported,message", [
+    ("orphaned", "orphaned", "The app restarted during the import — check the queue"),
+    ("paused", "other", "The app reports an unexpected command status — check the queue"),
+    (f"odd {API_KEY}", "other", "The app reports an unexpected command status — check the queue"),
+])
+def test_orphaned_and_odd_statuses_are_unknown(status, reported, message):
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.finish_command(command_id, status)
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unknown", status=reported, message=message)
+    assert fake.logged[1:] == [("warn", "imports", f"Import result unknown — '{TITLE}' (command 500): {message}")]
+
+
+def test_command_the_app_no_longer_knows_is_unknown():
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    del fake.commands[command_id]
+    assert service.command_status(fake, command_id) == service.CommandState(
+        command_id=500, state="unknown", status="", message=service.MSG_GONE)
+    assert fake.logged[1:] == [("warn", "imports",
+                                f"Import result unknown — '{TITLE}' (command 500): {service.MSG_GONE}")]
+
+
+def test_only_imports_sent_here_are_followed():
+    # Another command's exception could carry anything: it is never read.
+    fake = sonarr_fake()
+    fake.commands[900] = {"id": 900, "name": "ManualImport", "status": "failed", "exception": SECRET_TEXT}
+    for command_id in (900, 12345):
+        with pytest.raises(service.UnknownCommand) as caught:
+            service.command_status(fake, command_id)
+        assert str(caught.value) == service.UNKNOWN_COMMAND
+    assert fake.gets == [] and fake.logged == []
+
+
+def test_a_command_sent_to_the_old_app_is_unknown_after_an_instance_change():
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    original = fake.config
+    fake.config = config(1, "sonarr", url="http://127.0.0.1:10")     # the instance now points to another app
+    with pytest.raises(service.UnknownCommand):
+        service.command_status(fake, command_id)
+    fake.config = original
+    assert service.command_status(fake, command_id).state == "running"
+    service.forget_instance(1)                                      # the instance was edited
+    with pytest.raises(service.UnknownCommand):
+        service.command_status(fake, command_id)
+    assert [path for path, _ in fake.gets].count(f"{COMMAND}/500") == 1
+
+
+def test_command_known_names_only_imports_followed_at_this_instance():
+    # The API asks this before it checks whether the instance is switched on: after an
+    # edit, a switch-off or a delete the page gets the 404 of an unknown command.
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    assert service.command_known(1, command_id) is True
+    assert service.command_known(2, command_id) is False and service.command_known(1, 12345) is False
+    service.forget_instance(2)                                      # another instance changed
+    assert service.command_known(1, command_id) is True
+    service.forget_instance(1)
+    assert service.command_known(1, command_id) is False
+    assert f"{COMMAND}/500" not in [path for path, _ in fake.gets]    # the app is never asked
+
+
+def test_registry_forgets_imports_after_a_day(clock):
+    fake = with_second_download(sonarr_fake())
+    first = send(fake, "dl-1").command_id
+    clock.advance(24 * 3600)
+    send(fake, "dl-2")                         # the insert drops the day-old entry
+    fake.finish_command(first)
+    with pytest.raises(service.UnknownCommand):
+        service.command_status(fake, first)
+    assert [message for _, _, message in fake.logged if message.startswith("Import done")] == []
+
+
+@pytest.mark.parametrize("error", [http_error(500), refused()])
+def test_other_command_errors_propagate(error):
+    fake = sonarr_fake()
+    command_id = send(fake).command_id
+    fake.commands[command_id] = error
+    with pytest.raises(type(error)):
+        service.command_status(fake, command_id)
+    assert len(fake.logged) == 1
+
+
+# ── Discard ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("blocklist,flag,note", [
+    (True, "true", "blocklist on: if the app grabbed this release itself, it marks it as failed, puts it on the "
+                   "blocklist and may search again; a download added by hand is only removed"),
+    (False, "false", "not blocklisted, no new search"),
+])
+def test_discard_removes_the_whole_download_with_one_delete(blocklist, flag, note):
+    fake = sonarr_fake(queue=[queue_record(11, "dl-1", TITLE, series_id=10, episode_id=3, season=1),
+                              queue_record(12, "dl-1", TITLE, series_id=10, episode_id=4, season=1)])
+    result = service.discard_download(fake, "dl-1", blocklist)
+    assert result == service.DiscardResult(download_id="dl-1", title=TITLE, blocklist=blocklist, queue_id=11)
+    assert fake.deletes == [(f"{QUEUE}/11", {"removeFromClient": "true", "blocklist": flag,
+                                             "skipRedownload": "false", "changeCategory": "false"})]
+    assert fake.queue == []
+    assert fake.logged == [("info", "imports", f"Discarded — '{TITLE}' ({note})")]
+
+
+def test_discard_reads_the_queue_again():
+    fake = sonarr_fake()
+    service.blocked_downloads(fake)            # the snapshot still holds dl-1
+    fake.queue.clear()
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+    assert (fake.deletes, fake.logged) == ([], [])
+
+
+@pytest.mark.parametrize("status,download_id,refused_discard", [
+    ("queued", "dl-1", True),
+    ("started", "dl-1", True),
+    ("queued", "dl-2", False),
+    ("completed", "dl-1", False),
+])
+def test_discard_is_refused_while_an_import_of_the_download_is_queued(status, download_id, refused_discard):
+    # Disk commands run one after another in the app: a sent import can wait for minutes,
+    # and removeFromClient would delete its files.
+    fake = sonarr_fake()
+    fake.commands[77] = {"id": 77, "name": "ManualImport", "status": status,
+                         "body": {"files": [{"path": OTHER, "downloadId": download_id}]}}
+    if refused_discard:
+        with pytest.raises(service.ImportConflict) as caught:
+            service.discard_download(fake, "dl-1", True)
+        assert str(caught.value) == service.IMPORT_RUNNING
+        assert (fake.deletes, fake.logged) == ([], [])
+        assert paths(fake) == [QUEUE_DETAILS, COMMAND]
+    else:
+        assert service.discard_download(fake, "dl-1", True).queue_id == 11
+        assert len(fake.deletes) == 1
+
+
+def test_delete_404_means_already_handled():
+    fake = sonarr_fake(delete_errors={11: http_error(404)})
+    with pytest.raises(service.ImportConflict) as caught:
+        service.discard_download(fake, "dl-1", True)
+    assert str(caught.value) == service.ALREADY_HANDLED
+    assert len(fake.deletes) == 1 and fake.logged == []
+
+
+@pytest.mark.parametrize("error,text", [(leaky_error(), "HTTP 500 from instance"),
+                                        (refused(), "Cannot connect to instance")])
+def test_failing_delete_is_logged_and_raised(error, text):
+    fake = sonarr_fake(delete_errors={11: error})
+    with pytest.raises(type(error)):
+        service.discard_download(fake, "dl-1", False)
+    assert fake.logged == [("error", "imports", f"Discard of '{TITLE}' failed: {text}")]
+    fake.gets.clear()
+    service.blocked_downloads(fake, fresh=False)
+    assert paths(fake) == [QUEUE]
+
+
+def test_discard_drops_the_caches():
+    fake = sonarr_fake()
+    service.cached_count(fake)
+    service.load_proposal(fake, "dl-1")
+    service.discard_download(fake, "dl-1", True)
+    fake.gets.clear()
+    assert service.cached_count(fake).count == 0
+    service.load_proposal(fake, "dl-1")
+    assert paths(fake) == [QUEUE_STATUS, SYSTEM_STATUS, MANUAL_IMPORT]
+
+
+def test_no_key_in_log_lines_or_texts(clock):
+    fake = sonarr_fake(post_error=leaky_error(), delete_errors={11: leaky_error()})
+    assert send(fake).state == "uncertain"
+    texts = []
+    for refusal in (lambda: service.discard_download(fake, "dl-1", True),      # guarded after the lost answer
+                    lambda: service.import_download(fake, "dl-1", "0" * 16),
+                    lambda: service.discard_download(fake, "dl-gone", True)):
+        with pytest.raises(service.ImportConflict) as caught:
+            refusal()
+        texts.append(str(caught.value))
+    clock.advance(service.UNCERTAIN_GUARD_SECONDS)
+    with pytest.raises(requests.exceptions.HTTPError):
+        service.discard_download(fake, "dl-1", True)
+    texts += [message for _, _, message in fake.logged]
+    assert len(texts) == 5
+    for text in texts:
+        assert API_KEY not in text and INDEXER_KEY not in text
