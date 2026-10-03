@@ -522,6 +522,23 @@ class BaseAgent(ABC):
         self._check_response(resp)
         return resp.json()
 
+    def http_delete(self, path: str, params: Optional[dict] = None, timeout: float = 10) -> None:
+        """DELETE on *arr (the Imports page removes a download from the queue).
+
+        Same rules as http_get/http_post: the key goes in the header only, a
+        redirect is not followed (C4), 4xx/5xx raise. The answer body is
+        never read: *arr answers DELETE with an empty 200, a 204 is fine too.
+        """
+        url = self.config["url"].rstrip("/") + path
+        resp = requests.delete(
+            url,
+            headers={"X-Api-Key": self.config["api_key"]},
+            params=params or {},
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        self._check_response(resp)
+
     def http_get_raw(self, path: str) -> tuple[int, dict | None]:
         """GET that reports the status code instead of raising on 4xx/5xx.
 

@@ -45,6 +45,14 @@ class Orchestrator:
         agent_class = self._agent_class(config.get("type", "sonarr"))
         return agent_class(config, self.broadcaster, runtime=self._runtime(config["id"]))
 
+    def detached_agent(self, config: dict) -> BaseAgent:
+        """An agent that only lends its HTTP methods and log() (housekeeping,
+        the Imports page). It is never started: no thread, no scheduler, and
+        a fresh InstanceRuntime instead of the instance's shared one, so it
+        never holds a skill lock or a rate slot of the instance. It is not
+        registered either. Unknown type -> ValueError."""
+        return self._agent_class(config.get("type", "sonarr"))(config, self.broadcaster)
+
     def start_all(self):
         instances = db.instances.get_all(include_disabled=False)
         for inst in instances:
@@ -92,7 +100,7 @@ class Orchestrator:
             if self._housekeeping_stop.is_set():
                 return
             try:
-                agent = self._agent_class(config.get("type", "sonarr"))(config, self.broadcaster)
+                agent = self.detached_agent(config)
             except ValueError as exc:
                 logger.warning("Housekeeping skipped instance %s: %s", config.get("id"), exc)
                 continue
