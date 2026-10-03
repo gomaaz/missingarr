@@ -134,9 +134,9 @@ def get_last_for_instance(instance_id: int) -> list[dict]:
 _UPSERT_SEARCHED = """
     INSERT INTO searched_items
         (instance_id, cache_key, title, item_type, profile_fingerprint, grabbed_at, history_item_id,
-         no_results_at)
+         no_results_at, searched_at)
     VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN datetime('now','localtime') END, ?,
-            CASE WHEN ? THEN datetime('now','localtime') END)
+            CASE WHEN ? THEN datetime('now','localtime') END, datetime('now','localtime'))
     ON CONFLICT(instance_id, cache_key) DO UPDATE SET
         searched_at=datetime('now','localtime'),
         profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),

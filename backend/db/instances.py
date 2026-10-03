@@ -90,9 +90,10 @@ def create(data: dict) -> dict:
                 seconds_between_actions, hours_after_release,
                 upgrade_source, quiet_start, quiet_end,
                 checked_search, checked_search_settings, search_again_after_profile_change,
-                dry_run_round_started_at
+                dry_run_round_started_at, created_at, updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      CASE WHEN ? = 'dry_run' THEN {_NOW_MS} END)
+                      CASE WHEN ? = 'dry_run' THEN {_NOW_MS} END,
+                      datetime('now','localtime'), datetime('now','localtime'))
             """,
             (
                 data["name"], data["type"], data["url"], encrypt(data["api_key"]),
@@ -170,7 +171,7 @@ def update(instance_id: int, data: dict) -> Optional[dict]:
                 checked_search=?, checked_search_settings=?, search_again_after_profile_change=?,
                 dry_run_round=dry_run_round + ?,
                 dry_run_round_started_at=CASE WHEN ? THEN {_NOW_MS} ELSE dry_run_round_started_at END,
-                updated_at=datetime('now')
+                updated_at=datetime('now','localtime')
             WHERE id=?
             """,
             (
@@ -264,7 +265,7 @@ def toggle_skill(instance_id: int, skill: str, enabled: bool):
     col = "search_missing_enabled" if skill == "missing" else "search_upgrades_enabled"
     with get_db() as conn:
         conn.execute(
-            f"UPDATE instances SET {col}=?, updated_at=datetime('now') WHERE id=?",
+            f"UPDATE instances SET {col}=?, updated_at=datetime('now','localtime') WHERE id=?",
             (int(enabled), instance_id),
         )
 
@@ -272,7 +273,7 @@ def toggle_skill(instance_id: int, skill: str, enabled: bool):
 def toggle_enabled(instance_id: int, enabled: bool) -> Optional[dict]:
     with get_db() as conn:
         conn.execute(
-            "UPDATE instances SET enabled=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE instances SET enabled=?, updated_at=datetime('now','localtime') WHERE id=?",
             (int(enabled), instance_id),
         )
         row = conn.execute(

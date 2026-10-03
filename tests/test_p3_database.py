@@ -218,8 +218,9 @@ def test_0_7_0_database_upgrades_in_place_and_idempotently(tmp_path, monkeypatch
     database.init_db()
     marker = ancestor_rule_since(path)
     database.init_db()
-    # Only new row: the ancestor-rule marker, written once (A9).
-    assert counts(path) == {**before, "app_settings": before["app_settings"] + 1}
+    # Only new rows: the ancestor-rule marker (A9) and the local-timestamps
+    # marker (0.10.1), each written once.
+    assert counts(path) == {**before, "app_settings": before["app_settings"] + 2}
     assert marker is not None and ancestor_rule_since(path) == marker
     conn = sqlite3.connect(path)
     try:
@@ -412,7 +413,8 @@ def test_database_grown_through_real_releases_upgrades_cleanly(tmp_path, monkeyp
     database.init_db()
     database.init_db()
 
-    assert counts(path) == {**before, "app_settings": before["app_settings"] + 1}
+    # The ancestor-rule marker (A9) and the local-timestamps marker (0.10.1).
+    assert counts(path) == {**before, "app_settings": before["app_settings"] + 2}
     conn = sqlite3.connect(path)
     try:
         assert conn.execute("SELECT retry_hours FROM instances WHERE id=1").fetchone()[0] == 168

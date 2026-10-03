@@ -14,8 +14,8 @@ def insert(
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO activity_log (instance_id, instance_name, level, skill, message)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO activity_log (instance_id, instance_name, level, skill, message, created_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
             """,
             (instance_id, instance_name, level, skill, message),
         )

@@ -25,8 +25,8 @@ def add(instance_id: int, cache_key: str, title: str, item_type: str,
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO searched_items (instance_id, cache_key, title, item_type, profile_fingerprint)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO searched_items (instance_id, cache_key, title, item_type, profile_fingerprint, searched_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
             ON CONFLICT(instance_id, cache_key) DO UPDATE SET
                 searched_at=datetime('now','localtime'),
                 profile_fingerprint=COALESCE(excluded.profile_fingerprint, searched_items.profile_fingerprint),

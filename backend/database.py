@@ -13,6 +13,11 @@ BUSY_TIMEOUT_SECONDS = 30
 # cache keys written before it do not block episodes (A9).
 ANCESTOR_RULE_SINCE_SETTING = "ancestor_rule_since"
 
+# app_settings key: local time of the first start of 0.10.1, written in the
+# same transaction as the one-time conversion of timestamps an old database
+# wrote in UTC (_convert_utc_timestamps).
+LOCAL_TIMESTAMPS_SETTING = "local_timestamps_since"
+
 
 def get_connection() -> sqlite3.Connection:
     # A writer holding the lock for a few seconds must not turn a search that
@@ -311,9 +316,47 @@ def init_db():
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, datetime('now','localtime'))",
             (ANCESTOR_RULE_SINCE_SETTING,),
         )
+        _convert_utc_timestamps(conn)
         _assert_schema(conn)
 
     _restrict_file_permissions()
+
+
+def _utc_default(conn: sqlite3.Connection, table: str) -> bool:
+    """Does the stored CREATE TABLE of `table` still carry the column
+    default datetime('now') (UTC) of databases created before 25.03.2026?
+    CREATE TABLE IF NOT EXISTS never changed it on such databases."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row) and "(datetime('now'))" in "".join(row[0].split())
+
+
+def _convert_utc_timestamps(conn: sqlite3.Connection) -> None:
+    """Once per database (marker LOCAL_TIMESTAMPS_SETTING, same transaction):
+    timestamps written through the old UTC column default become local time.
+
+    activity_log: every row got its created_at from the default, so on an
+    old database every row is UTC. searched_items: a new row took searched_at
+    from the default (UTC), a repeated search wrote local time, so the rows
+    are mixed. A row whose writer is known (history_item_id, since 0.9.0)
+    takes the created_at of that history item (local time, written in the
+    same transaction); other rows stay as they are. Since 0.10.1 every
+    INSERT writes these columns explicitly in local time. A database created
+    with the local default is never converted, only marked."""
+    if conn.execute("SELECT 1 FROM app_settings WHERE key=?", (LOCAL_TIMESTAMPS_SETTING,)).fetchone():
+        return
+    if _utc_default(conn, "activity_log"):
+        conn.execute("UPDATE activity_log SET created_at = datetime(created_at, 'localtime')")
+    if _utc_default(conn, "searched_items"):
+        conn.execute(
+            "UPDATE searched_items SET searched_at = ("
+            "  SELECT si.created_at FROM search_history_items si WHERE si.id = searched_items.history_item_id) "
+            "WHERE EXISTS (SELECT 1 FROM search_history_items si "
+            "              WHERE si.id = searched_items.history_item_id AND si.created_at IS NOT NULL)"
+        )
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, datetime('now','localtime'))",
+        (LOCAL_TIMESTAMPS_SETTING,),
+    )
 
 
 def _widen_history_status_check() -> None:
