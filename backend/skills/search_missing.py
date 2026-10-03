@@ -37,6 +37,10 @@ RANDOM_PAGE_BUDGET = 10
 RATIO_THRESHOLD = 0.5
 CHECK_CHUNK = 1000
 
+# Radarr reports a movie with Minimum Availability "Released" available only
+# once one of these dates is known; without any of them never (0.10.1).
+RADARR_DATES = ("inCinemas", "digitalRelease", "physicalRelease")
+
 
 @dataclass
 class _Stats:
@@ -133,12 +137,14 @@ class SearchMissingSkill(BaseSkill):
             stats.notes[:0] = (([unread_queue] if unread_queue else []) + queue_note(stats.skipped_queue)
                                + pause_note(stats.skipped_paused))
             wanted_count = len(candidates)
-            agent.log("debug", self.name, stats.describe())
 
             if not candidates:
                 agent.log("info", self.name, f"Nothing to search — {stats.describe()}")
                 finish_search_run(self.name, agent, run_id, 0, outcome, stats.notes)
                 return
+            # Movies Radarr keeps back are named on every run, not only when
+            # nothing is left to search (0.10.1).
+            agent.log("info" if stats.skipped_unavailable else "debug", self.name, stats.describe())
 
             series_lookup = self._series_lookup(agent, cfg, candidates)
             if checked != "off":
@@ -266,13 +272,16 @@ class SearchMissingSkill(BaseSkill):
         the next one either.
 
         Radarr records with isAvailable false (the movie's Minimum
-        Availability plus Radarr's Availability Delay not reached yet) are
-        left out before the release window, on every path, also in force
-        runs and checked runs: Radarr treats a search command or release
-        search sent through its API as user-invoked and then skips its own
-        availability check. They count toward neither per_run nor the
-        candidates and are not remembered. A missing or null isAvailable
-        counts as available."""
+        Availability plus Radarr's Availability Delay not reached yet) and
+        at least one known date (RADARR_DATES) are left out before the
+        release window, on every path, also in force runs and checked runs:
+        Radarr treats a search command or release search sent through its
+        API as user-invoked and then skips its own availability check. They
+        count toward neither per_run nor the candidates and are not
+        remembered. A missing or null isAvailable counts as available, and
+        so does a movie without any of the dates: with Minimum Availability
+        Released, Radarr would never report it available (0.10.1); the
+        checked search's rules still guard against foreign releases."""
         profiles = profiles or ProfileState()
         grab_days = CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
         arr_type = cfg["type"]
@@ -290,7 +299,7 @@ class SearchMissingSkill(BaseSkill):
                 if record.get("hasFile"):
                     stats.skipped_file += 1
                     continue
-                if arr_type == "radarr" and record.get("isAvailable") is False:
+                if arr_type == "radarr" and record.get("isAvailable") is False and self._dated(record):
                     stats.skipped_unavailable += 1
                     continue
                 if cutoff is not None:
@@ -362,6 +371,11 @@ class SearchMissingSkill(BaseSkill):
             if record.get("seasonNumber") is not None:
                 keys.append(f"sea:{series_id}:{record.get('seasonNumber')}")
         return keys
+
+    @staticmethod
+    def _dated(record: dict) -> bool:
+        """Does Radarr know a cinema, digital or physical release date?"""
+        return any(record.get(name) for name in RADARR_DATES)
 
     @staticmethod
     def _own_key(arr_type: str, record: dict) -> str:
