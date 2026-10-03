@@ -18,6 +18,9 @@ logger = logging.getLogger("missingarr.agent")
 MIN_INTERVAL_MINUTES = 1
 MAX_INTERVAL_MINUTES = 10080
 UPGRADE_INTERVAL_FACTOR = 4
+# A search job's first run after a start (save, switch on, restart) comes
+# one interval after the skill's last run started, but not sooner than this.
+FIRST_RUN_DELAY_SECONDS = 30
 
 TRIGGER_STARTED = "started"
 TRIGGER_BUSY = "busy"
@@ -186,12 +189,12 @@ class BaseAgent(ABC):
         # enabled ones meant a skill switched on from the card never ran (A2).
         scheduler.add_job(
             self._run_skill, "interval", minutes=interval,
-            start_date=now + timedelta(minutes=interval),
+            start_date=self._first_run("search_missing", interval, now),
             args=["search_missing"], id=f"missing_{instance_id}",
         )
         scheduler.add_job(
             self._run_skill, "interval", minutes=upgrade_interval,
-            start_date=now + timedelta(minutes=upgrade_interval),
+            start_date=self._first_run("search_upgrades", upgrade_interval, now),
             args=["search_upgrades"], id=f"upgrades_{instance_id}",
         )
         scheduler.add_job(
@@ -208,7 +211,33 @@ class BaseAgent(ABC):
         )
         return scheduler
 
+    def _first_run(self, skill_name: str, minutes: int, now: datetime) -> datetime:
+        """First run of a search job (aware UTC): one interval after the
+        skill's last run started, at the earliest FIRST_RUN_DELAY_SECONDS
+        from now. Saving an instance or restarting the container no longer
+        puts off the next run by a whole interval (0.10.1). Without an earlier
+        run (or when the history cannot be read) one interval from now."""
+        try:
+            last = db.history.last_started(self.config["id"], skill_name)
+            started = db.searched.local_to_utc(last) if last else None
+        except Exception as exc:
+            logger.warning("Could not read the last run of instance %s: %s", self.config.get("id"), exc)
+            started = None
+        if started is None:
+            return now + timedelta(minutes=minutes)
+        return max(now + timedelta(seconds=FIRST_RUN_DELAY_SECONDS), started + timedelta(minutes=minutes))
+
+    def _restore_card(self) -> None:
+        """Wanted, triggered, verified and Last sync of the last runs, so the
+        card of a saved or restarted instance does not show "Wanted 0" and
+        no last sync until its next run (0.10.1)."""
+        try:
+            self.state.update(db.history.card_numbers(self.config["id"]))
+        except Exception as exc:
+            logger.warning("Could not restore the card of instance %s: %s", self.config.get("id"), exc)
+
     def _run(self):
+        self._restore_card()
         scheduler = None
         try:
             scheduler = self._build_scheduler()

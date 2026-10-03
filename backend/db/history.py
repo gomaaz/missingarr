@@ -551,6 +551,49 @@ def update_run_verification(run_id: int, status: str, verified_count: int) -> No
         )
 
 
+def last_started(instance_id: int, skill: str) -> Optional[str]:
+    """started_at (local time) of the instance's newest run of the skill,
+    whatever became of it. The agent schedules its first run from it."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT MAX(started_at) FROM search_history WHERE instance_id=? AND skill=?",
+            (instance_id, skill),
+        ).fetchone()[0]
+
+
+def card_numbers(instance_id: int) -> dict:
+    """The card's numbers as the last runs left them, for an agent that
+    starts (0.10.1): last_wanted, last_triggered and last_verified from the
+    newest finished run (one row, B-L4), last_sync (minutes, as
+    finish_search_run writes it) from the newest finished run that neither
+    failed nor paused. Keys without a run are left out."""
+    with get_db() as conn:
+        latest = conn.execute(
+            """
+            SELECT wanted_count, triggered_count, verified_count
+            FROM search_history
+            WHERE instance_id=? AND finished_at IS NOT NULL AND status != 'running'
+            ORDER BY finished_at DESC, id DESC LIMIT 1
+            """,
+            (instance_id,),
+        ).fetchone()
+        synced = conn.execute(
+            """
+            SELECT MAX(finished_at) FROM search_history
+            WHERE instance_id=? AND finished_at IS NOT NULL AND status NOT IN ('running','error')
+              AND COALESCE(error_message, '') NOT LIKE 'Checked search paused%'
+            """,
+            (instance_id,),
+        ).fetchone()[0]
+    numbers: dict = {}
+    if latest:
+        numbers.update(last_wanted=latest["wanted_count"], last_triggered=latest["triggered_count"],
+                       last_verified=latest["verified_count"])
+    if synced:
+        numbers["last_sync"] = synced[:16]
+    return numbers
+
+
 def get_latest_run_verification(instance_id: int) -> Optional[dict]:
     """The instance's most recently finished run. Both numbers on the card come
     from this one row, never from two different runs (B-L4)."""
