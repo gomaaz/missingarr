@@ -203,6 +203,7 @@ class Orchestrator:
         if not agent:
             return None
         state = dict(agent.state)
+        state["status"] = agent.display_status()
         state["rate_used"] = agent.get_rate_used()
         state["rate_cap"] = agent.config.get("rate_cap", 25)
         state["rate_window"] = agent.config.get("rate_window_minutes", 60)

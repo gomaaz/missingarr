@@ -87,6 +87,8 @@ class BaseAgent(ABC):
         self._abort_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._scheduler_failed = False
+        # A run skipped for quiet hours logged its info line in this window.
+        self._quiet_logged = False
         self.runtime = runtime if runtime is not None else InstanceRuntime()
 
         # Live state exposed to dashboard
@@ -319,9 +321,24 @@ class BaseAgent(ABC):
             self._update_next_run()
             return
 
-        if skill_name not in QUIET_HOURS_EXEMPT and not force and self._in_quiet_hours():
-            self.log("debug", skill_name, "Skipping — quiet hours active")
-            self.state["status"] = "quiet"
+        quiet = self._in_quiet_hours()
+        if not quiet:
+            # Every job outside the window (health_check every 5 minutes)
+            # ends it: the next window gets its info line again.
+            self._quiet_logged = False
+        if skill_name not in QUIET_HOURS_EXEMPT and not force and quiet:
+            if self._quiet_logged:
+                self.log("debug", skill_name, "Skipping — quiet hours active")
+            else:
+                # One info line per quiet window, so skipped runs show on the
+                # Logs page (0.10.1).
+                self._quiet_logged = True
+                start, end = self.config.get("quiet_start"), self.config.get("quiet_end")
+                self.log("info", skill_name, f"Quiet hours {start}–{end}: searches are skipped until {end}")
+            if self.state["status"] != "running":
+                # A forced search may run on into the window; a skipped run
+                # must not turn its card from RUNNING to QUIET.
+                self.state["status"] = "quiet"
             self._update_next_run()
             return
 
@@ -393,6 +410,17 @@ class BaseAgent(ABC):
             if s.name == name:
                 return s
         return None
+
+    def display_status(self) -> str:
+        """state["status"] as the card shows it. Between runs the clock
+        decides: "quiet" inside the quiet hours, "scheduled" outside — not
+        the last skipped or finished run, which showed QUIET until the next
+        real run and WAIT before the first skipped one (0.10.1). Running,
+        starting, off and error stay as they are."""
+        status = self.state["status"]
+        if status in ("scheduled", "quiet"):
+            return "quiet" if self._in_quiet_hours() else "scheduled"
+        return status
 
     def _in_quiet_hours(self) -> bool:
         qs = self.config.get("quiet_start")
