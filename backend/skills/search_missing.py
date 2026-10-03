@@ -63,6 +63,9 @@ class _Stats:
     skipped_queue: int = 0
     skipped_paused: int = 0
     skipped_unavailable: int = 0
+    # Sonarr anime: one episode per run, the others wait (0.10.1).
+    anime_taken: bool = False
+    skipped_anime: int = 0
     # Checked-search dry run: skipped_cache counts titles checked in this
     # round, the search cache is not asked (0.10.1).
     dry_run: bool = False
@@ -77,6 +80,7 @@ class _Stats:
             + (f", {self.skipped_unavailable} not yet available in Radarr" if self.skipped_unavailable else "")
             + (f", {self.skipped_queue} in the *arr queue" if self.skipped_queue else "")
             + (f", {self.skipped_paused} paused after an error" if self.skipped_paused else "")
+            + (f", {self.skipped_anime} more anime episode(s) wait for a later run" if self.skipped_anime else "")
         )
 
 
@@ -285,6 +289,12 @@ class SearchMissingSkill(BaseSkill):
         out the same way, so a title that keeps failing does not hold back
         the next one either.
 
+        Sonarr anime (_anime): one episode per run, on every path, with the
+        search command and the checked search. Further anime episodes count
+        toward neither per_run nor the candidates, are not remembered and
+        wait for a later run. The one episode is deduplicated and searched
+        alone in every missing mode (_cache_key, _sonarr_search) (0.10.1).
+
         Radarr records with isAvailable false (the movie's Minimum
         Availability plus Radarr's Availability Delay not reached yet) and
         at least one known date (RADARR_DATES) are left out before the
@@ -357,6 +367,11 @@ class SearchMissingSkill(BaseSkill):
                 if self._own_key(arr_type, record) in paused:
                     stats.skipped_paused += 1
                     continue
+                if self._anime(arr_type, record):
+                    if stats.anime_taken:
+                        stats.skipped_anime += 1
+                        continue
+                    stats.anime_taken = True
                 candidates.append(record)
 
     # ── Cache keys ───────────────────────────────────────────────────────────
@@ -366,6 +381,9 @@ class SearchMissingSkill(BaseSkill):
         send the same season or series search twice."""
         if arr_type == "radarr":
             return f"mov:{record.get('id')}"
+        if self._anime(arr_type, record):
+            # Searched alone in every mode (_sonarr_search, 0.10.1).
+            return f"ep:{record.get('id')}"
         if mode in ("season_packs", "smart"):
             return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
         if mode == "show_batch":
@@ -385,6 +403,13 @@ class SearchMissingSkill(BaseSkill):
             if record.get("seasonNumber") is not None:
                 keys.append(f"sea:{series_id}:{record.get('seasonNumber')}")
         return keys
+
+    @staticmethod
+    def _anime(arr_type: str, record: dict) -> bool:
+        """An episode of a Sonarr series of type anime (the series embedded
+        with includeSeries). Sonarr searches anime by absolute episode
+        number, and the indexers answer with thousands of foreign releases."""
+        return arr_type == "sonarr" and (record.get("series") or {}).get("seriesType") == "anime"
 
     @staticmethod
     def _dated(record: dict) -> bool:
@@ -622,6 +647,11 @@ class SearchMissingSkill(BaseSkill):
             resp = agent.http_post("/api/v3/command", {"name": "SeriesSearch", "seriesId": series_id})
             agent.log("debug", self.name, f"SeriesSearch: {series_title}")
             return SearchResult(True, series_title, "series", f"ser:{series_id}", series_id, resp.get("id"))
+
+        # Anime: the one episode only. Sonarr searches a season or series of
+        # anime episode by episode, every aired monitored one (0.10.1).
+        if self._anime("sonarr", record):
+            return fire_episode()
 
         if mode in ("season_packs", "smart") and series_id is not None and season_number is not None:
             missing, total = self._density(self._episodes(agent, series_id, season_number), season=season_number)
