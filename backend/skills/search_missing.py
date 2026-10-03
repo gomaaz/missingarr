@@ -48,6 +48,7 @@ class _Stats:
     skipped_cache: int = 0
     skipped_queue: int = 0
     skipped_paused: int = 0
+    skipped_unavailable: int = 0
     notes: list = field(default_factory=list)
 
     def describe(self) -> str:
@@ -55,6 +56,7 @@ class _Stats:
             f"checked {self.examined} of {self.total} missing item(s) on {self.pages} page(s): "
             f"{self.skipped_cache} already searched, {self.skipped_window} inside the release "
             f"window, {self.skipped_file} with a file"
+            + (f", {self.skipped_unavailable} not yet available in Radarr" if self.skipped_unavailable else "")
             + (f", {self.skipped_queue} in the *arr queue" if self.skipped_queue else "")
             + (f", {self.skipped_paused} paused after an error" if self.skipped_paused else "")
         )
@@ -261,7 +263,16 @@ class SearchMissingSkill(BaseSkill):
         paused (checked search, dry run and active, force run too): own
         keys of titles in their error pause (db.checked_search_pause). Left
         out the same way, so a title that keeps failing does not hold back
-        the next one either."""
+        the next one either.
+
+        Radarr records with isAvailable false (the movie's Minimum
+        Availability plus Radarr's Availability Delay not reached yet) are
+        left out before the release window, on every path, also in force
+        runs and checked runs: Radarr treats a search command or release
+        search sent through its API as user-invoked and then skips its own
+        availability check. They count toward neither per_run nor the
+        candidates and are not remembered. A missing or null isAvailable
+        counts as available."""
         profiles = profiles or ProfileState()
         grab_days = CheckedSearchSettings.from_stored(cfg.get("checked_search_settings")).search_again_after_days
         arr_type = cfg["type"]
@@ -278,6 +289,9 @@ class SearchMissingSkill(BaseSkill):
                 stats.examined += 1
                 if record.get("hasFile"):
                     stats.skipped_file += 1
+                    continue
+                if arr_type == "radarr" and record.get("isAvailable") is False:
+                    stats.skipped_unavailable += 1
                     continue
                 if cutoff is not None:
                     released = release_date(record, arr_type)
