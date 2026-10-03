@@ -584,15 +584,18 @@ def test_count_of_an_odd_answer_is_unknown():
     assert service.count_open(OddArr([])).error == "Unexpected answer from instance"
 
 
-def test_count_is_cached_for_60_seconds(clock):
+def test_count_is_cached_for_50_seconds(clock):
+    # The page asks every 60 s: a count it gets is at most 50 s old (0.10.1).
     fake = sonarr_fake()
     service.cached_count(fake)
-    clock.advance(59)
+    clock.advance(49)
     service.cached_count(fake)
     assert reads(fake, QUEUE_STATUS) == 1
     clock.advance(1)
-    assert service.cached_count(fake).checked_at == "2026-10-02T12:01:00Z"
+    assert service.cached_count(fake).checked_at == "2026-10-02T12:00:50Z"
     assert reads(fake, QUEUE_STATUS) == 2
+    # Proposals, queue snapshot and series still keep 60 s.
+    assert (service.COUNT_CACHE_SECONDS, service.CACHE_SECONDS) == (50, 60)
 
 
 def test_invalidate_forces_a_new_count():

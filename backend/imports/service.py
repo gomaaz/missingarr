@@ -42,7 +42,10 @@ QUEUE_PAGE_SIZE = 1000
 QUEUE_MAX_PAGES = 20
 MANUAL_IMPORT_TIMEOUT = 120                # s; *arr runs ffprobe on every video file
 PROPOSAL_SLOTS = 2                         # GET /manualimport at once per app (tabs, reloads, imports)
-CACHE_SECONDS = 60                         # proposals, queue snapshot, series, count
+CACHE_SECONDS = 60                         # proposals, queue snapshot, series
+# The counter: the page asks every 60 s; a count kept 60 s served every
+# second poll a value almost a minute old (0.10.1).
+COUNT_CACHE_SECONDS = 50
 RESTART_GRACE_SECONDS = 120                # the queue is empty right after an app start
 STATUS_FLAGS = ("errors", "warnings", "unknownErrors", "unknownWarnings")
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"         # UTC, every checked_at value
@@ -131,8 +134,8 @@ _revision: dict[int, int] = {}
 _uncertain: dict[tuple[Scope, str], tuple[float, frozenset[int]]] = {}
 
 
-def _fresh(stamp: float) -> bool:
-    return clock() - stamp < CACHE_SECONDS
+def _fresh(stamp: float, seconds: float = CACHE_SECONDS) -> bool:
+    return clock() - stamp < seconds
 
 
 def _bump(instance_id: int, *, proposals: bool = True) -> None:
@@ -489,7 +492,7 @@ def count_open(agent) -> InstanceCount:
 
 
 def cached_count(agent) -> InstanceCount:
-    """count_open() at most once per CACHE_SECONDS per instance. A second
+    """count_open() at most once per COUNT_CACHE_SECONDS per instance. A second
     caller waits for the first and takes its value. An invalidate() while
     counting wins: that result is returned but not stored."""
     scope = _scope(agent)
@@ -499,7 +502,7 @@ def cached_count(agent) -> InstanceCount:
         with _lock:
             hit = _counts.get(scope)
             generation = _generation.get(scope[0], 0)
-        if hit is not None and _fresh(hit.stamp):
+        if hit is not None and _fresh(hit.stamp, COUNT_CACHE_SECONDS):
             return hit
         result = count_open(agent)
         with _lock:
