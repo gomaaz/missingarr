@@ -93,3 +93,19 @@ def test_readme_and_changelog_document_0_11_0():
     assert readme.index("## Upgrading to 0.11.0") < readme.index("## Upgrading to 0.10.1")
     for text in ("viewport-fit=cover", "scripts/mobile_check.py", "**Filter**", "Works on a phone"):
         assert text in readme, text
+
+
+def test_readme_and_changelog_document_0_11_1():
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert changelog.index("## [Unreleased]") < changelog.index("## [0.11.1]") < changelog.index("## [0.11.0]")
+    section = changelog[changelog.index("## [0.11.1]"):changelog.index("## [0.11.0]")]
+    for text in ("### Fixed", "two rows on every width", "Disabled buttons now look disabled",
+                 "accent color", "*Enabled*, *Missing* and *Upgrades*", "does not toggle the switch",
+                 "scripts/mobile_check.py"):
+        assert text in section, text
+    readme = (ROOT / "README.md").read_text()
+    assert readme.index("## Upgrading to 0.11.1") < readme.index("## Upgrading to 0.11.0")
+    upgrade = readme[readme.index("## Upgrading to 0.11.1"):readme.index("## Upgrading to 0.11.0")]
+    for text in ("No database change", "second row", "Rollback: 0.11.0"):
+        assert text in upgrade, text
+

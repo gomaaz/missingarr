@@ -512,3 +512,21 @@ def test_imports_card_actions_and_proposal_fit_a_phone(client):
     assert len(labels) == 1
     assert page.index('class="imp-actions"') < page.index('class="check-label"')
     assert 'class="imp-verdict"' in page
+
+
+# ── 0.11.1: follow-ups ───────────────────────────────────────────────────────
+
+def test_form_switches_get_a_help_icon_on_phones(client):
+    # The switches Enabled, Missing and Upgrades carry their help on the label
+    # (hover only); on a phone a "?" inside the label opens it on tap.
+    items = tags(client.get("/instances/new").text)
+    starts = [i for i, (t, a) in enumerate(items) if t == "label" and "toggle-label" in a.get("class", "").split()]
+    assert len(starts) == 3
+    for start in starts:
+        # label > input, then the "?" right after the input (inside the label)
+        (input_tag, _), (tag, icon) = items[start + 1], items[start + 2]
+        assert (input_tag, tag) == ("input", "span"), items[start]
+        assert icon["class"].split() == ["tooltip-icon", "m-only"]
+        assert icon["data-tooltip"] == items[start][1]["data-tooltip"]
+        assert (icon["tabindex"], icon["role"]) == ("0", "button")
+

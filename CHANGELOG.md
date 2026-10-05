@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-05
+
+### Fixed
+
+- Dashboard cards: in a card of about 400 px (several instances side by side on a PC) the type, dry-run and status badges ran into the *Test* button and hid the instance name. The card head now has two rows on every width, as on a phone: what and state, then *Test*, *ON/OFF*, *FORCE* and *Edit* in equal columns.
+- Disabled buttons now look disabled (dimmed, "not allowed" pointer). Before, a locked *Import* or the *FORCE* of a switched-off instance looked like any other button. The button's tooltip still says why it is locked.
+- The dashboard's "N imports waiting" line uses the accent color instead of the browser's default link blue.
+- On a phone the switches *Enabled*, *Missing* and *Upgrades* in the instance form get a **?** for their help text (on a PC it still shows on hover over the switch). A tap on it does not toggle the switch.
+- `scripts/mobile_check.py` also checks that the parts of a card head do not overlap, that disabled buttons are dimmed and that the imports link has the accent color.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added

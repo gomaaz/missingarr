@@ -5,8 +5,11 @@ opens every page at 390 x 844 (phone) and 1280 x 800 (desktop) and fails
 when a phone page scrolls sideways, a visible control is smaller than
 44 x 44 px, or the tab bar covers the end of a page. It opens the "More"
 sheet and the Logs filter sheet and closes both with Escape, opens a help
-text by tap and a row on the Pre-filter page, checks that the desktop shows
-none of the mobile parts, and saves a screenshot of every page in both sizes.
+text by tap (without toggling the switch the "?" sits in) and a row on the
+Pre-filter page, checks that the desktop shows none of the mobile parts,
+that the parts of a dashboard card's head do not overlap (both sizes), that
+disabled buttons look dimmed and that the dashboard's imports link has the
+accent color (0.11.1), and saves a screenshot of every page in both sizes.
 
 Not part of pytest and not in the image. It needs Playwright in the
 project's virtualenv:
@@ -80,6 +83,43 @@ HELP_SHOWN = r"""() => {
   const s = getComputedStyle(document.activeElement, '::after');
   return s.content !== 'none' && s.position === 'fixed';
 }"""
+
+# Parts of a dashboard card's head that overlap each other (0.11.1: in one
+# row the badges ran into the buttons of a card about 400 px wide).
+CARD_OVERLAP = r"""() => {
+  const found = [];
+  for (const head of document.querySelectorAll('.icard-head')) {
+    const parts = [...head.querySelectorAll('.icard-title > *, .icard-actions > *')]
+      .map(e => [e, e.getBoundingClientRect()]).filter(([, r]) => r.width > 0 && r.height > 0);
+    for (let i = 0; i < parts.length; i++) {
+      for (let j = i + 1; j < parts.length; j++) {
+        const [a, ra] = parts[i];
+        const [b, rb] = parts[j];
+        const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+        const h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+        if (w > 1 && h > 1) {
+          found.push(`"${(a.textContent || '').trim().slice(0, 15)}" overlaps "${(b.textContent || '').trim().slice(0, 15)}"`);
+        }
+      }
+    }
+  }
+  return found;
+}"""
+
+# Visible disabled buttons that do not look disabled.
+UNDIMMED_DISABLED = r"""() => [...document.querySelectorAll('button:disabled')]
+  .filter(b => b.getBoundingClientRect().width > 0 && parseFloat(getComputedStyle(b).opacity) >= 1)
+  .map(b => (b.textContent || '').trim().slice(0, 20))"""
+
+DASHBOARD_LINK_COLOR = r"""() => {
+  const link = document.querySelector('a[data-imports-dashboard]');
+  return link ? getComputedStyle(link).color : '';
+}"""
+ACCENT = "rgb(229, 114, 30)"
+
+
+def card_problems(page, name: str) -> list[str]:
+    return [f"{name}: card head: {item}" for item in page.evaluate(CARD_OVERLAP)]
 
 IMPORTS = {
     "instances": [{
@@ -229,6 +269,10 @@ def check_phone(browser, base: str, password: str, instance_id: int, out_dir: Pa
     for name, path in PAGES:
         open_page(page, base + path.format(id=instance_id))
         problems += page_problems(page, name)
+        if name == "dashboard":
+            problems += card_problems(page, name)
+        if name == "imports":
+            problems += [f"imports: disabled but not dimmed: {item}" for item in page.evaluate(UNDIMMED_DISABLED)]
         page.screenshot(path=str(out_dir / f"phone-{name}.png"), full_page=True)
 
     open_page(page, f"{base}/", 800)
@@ -252,9 +296,13 @@ def check_phone(browser, base: str, password: str, instance_id: int, out_dir: Pa
     page.wait_for_selector("#filter-sheet.is-open", state="detached")
 
     open_page(page, f"{base}/instances/{instance_id}/edit", 800)
-    page.locator(".tooltip-icon").first.click()
+    switch = "() => document.getElementById('enabled').checked"
+    before = page.evaluate(switch)
+    page.locator(".tooltip-icon").first.click()     # the "?" inside the Enabled switch (0.11.1)
     if not page.evaluate(HELP_SHOWN):
         problems.append("help: a tap on ? shows no text")
+    if page.evaluate(switch) != before:
+        problems.append("help: a tap on the ? in a switch toggled the switch")
     page.screenshot(path=str(out_dir / "phone-help-text.png"))
 
     open_page(page, f"{base}/checked-search", 800)
@@ -283,6 +331,11 @@ def check_desktop(browser, base: str, password: str, instance_id: int, out_dir: 
                 problems.append(f"{name} (desktop): {selector} is visible")
         if not visible(page, ".nav-links"):
             problems.append(f"{name} (desktop): the top menu is hidden")
+        if name == "dashboard":
+            problems += card_problems(page, f"{name} (desktop)")
+            color = page.evaluate(DASHBOARD_LINK_COLOR)
+            if color != ACCENT:
+                problems.append(f"{name} (desktop): imports link color {color}, expected {ACCENT}")
         page.screenshot(path=str(out_dir / f"desktop-{name}.png"), full_page=True)
     context.close()
     return problems

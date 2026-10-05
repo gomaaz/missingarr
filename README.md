@@ -242,6 +242,12 @@ With this setup Missingarr will:
 
 Every version is listed in [CHANGELOG.md](CHANGELOG.md); release notes are on [GitHub Releases](https://github.com/gomaaz/missingarr/releases). Each release is published as `gomaaz/missingarr:<version>` (for example `gomaaz/missingarr:0.10.0`), as `<major>.<minor>` and as `latest` — pin a version to decide when you upgrade.
 
+## Upgrading to 0.11.1
+
+- No database change and no new setting. Only the stylesheet, the instance form and the browser check change; reload open pages after the update.
+- On a PC the dashboard cards now show their four buttons in a second row below the name (the head in one row overlapped).
+- Rollback: 0.11.0 works with the same database.
+
 ## Upgrading to 0.11.0
 
 - No database change and no new setting. Back up `./data` anyway, as before every upgrade.

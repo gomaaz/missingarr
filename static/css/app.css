@@ -171,6 +171,12 @@ body {
 .btn-toggle-on:hover  { background: #16652544; }
 .btn-toggle-off { background: transparent; color: var(--text-muted); border-color: var(--border); }
 .btn-toggle-off:hover { color: var(--text-secondary); border-color: #4d5270; }
+/* A locked button looks locked; its title still says why (0.11.1) */
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* "N imports waiting" on the dashboard: accent instead of the browser's link blue (0.11.1) */
+a[data-imports-dashboard] { color: var(--accent); text-decoration: none; }
+a[data-imports-dashboard]:hover { text-decoration: underline; }
 
 /* The hidden attribute wins over display rules such as .badge's inline-flex */
 [hidden] { display: none !important; }
@@ -604,16 +610,20 @@ select.form-select option {
     }
 }
 
-/* Mobile: dashboard cards — head in two rows: what and state, then the four
-   buttons (Test, ON/OFF, FORCE, Edit) as a grid of equal columns */
+/* Dashboard cards — head in two rows on every width (0.11.1; in one row the
+   badges and buttons overlapped in a card of about 400 px): what and state,
+   then the four buttons (Test, ON/OFF, FORCE, Edit) as a grid of equal columns */
+.icard-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
+.icard-title { grid-column: 1 / 4; grid-row: 1; }
+.icard-title .badge, .icard-title .type-badge { white-space: nowrap; flex-shrink: 0; }
+.icard-actions { display: contents !important; }
+.icard-actions > [data-status-badge] { grid-column: 4; grid-row: 1; justify-self: end; }
+.icard-actions > .btn { grid-row: 2; align-self: stretch; width: 100%; justify-content: center;
+                        padding-left: 0.25rem; padding-right: 0.25rem; }
+
+/* Mobile: dashboard cards in one column */
 @media (max-width: 768px) {
     .instance-grid { grid-template-columns: minmax(0, 1fr); }
-    .icard-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
-    .icard-title { grid-column: 1 / 4; grid-row: 1; }
-    .icard-title .badge, .icard-title .type-badge { white-space: nowrap; flex-shrink: 0; }
-    .icard-actions { display: contents !important; }
-    .icard-actions > [data-status-badge] { grid-column: 4; grid-row: 1; justify-self: end; }
-    .icard-actions > .btn { grid-row: 2; width: 100%; padding-left: 0.25rem; padding-right: 0.25rem; }
     .icard-url { overflow-wrap: anywhere; }
     .countdown-display { font-size: 2rem; }
 }

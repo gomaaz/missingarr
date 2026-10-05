@@ -43,24 +43,27 @@
                   data-original-url="{{ instance.url if instance else '' }}"
                   data-save-url="{{ action }}" data-save-method="{{ method }}">
 
-            <!-- Skill toggles (top of card) -->
+            <!-- Skill toggles (top of card). The "?" inside each shows only on phones, which have no hover. -->
             <div style="display:flex;align-items:center;gap:1rem;padding:0.5rem 0 1rem;border-bottom:1px solid var(--border);margin-bottom:1rem;flex-wrap:wrap;">
                 <span style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;">Active Skills:</span>
                 <label class="toggle-label" :class="{ checked: enabledCheck }" data-tooltip="{{ tooltips.enabled }}">
                     <input type="checkbox" id="enabled" name="enabled" x-model="enabledCheck"
                            {% if not instance or instance.enabled %}checked{% endif %}>
                     Enabled
+                    <span class="tooltip-icon m-only" tabindex="0" role="button" data-tooltip="{{ tooltips.enabled }}">?</span>
                 </label>
                 <label class="toggle-label" :class="{ checked: missingEnabled }" data-tooltip="{{ tooltips.search_missing_enabled }}">
                     <input type="checkbox" id="search_missing_enabled" name="search_missing_enabled" x-model="missingEnabled"
                            {% if not instance or instance.search_missing_enabled %}checked{% endif %}>
                     Missing
+                    <span class="tooltip-icon m-only" tabindex="0" role="button" data-tooltip="{{ tooltips.search_missing_enabled }}">?</span>
                 </label>
                 <label class="toggle-label" :class="{ checked: upgradesEnabled }" data-tooltip="{{ tooltips.search_upgrades_enabled }}">
                     <input type="checkbox" id="search_upgrades_enabled" name="search_upgrades_enabled"
                            x-model="upgradesEnabled"
                            {% if instance and instance.search_upgrades_enabled %}checked{% endif %}>
                     Upgrades
+                    <span class="tooltip-icon m-only" tabindex="0" role="button" data-tooltip="{{ tooltips.search_upgrades_enabled }}">?</span>
                 </label>
             </div>
 
