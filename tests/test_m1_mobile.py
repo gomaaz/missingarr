@@ -11,7 +11,7 @@ import pytest
 from backend import db  # noqa: F401  (used by later tests in this file)
 from backend.config import settings
 from backend.tooltips import TOOLTIPS  # noqa: F401
-from tests.test_h5_imports_page import NODE, client, component_script, make_instance, tags  # noqa: F401
+from tests.test_g5_pages import NODE, client, component_script, make_instance, run_node, tags  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
 PAGES = ("/", "/instances", "/instances/new", "/history", "/searched", "/checked-search", "/imports", "/logs",
