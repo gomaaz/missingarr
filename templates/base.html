@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/static/css/app.css">
@@ -50,6 +50,64 @@
 <main class="main">
     {% block content %}{% endblock %}
 </main>
+
+<!-- Mobile (up to 768px, see app.css): tab bar, backdrop and the "More" sheet -->
+{% set path = request.url.path %}
+{% set in_more = '/instances' in path or '/history' in path or '/searched' in path or '/help' in path %}
+<nav class="tabbar" aria-label="Main">
+    <a href="/" class="tab{% if path == '/' %} active{% endif %}"{% if path == '/' %} aria-current="page"{% endif %}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        <span>Dashboard</span>
+    </a>
+    <a href="/imports" class="tab{% if '/imports' in path %} active{% endif %}"{% if '/imports' in path %} aria-current="page"{% endif %}>
+        <span class="tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            <span class="badge badge-error tab-badge" data-imports-count hidden></span>
+        </span>
+        <span>Imports</span>
+    </a>
+    <a href="/checked-search" class="tab{% if '/checked-search' in path %} active{% endif %}"{% if '/checked-search' in path %} aria-current="page"{% endif %}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+        <span>Pre-filter</span>
+    </a>
+    <a href="/logs" class="tab{% if '/logs' in path %} active{% endif %}"{% if '/logs' in path %} aria-current="page"{% endif %}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+        <span>Logs</span>
+    </a>
+    <button type="button" class="tab{% if in_more %} active{% endif %}"{% if in_more %} aria-current="page"{% endif %}
+            aria-haspopup="dialog" aria-controls="more-sheet" @click="$store.sheet.open('more', $el)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+        <span>More</span>
+    </button>
+</nav>
+
+<div class="sheet-backdrop" x-show="$store.sheet.name !== null" style="display:none;"
+     @click="$store.sheet.close()" @keydown.escape.window="$store.sheet.close()"></div>
+
+<div class="sheet" id="more-sheet" role="dialog" aria-modal="true" aria-labelledby="more-sheet-title"
+     x-show="$store.sheet.name === 'more'" style="display:none;">
+    <div class="sheet-head">
+        <h2 id="more-sheet-title">More</h2>
+        <button type="button" class="sheet-close" aria-label="Close" @click="$store.sheet.close()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+    </div>
+    <a href="/instances" class="sheet-link{% if '/instances' in path %} active{% endif %}"{% if '/instances' in path %} aria-current="page"{% endif %}>Instances</a>
+    <a href="/history" class="sheet-link{% if '/history' in path %} active{% endif %}"{% if '/history' in path %} aria-current="page"{% endif %}>History</a>
+    <a href="/searched" class="sheet-link{% if '/searched' in path %} active{% endif %}"{% if '/searched' in path %} aria-current="page"{% endif %}>Progressed</a>
+    <a href="/help" class="sheet-link{% if '/help' in path %} active{% endif %}"{% if '/help' in path %} aria-current="page"{% endif %}>Help</a>
+    <a href="https://github.com/gomaaz/missingarr" class="sheet-link" target="_blank" rel="noopener">
+        GitHub
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>
+    </a>
+    <div class="sheet-foot">
+        <span class="version-badge">v{{ version }}</span>
+        <form method="post" action="/logout" hx-boost="false" style="margin:0;">
+            <button type="submit" class="btn btn-secondary">Sign out</button>
+        </form>
+    </div>
+</div>
+<!-- /more-sheet -->
 
 <!-- Toast notifications -->
 <div class="toast-container" x-data x-show="$store.toasts.items.length > 0">

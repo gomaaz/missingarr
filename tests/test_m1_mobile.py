@@ -1,0 +1,190 @@
+"""Mobile view (0.11.0): tab bar, "More" sheet, touch targets, lists and
+filter sheets. These tests check the markup and the scripts; the layout
+itself is checked in a browser by scripts/mobile_check.py."""
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from backend import db  # noqa: F401  (used by later tests in this file)
+from backend.config import settings
+from backend.tooltips import TOOLTIPS  # noqa: F401
+from tests.test_h5_imports_page import NODE, client, component_script, make_instance, tags  # noqa: F401
+
+ROOT = Path(__file__).resolve().parent.parent
+PAGES = ("/", "/instances", "/instances/new", "/history", "/searched", "/checked-search", "/imports", "/logs",
+         "/help")
+TABS = ["/", "/imports", "/checked-search", "/logs"]
+
+
+def tabbar(page):
+    """(tag, attrs) of everything inside <nav class="tabbar">."""
+    start = page.index('<nav class="tabbar"')
+    return tags(page[start:page.index("</nav>", start)])
+
+
+def more_sheet(page):
+    """The HTML of the "More" sheet, up to its end marker."""
+    start = page.rindex("<div", 0, page.index('id="more-sheet"'))
+    return page[start:page.index("<!-- /more-sheet -->")]
+
+
+# ── Tab bar and "More" sheet ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("path", PAGES)
+def test_every_page_has_one_tab_bar_with_four_links_and_more(client, path):
+    page = client.get(path).text
+    assert page.count('<nav class="tabbar"') == 1, path
+    items = tabbar(page)
+    assert [a["href"] for t, a in items if t == "a"] == TABS
+    buttons = [a for t, a in items if t == "button"]
+    assert len(buttons) == 1
+    assert buttons[0]["@click"] == "$store.sheet.open('more', $el)"
+    assert (buttons[0]["aria-controls"], buttons[0]["aria-haspopup"]) == ("more-sheet", "dialog")
+
+
+@pytest.mark.parametrize("path, active", [
+    ("/", "/"), ("/imports", "/imports"), ("/checked-search", "/checked-search"), ("/logs", "/logs"),
+    ("/history", "more"), ("/searched", "more"), ("/help", "more"), ("/instances", "more"),
+    ("/instances/new", "more"),
+])
+def test_the_active_tab_is_marked(client, path, active):
+    items = [a for t, a in tabbar(client.get(path).text) if t in ("a", "button")]
+    assert [a.get("href", "more") for a in items if a.get("aria-current") == "page"] == [active]
+    for a in items:
+        assert ("active" in a["class"].split()) == (a.get("href", "more") == active), a
+
+
+def test_the_edit_page_marks_more(client):
+    inst = make_instance()
+    items = [a for t, a in tabbar(client.get(f"/instances/{inst['id']}/edit").text) if t in ("a", "button")]
+    assert [a.get("href", "more") for a in items if a.get("aria-current") == "page"] == ["more"]
+
+
+def test_more_sheet_holds_the_other_pages_the_version_and_sign_out(client):
+    part = more_sheet(client.get("/logs").text)
+    items = tags(part)
+    root = items[0][1]
+    assert (root["id"], root["role"], root["aria-modal"]) == ("more-sheet", "dialog", "true")
+    assert root["x-show"] == "$store.sheet.name === 'more'"
+    assert root["style"] == "display:none;"
+    links = [a for t, a in items if t == "a"]
+    assert [a["href"] for a in links] == ["/instances", "/history", "/searched", "/help",
+                                          "https://github.com/gomaaz/missingarr"]
+    assert (links[-1]["target"], links[-1]["rel"]) == ("_blank", "noopener")
+    assert [a for t, a in items if t == "form"] == [
+        {"method": "post", "action": "/logout", "hx-boost": "false", "style": "margin:0;"}]
+    assert f"v{settings.version}" in part
+    closes = [a for t, a in items if t == "button" and a.get("@click") == "$store.sheet.close()"]
+    assert len(closes) == 1 and closes[0]["aria-label"] == "Close"
+
+
+def test_more_sheet_marks_the_current_page(client):
+    part = more_sheet(client.get("/history").text)
+    assert [a["href"] for t, a in tags(part) if t == "a" and a.get("aria-current") == "page"] == ["/history"]
+
+
+def test_one_backdrop_closes_on_tap_and_escape(client):
+    backdrops = [a for t, a in tags(client.get("/").text) if "sheet-backdrop" in a.get("class", "").split()]
+    assert len(backdrops) == 1
+    assert backdrops[0]["@click"] == "$store.sheet.close()"
+    assert backdrops[0]["@keydown.escape.window"] == "$store.sheet.close()"
+    assert backdrops[0]["x-show"] == "$store.sheet.name !== null"
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_imports_counter_twice_but_one_loader(client, path):
+    page = client.get(path).text
+    counters = [a for t, a in tags(page) if "data-imports-count" in a]
+    assert [c["class"] for c in counters] == ["badge badge-error", "badge badge-error tab-badge"], path
+    assert all("hidden" in c for c in counters)
+    assert page.count("startImportsCount()") == 1
+
+
+def test_viewport_leaves_room_for_the_home_indicator(client):
+    metas = [a for t, a in tags(client.get("/").text) if t == "meta" and a.get("name") == "viewport"]
+    assert metas[0]["content"] == "width=device-width, initial-scale=1.0, viewport-fit=cover"
+
+
+def test_login_page_has_no_tab_bar(client):
+    client.cookies.clear()
+    page = client.get("/login").text
+    assert "tabbar" not in page and "more-sheet" not in page
+
+
+# ── Sheet store (app.js in node) ─────────────────────────────────────────────
+
+SHEET_PRELUDE = r"""
+const fs = require('fs');
+const vm = require('vm');
+globalThis.setTimeout = () => 0;
+globalThis.clearTimeout = () => {};
+globalThis.setInterval = () => 1;
+globalThis.clearInterval = () => {};
+globalThis.EventSource = function () {};
+globalThis.window = globalThis;
+globalThis.location = { pathname: '/', search: '', href: 'http://t/' };
+const listeners = {};
+const added = [];
+const classes = new Set();
+const focused = [];
+const node = (name) => ({ name, isConnected: true, focus() { focused.push(name); } });
+const sheets = {};
+globalThis.document = {
+  documentElement: { classList: { add: c => classes.add(c), remove: c => classes.delete(c) } },
+  addEventListener: (name, fn) => { added.push(name); listeners[name] = fn; },
+  getElementById: (id) => sheets[id] || null,
+  querySelectorAll: () => [],
+};
+const stores = {};
+globalThis.Alpine = { store: (name, value) => { if (value !== undefined) stores[name] = value; return stores[name]; },
+                      nextTick: (fn) => fn(), $data: () => ({}) };
+const source = fs.readFileSync('static/js/app.js', 'utf8');
+vm.runInThisContext(source);
+vm.runInThisContext(source);   // hx-boost runs the file again after every navigation
+listeners['alpine:init']();
+const sheet = Alpine.store('sheet');
+const out = {};
+"""
+
+
+def run_sheet_js(tmp_path, body):
+    case = tmp_path / "sheet.js"
+    case.write_text(SHEET_PRELUDE + "(async () => {\n" + body +
+                    "\nconsole.log(JSON.stringify(out));\n})().catch(e => { console.error(e); process.exit(1); });\n")
+    result = subprocess.run([NODE, str(case)], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_sheet_store_opens_one_sheet_and_gives_the_focus_back(tmp_path):
+    out = run_sheet_js(tmp_path, """
+sheets['more-sheet'] = { querySelector: s => (s === 'a[href]' ? node('instances-link') : null) };
+sheets['filter-sheet'] = { querySelector: s => (s === 'select, input' ? node('first-select') : null) };
+out.start = sheet.name;
+sheet.open('more', node('more-tab'));
+out.opened = [sheet.name, [...classes], focused.slice()];
+sheet.close();
+out.closed = [sheet.name, [...classes], focused.slice()];
+sheet.close();
+out.again = focused.length;
+const gone = node('filter-button'); gone.isConnected = false;
+sheet.open('filter', gone);
+out.filter = focused.slice(-1);
+listeners['htmx:beforeSwap']({ detail: { boosted: false } });
+out.poll = sheet.name;
+listeners['htmx:beforeSwap']({ detail: { boosted: true } });
+out.navigation = [sheet.name, [...classes], focused.slice(-1)];
+out.hooks = added.filter(n => n === 'htmx:beforeSwap').length;
+""")
+    assert out["start"] is None
+    assert out["opened"] == ["more", ["sheet-open"], ["instances-link"]]
+    assert out["closed"] == [None, [], ["instances-link", "more-tab"]]
+    assert out["again"] == 2                       # closing twice changes nothing
+    assert out["filter"] == ["first-select"]
+    assert out["poll"] == "filter"                 # a card poll (not boosted) leaves it open
+    assert out["navigation"] == [None, [], ["first-select"]]   # the old opener is gone: no focus
+    assert out["hooks"] == 1                       # registered once, although app.js ran twice

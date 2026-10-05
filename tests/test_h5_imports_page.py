@@ -139,7 +139,8 @@ def test_page_holds_no_instance_data(client):
     for tag, name, value in script_attributes(page):
         assert "alert(" not in value, (tag, name, value)
     clicks = {value for tag, name, value in script_attributes(page) if name == "@click"}
-    assert clicks == {"load()", "importDownload(inst, d)", "discard(inst, d)", "$store.toasts.remove(toast.id)"}
+    assert clicks == {"load()", "importDownload(inst, d)", "discard(inst, d)", "$store.toasts.remove(toast.id)",
+                      "$store.sheet.open('more', $el)", "$store.sheet.close()"}
     assert f"/api/imports/{inst['id']}/" not in page
 
 
@@ -152,12 +153,14 @@ def test_menu_has_the_imports_link_and_counter_on_every_page(client):
         imports = [a for a in links if a["href"] == "/imports"][0]
         assert ("active" in imports["class"].split()) == (path == "/imports"), path
         counters = [a for t, a in tags(page) if "data-imports-count" in a]
-        assert len(counters) == 1, path
-        counter = counters[0]
+        assert len(counters) == 2, path          # menu and mobile tab bar (0.11.0)
+        counter, tab = counters
         assert counter["class"] == "badge badge-error"
         assert "hidden" in counter
         # One loader in app.js polls and refreshes the count; htmx does not poll it.
         assert counter["x-data"] == "" and counter["x-init"] == COUNT_START
+        # The tab bar's badge is filled by the same loader (querySelectorAll).
+        assert tab["class"] == "badge badge-error tab-badge" and "hidden" in tab and "x-init" not in tab
         assert not [name for name in counter if name.startswith("hx-")]
 
 

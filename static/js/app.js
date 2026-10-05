@@ -185,6 +185,41 @@ function createLogStore() {
     };
 }
 
+// ── Sheets (mobile) ───────────────────────────────────────────────────────────
+// At most one sheet is open: "more" (tab bar) or "filter" (a page's filters).
+// Each sheet has the id "<name>-sheet". Opening moves the focus into it and
+// locks the page's scroll; closing gives the focus back to the opener.
+function sheetFocusTarget(sheet) {
+    return sheet.querySelector('a[href]') || sheet.querySelector('select, input') || sheet.querySelector('button');
+}
+
+function createSheetStore() {
+    return {
+        name: null,
+        _opener: null,
+
+        open(name, opener) {
+            this.name = name;
+            this._opener = opener || null;
+            document.documentElement.classList.add('sheet-open');
+            Alpine.nextTick(() => {
+                const sheet = document.getElementById(`${name}-sheet`);
+                const target = sheet && sheetFocusTarget(sheet);
+                if (target) target.focus();
+            });
+        },
+
+        close() {
+            if (this.name === null) return;
+            this.name = null;
+            document.documentElement.classList.remove('sheet-open');
+            const opener = this._opener;
+            this._opener = null;
+            if (opener && opener.isConnected) opener.focus();
+        }
+    };
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.store('toasts', {
         items: [],
@@ -199,6 +234,7 @@ document.addEventListener('alpine:init', () => {
         }
     });
     Alpine.store('logs', createLogStore());
+    Alpine.store('sheet', createSheetStore());
 });
 
 // A page in the back/forward cache kept its EventSource open. Browsers allow
@@ -213,6 +249,17 @@ window.onpageshow = function (event) {
     var logs = window.Alpine && Alpine.store('logs');
     if (logs && event.persisted) logs.resume();
 };
+
+// A boosted navigation swaps the whole body: close an open sheet first, or the
+// next page would start with a locked scroll. Card polls (not boosted) leave
+// it open. Registered once, although this file runs on every navigation.
+if (!window.sheetNavigationHooked) {
+    window.sheetNavigationHooked = true;
+    document.addEventListener('htmx:beforeSwap', function (event) {
+        var sheet = window.Alpine && Alpine.store('sheet');
+        if (sheet && event.detail && event.detail.boosted) sheet.close();
+    });
+}
 
 // ── Countdown helper ──────────────────────────────────────────────────────────
 function countdownComponent(nextRunIso, status) {
