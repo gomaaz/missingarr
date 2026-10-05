@@ -242,3 +242,18 @@ out.hooks = added.filter(n => n === 'click').length;
 """)
     assert out["result"] == [1, ["icon"]]
     assert out["hooks"] == 1                       # registered once, although app.js ran twice
+
+
+# ── Dashboard cards ──────────────────────────────────────────────────────────
+
+def test_card_head_has_the_mobile_layout_hooks(client):
+    make_instance()
+    page = client.get("/").text
+    head = page.index('class="card-header icard-head"')
+    title = page.index('class="icard-title"', head)
+    actions = page.index('class="icard-actions"', title)
+    badge = page.index("data-status-badge", actions)
+    test_button = page.index('onclick="testCardConnection(', actions)
+    edit = page.index('/edit" class="btn btn-secondary btn-sm">Edit</a>', actions)
+    assert head < title < actions < badge < test_button < edit
+    assert 'class="icard-url"' in page

@@ -600,3 +600,17 @@ select.form-select option {
         font-size: 0.85rem;
     }
 }
+
+/* Mobile: dashboard cards — head in two rows: what and state, then the four
+   buttons (Test, ON/OFF, FORCE, Edit) as a grid of equal columns */
+@media (max-width: 768px) {
+    .instance-grid { grid-template-columns: minmax(0, 1fr); }
+    .icard-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
+    .icard-title { grid-column: 1 / 4; grid-row: 1; }
+    .icard-title .badge, .icard-title .type-badge { white-space: nowrap; flex-shrink: 0; }
+    .icard-actions { display: contents !important; }
+    .icard-actions > [data-status-badge] { grid-column: 4; grid-row: 1; justify-self: end; }
+    .icard-actions > .btn { grid-row: 2; width: 100%; padding-left: 0.25rem; padding-right: 0.25rem; }
+    .icard-url { overflow-wrap: anywhere; }
+    .countdown-display { font-size: 2rem; }
+}

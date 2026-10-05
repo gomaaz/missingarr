@@ -14,8 +14,8 @@
      hx-on::after-request="if (event.detail.successful) updateCardState({{ inst.id }}, event.detail.xhr.responseText)">
 
     <!-- Card Header -->
-    <div class="card-header">
-        <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;">
+    <div class="card-header icard-head">
+        <div class="icard-title" style="display:flex;align-items:center;gap:0.5rem;min-width:0;">
             <span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span>
             {% if inst.checked_search == 'dry_run' %}
             <span class="badge badge-scheduled" data-checked-badge title="Checked search: dry run — nothing is grabbed, see Pre-filter">dry run</span>
@@ -26,7 +26,7 @@
                 {{ inst.name }} <span style="color:var(--text-muted);font-weight:400;">(#{{ inst.id }})</span>
             </span>
         </div>
-        <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
+        <div class="icard-actions" style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
             <!-- Status badge -->
             {% if not is_enabled %}
                 <span class="badge badge-unknown" data-status-badge>OFF</span>
@@ -75,7 +75,7 @@
     </div>
 
     <!-- URL + connection status -->
-    <div style="padding:0.35rem 1rem;font-size:0.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15);">
+    <div class="icard-url" style="padding:0.35rem 1rem;font-size:0.75rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15);">
         <span class="badge {% if conn == 'online' %}badge-online{% elif conn == 'offline' %}badge-offline{% elif conn == 'error' %}badge-error{% else %}badge-unknown{% endif %}" style="margin-right:0.5rem;" data-conn-badge>{{ conn }}</span>
         {{ inst.url }}
     </div>
