@@ -388,7 +388,7 @@ function importsPage() {
                                 <input type="checkbox" :checked="blocklist[key(inst, d)] !== false"
                                        @change="blocklist[key(inst, d)] = $event.target.checked">
                                 Blocklist and search again
-                                <span class="tooltip-icon" data-tooltip="{{ tooltips.imports_discard_blocklist }}">?</span>
+                                <span class="tooltip-icon" tabindex="0" role="button" data-tooltip="{{ tooltips.imports_discard_blocklist }}">?</span>
                             </label>
                         </div>
                     </div>
@@ -428,7 +428,7 @@ function importsPage() {
                                      x-text="coverageNote(inst, d)"></div>
                                 <div style="margin-top:0.5rem;font-size:0.8rem;display:flex;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
                                     <span :class="verdictClass(verdictOf(inst, d))" x-text="verdictLabel(verdictOf(inst, d))"></span>
-                                    <span class="tooltip-icon" data-tooltip="{{ tooltips.imports_verdict }}">?</span>
+                                    <span class="tooltip-icon" tabindex="0" role="button" data-tooltip="{{ tooltips.imports_verdict }}">?</span>
                                     <div style="flex:1;min-width:200px;color:var(--text-secondary);">
                                         <div x-show="(verdictOf(inst, d).reasons || []).length"
                                              x-text="'Reasons: ' + (verdictOf(inst, d).reasons || []).join(', ')"></div>

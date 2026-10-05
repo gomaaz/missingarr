@@ -335,7 +335,8 @@ select.form-select option {
     flex-shrink: 0;
 }
 [data-tooltip] { position: relative; }
-[data-tooltip]:hover::after {
+[data-tooltip]:hover::after,
+.tooltip-icon:focus::after {
     content: attr(data-tooltip);
     position: absolute;
     bottom: calc(100% + 6px);
@@ -357,7 +358,8 @@ select.form-select option {
     letter-spacing: 0;
     pointer-events: none;
 }
-[data-tooltip]:hover::before {
+[data-tooltip]:hover::before,
+.tooltip-icon:focus::before {
     content: '';
     position: absolute;
     bottom: calc(100% + 1px);
@@ -555,4 +557,46 @@ select.form-select option {
 
 @media (max-width: 768px) and (prefers-reduced-motion: reduce) {
     .sheet { animation: none; }
+}
+
+/* Mobile: touch targets of at least 44 x 44 px, 16 px text in fields (Safari
+   zooms in on smaller text), help texts on tap */
+@media (max-width: 768px) {
+    .btn, .btn-sm, .btn-force { min-height: 44px; justify-content: center; }
+    .btn-sm { padding: 0.25rem 0.75rem; }
+    .form-input, .form-control, select, .form-select { min-height: 44px; font-size: 16px !important; }
+    .toggle-label { min-height: 44px; }
+    .check-label { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; cursor: pointer; }
+    .check-label input[type="checkbox"] { width: 20px !important; height: 20px !important; margin: 0; flex-shrink: 0; }
+    .back-link, a[data-imports-dashboard] { display: inline-flex; align-items: center; min-height: 44px; }
+    .form-actions > * { flex: 1 1 0; }
+
+    /* No hover on a phone: the "?" opens its text on tap (focus), in a box
+       above the tab bar that never leaves the screen. */
+    [data-tooltip]:hover::after,
+    [data-tooltip]:hover::before,
+    .tooltip-icon:focus::before { content: none; }
+    .tooltip-icon {
+        width: 44px;
+        height: 44px;
+        margin: -12px;
+        border: none;
+        background: radial-gradient(circle, var(--bg-card) 0 9px, var(--border) 9px 10px, transparent 10.5px);
+        font-size: 0.7rem;
+        cursor: pointer;
+    }
+    .tooltip-icon:focus { outline: none; }
+    .tooltip-icon:focus::after {
+        content: attr(data-tooltip);
+        position: fixed;
+        left: 16px;
+        right: 16px;
+        top: auto;
+        bottom: calc(88px + env(safe-area-inset-bottom));
+        transform: none;
+        min-width: 0;
+        max-width: none;
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+    }
 }

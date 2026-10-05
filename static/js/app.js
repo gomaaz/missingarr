@@ -250,6 +250,19 @@ window.onpageshow = function (event) {
     if (logs && event.persisted) logs.resume();
 };
 
+// A "?" sits inside a <label>: a tap would focus the label's field (and open the
+// keyboard on a phone) or toggle its checkbox instead of showing the help text
+// (app.css, .tooltip-icon:focus). Keep the focus on the "?". Registered once.
+if (!window.tooltipTapHooked) {
+    window.tooltipTapHooked = true;
+    document.addEventListener('click', function (event) {
+        var icon = event.target && event.target.closest && event.target.closest('.tooltip-icon');
+        if (!icon) return;
+        event.preventDefault();
+        icon.focus();
+    });
+}
+
 // A boosted navigation swaps the whole body: close an open sheet first, or the
 // next page would start with a locked scroll. Card polls (not boosted) leave
 // it open. Registered once, although this file runs on every navigation.

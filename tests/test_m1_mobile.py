@@ -188,3 +188,57 @@ out.hooks = added.filter(n => n === 'htmx:beforeSwap').length;
     assert out["poll"] == "filter"                 # a card poll (not boosted) leaves it open
     assert out["navigation"] == [None, [], ["first-select"]]   # the old opener is gone: no focus
     assert out["hooks"] == 1                       # registered once, although app.js ran twice
+
+
+# ── Touch targets, help on tap, form and login ───────────────────────────────
+
+@pytest.mark.parametrize("path", ["/instances/new", "/imports"])
+def test_help_icons_open_on_tap(client, path):
+    icons = [a for t, a in tags(client.get(path).text) if "tooltip-icon" in a.get("class", "").split()]
+    assert icons, path
+    for icon in icons:
+        assert (icon["tabindex"], icon["role"]) == ("0", "button"), icon
+
+
+def test_form_has_a_back_link_and_an_action_row(client):
+    page = client.get("/instances/new").text
+    assert [a["href"] for t, a in tags(page) if "back-link" in a.get("class", "").split()] == ["/instances"]
+    row = page[page.index('class="form-actions"'):]
+    assert row.index('href="/instances"') < row.index('id="save-btn"')
+
+
+def test_form_checkboxes_sit_in_large_labels(client):
+    last_label = None
+    for tag, attrs in tags(client.get("/instances/new").text):
+        if tag == "label":
+            last_label = attrs
+        elif tag == "input" and attrs.get("type") == "checkbox":
+            classes = (last_label or {}).get("class", "").split()
+            assert "check-label" in classes or "toggle-label" in classes, attrs.get("id")
+
+
+def test_login_remember_me_is_one_tap_target(client):
+    client.cookies.clear()
+    page = client.get("/login").text
+    labels = [a for t, a in tags(page) if t == "label" and "check-label" in a.get("class", "").split()]
+    assert len(labels) == 1 and labels[0]["for"] == "remember"
+    start = page.index('class="check-label"')
+    assert (page.index('name="remember"', start) < page.index("Remember me for 30 days", start)
+            < page.index("</label>", start))
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_tap_on_a_help_icon_keeps_the_focus_on_it(tmp_path):
+    # The "?" sits inside a <label>: without the handler the tap would focus
+    # the label's field (keyboard on a phone) or toggle its checkbox.
+    out = run_sheet_js(tmp_path, """
+const icon = node('icon');
+let prevented = 0;
+const click = (target) => listeners['click']({ target, preventDefault() { prevented += 1; } });
+click({ closest: (s) => (s === '.tooltip-icon' ? icon : null) });
+click({ closest: () => null });
+out.result = [prevented, focused.slice()];
+out.hooks = added.filter(n => n === 'click').length;
+""")
+    assert out["result"] == [1, ["icon"]]
+    assert out["hooks"] == 1                       # registered once, although app.js ran twice
