@@ -286,11 +286,6 @@ if (!window.sheetNavigationHooked) {
         if (sheet) sheet.close();
     });
 }
-// Safety net for the same case, assigned (not added) so it survives this file running again.
-window.onpopstate = function () {
-    var sheet = window.Alpine && Alpine.store('sheet');
-    if (sheet) sheet.close();
-};
 
 // ── Countdown helper ──────────────────────────────────────────────────────────
 function countdownComponent(nextRunIso, status) {

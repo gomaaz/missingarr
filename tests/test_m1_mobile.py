@@ -182,9 +182,6 @@ out.hooks = added.filter(n => n === 'htmx:beforeSwap').length;
 sheet.open('more', node('more-tab'));
 listeners['htmx:historyRestore']({ detail: {} });
 out.restore = [sheet.name, [...classes]];
-sheet.open('more', node('more-tab'));
-window.onpopstate({});
-out.popstate = [sheet.name, [...classes]];
 out.restoreHooks = added.filter(n => n === 'htmx:historyRestore').length;
 """)
     assert out["start"] is None
@@ -196,7 +193,6 @@ out.restoreHooks = added.filter(n => n === 'htmx:historyRestore').length;
     assert out["navigation"] == [None, [], ["first-select"]]   # the old opener is gone: no focus
     assert out["hooks"] == 1                       # registered once, although app.js ran twice
     assert out["restore"] == [None, []]            # Back/Forward (history restore) closes the sheet
-    assert out["popstate"] == [None, []]           # safety net when the restore event does not fire
     assert out["restoreHooks"] == 1
 
 
