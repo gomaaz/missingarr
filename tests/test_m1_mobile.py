@@ -470,3 +470,20 @@ def test_prefilter_counters_rows_and_candidates_become_list_entries(client):
     assert any(a.get("class") == "reset-row" for t, a in items if t == "div")
     checks = [a for t, a in tags(filter_bar(page)) if t == "label" and "check-label" in a.get("class", "").split()]
     assert len(checks) == 2
+
+# ── Imports cards ────────────────────────────────────────────────────────────
+
+def test_imports_card_actions_and_proposal_fit_a_phone(client):
+    page = client.get("/imports").text
+    assert_roles_valid(page)
+    [table] = stack_tables(page)
+    assert [["c-main"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-extra"]] in row_roles(table)
+    items = tags(page)
+    objections = [a for t, a in items if t == "td" and a.get("data-label") == "Objections"]
+    assert objections and objections[0][":class"] == "{ 'c-warn': (c.rejections || []).length }"
+    actions = page.index('class="imp-actions"')
+    assert actions < page.index('@click="importDownload(inst, d)"', actions) < page.index('@click="discard(inst, d)"', actions)
+    labels = [a for t, a in items if t == "label" and "check-label" in a.get("class", "").split()]
+    assert len(labels) == 1
+    assert page.index('class="imp-actions"') < page.index('class="check-label"')
+    assert 'class="imp-verdict"' in page

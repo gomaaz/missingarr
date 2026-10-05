@@ -689,4 +689,8 @@ select.form-select option {
     }
     .table-stack tr.row-toggle.is-open td.c-pill::after { content: '▴'; }
     .table-stack tr.row-detail > td { padding: 0 0 0.25rem 0.75rem !important; }
+    .imp-actions { flex: 1 1 100%; align-items: stretch !important; }
+    .imp-actions > div:first-child { display: grid !important; grid-template-columns: 1fr 1fr; }
+    .imp-verdict { flex: 1 1 100% !important; min-width: 0 !important; }
+    .table-stack td.c-warn { color: var(--yellow); }
 }

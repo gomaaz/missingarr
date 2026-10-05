@@ -377,14 +377,14 @@ function importsPage() {
                                 </template>
                             </ul>
                         </div>
-                        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem;">
+                        <div class="imp-actions" style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem;">
                             <div style="display:flex;gap:0.5rem;">
                                 <button class="btn btn-primary btn-sm" :disabled="!canImport(inst, d)"
                                         :title="importTitle(inst, d)" @click="importDownload(inst, d)">Import</button>
                                 <button class="btn btn-sm" :class="discardClass(inst, d)" :disabled="!!busy[key(inst, d)]"
                                         @click="discard(inst, d)">Discard</button>
                             </div>
-                            <label style="font-size:0.78rem;display:flex;align-items:center;gap:0.35rem;">
+                            <label class="check-label" style="font-size:0.78rem;display:flex;align-items:center;gap:0.35rem;">
                                 <input type="checkbox" :checked="blocklist[key(inst, d)] !== false"
                                        @change="blocklist[key(inst, d)] = $event.target.checked">
                                 Blocklist and search again
@@ -406,17 +406,18 @@ function importsPage() {
                                     Proposal: <strong x-text="proposal(inst, d).target"></strong>
                                 </div>
                                 <div style="overflow:auto;">
-                                    <table class="table" style="font-size:0.78rem;">
+                                    <table class="table table-stack" style="font-size:0.78rem;">
                                         <thead><tr><th>File</th><th>Target</th><th>Quality</th><th>Languages</th><th>Group</th><th>Objections of the app</th></tr></thead>
                                         <tbody>
                                             <template x-for="(c, i) in proposal(inst, d).candidates" :key="i">
                                                 <tr :style="c.video ? '' : 'color:var(--text-muted);'">
-                                                    <td style="word-break:break-all;" :title="c.path" x-text="c.relative_path || c.path"></td>
-                                                    <td x-text="c.video ? c.target : 'not a video — ignored'"></td>
-                                                    <td x-text="c.quality || '—'"></td>
-                                                    <td x-text="(c.languages || []).join(', ') || '—'"></td>
-                                                    <td x-text="c.release_group || '—'"></td>
-                                                    <td x-text="(c.rejections || []).join('; ') || '—'"></td>
+                                                    <td class="c-main" style="word-break:break-all;" :title="c.path" x-text="c.relative_path || c.path"></td>
+                                                    <td class="c-meta" x-text="c.video ? c.target : 'not a video — ignored'"></td>
+                                                    <td class="c-meta" x-text="c.quality || '—'"></td>
+                                                    <td class="c-meta" x-text="(c.languages || []).join(', ') || '—'"></td>
+                                                    <td class="c-meta" x-text="c.release_group || '—'"></td>
+                                                    <td class="c-extra" data-label="Objections" :class="{ 'c-warn': (c.rejections || []).length }"
+                                                        x-text="(c.rejections || []).join('; ') || '—'"></td>
                                                 </tr>
                                             </template>
                                         </tbody>
@@ -429,7 +430,7 @@ function importsPage() {
                                 <div style="margin-top:0.5rem;font-size:0.8rem;display:flex;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
                                     <span :class="verdictClass(verdictOf(inst, d))" x-text="verdictLabel(verdictOf(inst, d))"></span>
                                     <span class="tooltip-icon" tabindex="0" role="button" data-tooltip="{{ tooltips.imports_verdict }}">?</span>
-                                    <div style="flex:1;min-width:200px;color:var(--text-secondary);">
+                                    <div class="imp-verdict" style="flex:1;min-width:200px;color:var(--text-secondary);">
                                         <div x-show="(verdictOf(inst, d).reasons || []).length"
                                              x-text="'Reasons: ' + (verdictOf(inst, d).reasons || []).join(', ')"></div>
                                         <template x-for="(t, i) in (verdictOf(inst, d).details || [])" :key="i">
