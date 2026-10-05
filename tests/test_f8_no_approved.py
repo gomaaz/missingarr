@@ -82,5 +82,5 @@ def test_the_page_names_the_outcome_no_approved_release(client):
     page = client.get("/checked-search").text
     assert "no_results: ['badge-unknown', 'no approved release']" in page
     assert '<option value="no_results">No approved release</option>' in page
-    assert "<td>no approved release</td>" in page
+    assert '<td class="c-main">no approved release</td>' in page
     assert "no results" not in page.lower()

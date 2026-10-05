@@ -38,6 +38,12 @@ function logsTable() {
             return Math.max(1, Math.ceil(this._filtered.length / this.perPage));
         },
 
+        // Filters that differ from the page's defaults (the Filter button shows the number).
+        activeFilters() {
+            return [this.filterInstance !== '', this.filterLevel !== '', this.perPage !== 20,
+                    this.$store.logs.debug === true].filter(Boolean).length;
+        },
+
         paginationLabel() {
             const total = this._filtered.length;
             const start = this.page * this.perPage + 1;
@@ -71,7 +77,24 @@ async function clearAllLogs() {
     <!-- Toolbar -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.75rem;">
         <h1 style="margin:0;font-size:1.4rem;font-weight:700;">Logs</h1>
-        <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+        <div class="filter-row" style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+
+            <button type="button" class="btn btn-secondary m-only filter-toggle" aria-controls="filter-sheet"
+                    @click="$store.sheet.open('filter', $el)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+                <span x-text="activeFilters() ? 'Filter · ' + activeFilters() : 'Filter'">Filter</span>
+            </button>
+
+            <div class="filter-bar" id="filter-sheet" aria-label="Filter"
+                 :class="{ 'is-open': $store.sheet.name === 'filter' }"
+                 :role="$store.sheet.name === 'filter' ? 'dialog' : null"
+                 :aria-modal="$store.sheet.name === 'filter' ? 'true' : null">
+            <div class="sheet-head m-only">
+                <h2>Filter</h2>
+                <button type="button" class="sheet-close" aria-label="Close" @click="$store.sheet.close()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                </button>
+            </div>
 
             <!-- Instance filter -->
             <select class="form-select" style="font-size:0.82rem;padding:0.3rem 0.6rem;width:auto;"
@@ -100,21 +123,24 @@ async function clearAllLogs() {
                 <option value="100">100 / page</option>
             </select>
 
-            <!-- Live toggle -->
-            <button @click="$store.logs.toggleEnabled()" class="btn btn-secondary btn-sm"
-                    :class="$store.logs.enabled ? 'btn-active' : ''"
-                    x-text="$store.logs.enabled ? 'Live ●' : 'Paused ○'"
-                    :style="$store.logs.enabled ? 'color:var(--green)' : ''">
-            </button>
-
             <!-- Debug toggle -->
-            <button @click="$store.logs.toggleDebug()" class="btn btn-secondary btn-sm"
+            <button @click="$store.logs.toggleDebug()" class="btn btn-secondary btn-sm o-2"
                     :class="$store.logs.debug ? 'btn-primary' : ''"
                     x-text="$store.logs.debug ? 'Debug: ON' : 'Debug: OFF'">
             </button>
 
-            <button @click="$store.logs.clear()" class="btn btn-secondary btn-sm">Clear view</button>
-            <button onclick="clearAllLogs()" class="btn btn-danger btn-sm">Clear DB</button>
+            <button @click="$store.logs.clear()" class="btn btn-secondary btn-sm o-2">Clear view</button>
+            <button onclick="clearAllLogs()" class="btn btn-danger btn-sm o-2">Clear DB</button>
+            <button type="button" class="btn btn-primary m-only sheet-done o-3" @click="$store.sheet.close()">Done</button>
+            </div>
+            <!-- /filter-sheet -->
+
+            <!-- Live toggle: stays on the page on a phone; .o-1 keeps it after the selects on a PC -->
+            <button @click="$store.logs.toggleEnabled()" class="btn btn-secondary btn-sm o-1"
+                    :class="$store.logs.enabled ? 'btn-active' : ''"
+                    x-text="$store.logs.enabled ? 'Live ●' : 'Paused ○'"
+                    :style="$store.logs.enabled ? 'color:var(--green)' : ''">
+            </button>
         </div>
     </div>
 

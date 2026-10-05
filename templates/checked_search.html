@@ -45,6 +45,11 @@ function checkedSearchPage() {
             return params;
         },
         csvHref() { return '/api/checked-search.csv?' + this.filterParams(); },
+        // Filters in the sheet that differ from the page's defaults (the search field does not count).
+        activeFilters() {
+            return [this.instance !== '', this.mode !== '', this.outcome !== '', this.onlyDifferences === true,
+                    this.currentRound !== true].filter(Boolean).length;
+        },
         reload() { this.page = 1; return this.load(); },
         goTo(page) {
             this.page = Math.min(Math.max(1, page), this.totalPages);
@@ -113,15 +118,15 @@ function checkedSearchPage() {
 <!-- Counters per instance, mode and outcome (dry run: the running round) -->
 <div class="card" style="margin-bottom:1rem;overflow:auto;">
     {% if summary %}
-    <table class="table">
+    <table class="table table-stack">
         <thead><tr><th>Instance</th><th>Mode</th><th>Outcome</th><th title="Dry run: the current round only">Titles</th></tr></thead>
         <tbody>
         {% for s in summary %}
         <tr data-summary-instance="{{ s.instance_id }}" data-summary-mode="{{ s.mode }}">
-            <td>{{ s.instance_name }}</td>
-            <td>{{ 'dry run' if s.mode == 'dry_run' else 'active' }}</td>
-            <td>{{ 'no approved release' if s.outcome == 'no_results' else s.outcome.replace('_', ' ') }}</td>
-            <td>{{ s.n }}</td>
+            <td class="c-meta">{{ s.instance_name }}</td>
+            <td class="c-meta">{{ 'dry run' if s.mode == 'dry_run' else 'active' }}</td>
+            <td class="c-main">{{ 'no approved release' if s.outcome == 'no_results' else s.outcome.replace('_', ' ') }}</td>
+            <td class="c-pill">{{ s.n }}</td>
         </tr>
         {% endfor %}
         </tbody>
@@ -131,7 +136,7 @@ function checkedSearchPage() {
         Nothing checked yet. Switch "Checked search" to Dry run in an instance's settings.
     </div>
     {% endif %}
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;padding:0.75rem 1rem;border-top:1px solid var(--border);">
+    <div class="reset-row" style="display:flex;gap:0.5rem;flex-wrap:wrap;padding:0.75rem 1rem;border-top:1px solid var(--border);">
         {% for inst in instances if inst.checked_search != 'off' %}
         <button class="btn btn-secondary btn-sm" data-id="{{ inst.id }}" data-name="{{ inst.name }}"
                 @click="resetDryRun(Number($el.dataset.id), $el.dataset.name)">
@@ -141,9 +146,24 @@ function checkedSearchPage() {
     </div>
 </div>
 
-<div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center;">
+<div class="filter-row" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center;">
     <input type="text" class="form-input" placeholder="Search title or instance…"
            x-model="search" @input.debounce.300ms="reload()" style="width:220px;">
+    <button type="button" class="btn btn-secondary m-only filter-toggle" aria-controls="filter-sheet"
+            @click="$store.sheet.open('filter', $el)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        <span x-text="activeFilters() ? 'Filter · ' + activeFilters() : 'Filter'">Filter</span>
+    </button>
+    <div class="filter-bar" id="filter-sheet" aria-label="Filter"
+         :class="{ 'is-open': $store.sheet.name === 'filter' }"
+         :role="$store.sheet.name === 'filter' ? 'dialog' : null"
+         :aria-modal="$store.sheet.name === 'filter' ? 'true' : null">
+    <div class="sheet-head m-only">
+        <h2>Filter</h2>
+        <button type="button" class="sheet-close" aria-label="Close" @click="$store.sheet.close()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+    </div>
     <select class="form-input" x-model="instance" @change="reload()">
         <option value="">All instances</option>
         {% for inst in instances %}
@@ -166,13 +186,17 @@ function checkedSearchPage() {
         <option value="grab_uncertain">Grab uncertain</option>
         <option value="changed_meanwhile">Changed meanwhile</option>
     </select>
-    <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.35rem;">
+    <label class="check-label" style="font-size:0.85rem;display:flex;align-items:center;gap:0.35rem;">
         <input type="checkbox" x-model="onlyDifferences" @change="reload()"> only differences
     </label>
-    <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.35rem;"
+    <label class="check-label" style="font-size:0.85rem;display:flex;align-items:center;gap:0.35rem;"
            title="Dry run: only the verdicts since the last reset. Active rows are always shown.">
         <input type="checkbox" x-model="currentRound" @change="reload()"> current round only
     </label>
+    <button type="button" class="btn btn-primary m-only sheet-done" @click="$store.sheet.close()"
+            x-text="'Show ' + total + ' titles'">Show titles</button>
+    </div>
+    <!-- /filter-sheet -->
     <span style="font-size:0.82rem;color:var(--text-muted);" x-text="total + ' titles'"></span>
 </div>
 
@@ -181,7 +205,7 @@ function checkedSearchPage() {
         <div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);">Loading…</div>
     </template>
     <template x-if="rows.length > 0">
-        <table class="table">
+        <table class="table table-stack">
             <thead>
                 <tr>
                     <th>Time</th><th>Instance</th><th>Mode</th><th>Title</th><th>Outcome</th>
@@ -190,11 +214,11 @@ function checkedSearchPage() {
             </thead>
             <template x-for="row in rows" :key="row.id">
                 <tbody>
-                    <tr style="cursor:pointer;" @click="toggle(row.id)">
-                        <td style="white-space:nowrap;font-size:0.78rem;color:var(--text-muted);" x-text="fmtTime(row.created_at)"></td>
-                        <td style="white-space:nowrap;" x-text="row.instance_name"></td>
-                        <td x-text="modeLabel(row.mode)"></td>
-                        <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                    <tr class="row-toggle" :class="{ 'is-open': open[row.id] }" style="cursor:pointer;" @click="toggle(row.id)">
+                        <td class="c-meta" style="white-space:nowrap;font-size:0.78rem;color:var(--text-muted);" x-text="fmtTime(row.created_at)"></td>
+                        <td class="c-meta" style="white-space:nowrap;" x-text="row.instance_name"></td>
+                        <td class="c-meta" x-text="modeLabel(row.mode)"></td>
+                        <td class="c-main" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                             :title="row.title">
                             <span x-text="row.title"></span>
                             <span x-show="row.profile_changed" class="badge badge-unknown"
@@ -202,35 +226,35 @@ function checkedSearchPage() {
                             <span x-show="row.settings_changed" class="badge badge-unknown"
                                   title="Checked under rule settings that have changed since — a dry run checks it again">settings changed</span>
                         </td>
-                        <td><span :class="outcomeClass(row.outcome)" :title="row.error_message || ''"
+                        <td class="c-pill"><span :class="outcomeClass(row.outcome)" :title="row.error_message || ''"
                                   x-text="outcomeLabel(row.outcome)"></span></td>
-                        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;"
+                        <td class="c-extra" data-label="*arr would grab" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;"
                             :title="row.arr_pick || ''" x-text="row.arr_pick || '—'"></td>
-                        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;"
+                        <td class="c-extra" data-label="Filter grabs" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;"
                             :title="row.pick || ''" x-text="row.pick || '—'"></td>
-                        <td x-text="row.rejected_count"></td>
+                        <td class="c-extra" data-label="Rejected" x-text="row.rejected_count"></td>
                     </tr>
-                    <tr x-show="open[row.id]">
+                    <tr class="row-detail" x-show="open[row.id]">
                         <td colspan="8" style="background:rgba(0,0,0,0.15);">
                             <div x-show="row.error_message" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;"
                                  x-text="row.error_message"></div>
-                            <table class="table" style="font-size:0.78rem;">
+                            <table class="table table-stack" style="font-size:0.78rem;">
                                 <thead><tr><th>Release</th><th>Indexer</th><th>Score</th><th>Size</th><th>Quality</th><th>Verdict</th><th>Reasons</th><th>Notes</th></tr></thead>
                                 <tbody>
                                     <template x-for="(c, i) in row.candidates" :key="i">
                                         <tr :style="candidateStyle(c)">
-                                            <td style="word-break:break-all;">
+                                            <td class="c-main" style="word-break:break-all;">
                                                 <span x-text="c.title"></span>
                                                 <span x-show="c.arr_choice" class="badge badge-unknown" title="*arr would grab this one">*arr</span>
                                                 <span x-show="c.chosen" class="badge badge-online" title="The filter picks this one">filter</span>
                                             </td>
-                                            <td x-text="c.indexer"></td>
-                                            <td x-text="c.score ?? '—'"></td>
-                                            <td style="white-space:nowrap;" x-text="fmtSize(c.size)"></td>
-                                            <td x-text="c.quality"></td>
-                                            <td x-text="c.verdict"></td>
-                                            <td x-text="(c.reasons || []).join(', ')"></td>
-                                            <td x-text="(c.notes || []).join(', ')"></td>
+                                            <td class="c-meta" x-text="c.indexer"></td>
+                                            <td class="c-meta" x-text="c.score ?? '—'"></td>
+                                            <td class="c-meta" style="white-space:nowrap;" x-text="fmtSize(c.size)"></td>
+                                            <td class="c-meta" x-text="c.quality"></td>
+                                            <td class="c-pill" x-text="c.verdict"></td>
+                                            <td class="c-extra" data-label="Reasons" x-text="(c.reasons || []).join(', ')"></td>
+                                            <td class="c-extra" data-label="Notes" x-text="(c.notes || []).join(', ')"></td>
                                         </tr>
                                     </template>
                                 </tbody>

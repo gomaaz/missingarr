@@ -348,3 +348,125 @@ def test_pagers_show_page_x_of_y_on_a_phone(client, path, label):
     assert [(a["class"], a["x-text"]) for a in labels] == [("m-only page-label", label)]
     assert any("page-num" in a.get("class", "").split() for t, a in items if t == "button")
     assert any("pager" in a.get("class", "").split() for t, a in items if t == "div")
+
+
+# ── Filter sheet and the Pre-filter list ─────────────────────────────────────
+
+def filter_bar(page):
+    start = page.rindex("<div", 0, page.index('id="filter-sheet"'))
+    return page[start:page.index("<!-- /filter-sheet -->")]
+
+
+@pytest.mark.parametrize("path, done", [
+    ("/logs", None),
+    ("/history", "'Show ' + total + ' items'"),
+    ("/checked-search", "'Show ' + total + ' titles'"),
+])
+def test_filter_pages_have_a_filter_button_and_a_sheet(client, path, done):
+    page = client.get(path).text
+    items = tags(page)
+    toggles = [a for t, a in items if t == "button" and "filter-toggle" in a.get("class", "").split()]
+    assert len(toggles) == 1
+    assert toggles[0]["@click"] == "$store.sheet.open('filter', $el)"
+    assert toggles[0]["aria-controls"] == "filter-sheet"
+    assert "m-only" in toggles[0]["class"].split()
+    bars = [a for t, a in items if a.get("id") == "filter-sheet"]
+    assert len(bars) == 1
+    assert bars[0]["class"] == "filter-bar"
+    assert bars[0][":class"] == "{ 'is-open': $store.sheet.name === 'filter' }"
+    assert bars[0][":role"] == "$store.sheet.name === 'filter' ? 'dialog' : null"
+    bar = filter_bar(page)
+    assert bar.index("sheet-head m-only") < bar.index("<select")
+    closes = [a for t, a in tags(bar) if t == "button" and a.get("@click") == "$store.sheet.close()"]
+    dones = [a for a in closes if "sheet-done" in a.get("class", "").split()]
+    assert len(closes) == 2 and len(dones) == 1
+    if done is None:
+        assert "x-text" not in dones[0] and ">Done</button>" in bar
+    else:
+        assert dones[0]["x-text"] == done
+
+
+def test_logs_keeps_live_on_the_page_and_the_old_order_on_a_pc(client):
+    page = client.get("/logs").text
+    bar = filter_bar(page)
+    assert "toggleEnabled()" not in bar
+    for click in ("$store.logs.toggleDebug()", "$store.logs.clear()", "clearAllLogs()"):
+        assert click in bar, click
+    items = tags(page)
+    live = [a for t, a in items if a.get("@click") == "$store.logs.toggleEnabled()"]
+    assert len(live) == 1 and "o-1" in live[0]["class"].split()
+    for t, a in items:
+        if a.get("@click") in ("$store.logs.toggleDebug()", "$store.logs.clear()") or a.get("onclick") == "clearAllLogs()":
+            assert "o-2" in a["class"].split(), a
+
+
+@pytest.mark.parametrize("path", ["/history", "/checked-search"])
+def test_search_field_stays_outside_the_sheet(client, path):
+    page = client.get(path).text
+    assert 'x-model="search"' not in filter_bar(page)
+    row = page.rindex('class="filter-row"', 0, page.index('id="filter-sheet"'))
+    assert row < page.index('x-model="search"') < page.index('id="filter-sheet"')
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_logs_filter_button_counts_the_changed_filters(client, tmp_path):
+    script = component_script(client.get("/logs").text, "function logsTable()")
+    out = run_node(tmp_path, script, """
+const t = logsTable(); t.$store = { logs: { debug: false } };
+out.start = t.activeFilters();
+t.filterLevel = 'warn'; t.perPage = 50; t.$store.logs.debug = true;
+out.changed = t.activeFilters();
+""")
+    assert (out["start"], out["changed"]) == (0, 3)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_history_filter_button_counts_the_changed_filters(client, tmp_path):
+    script = component_script(client.get("/history").text, "function historyPage()")
+    out = run_node(tmp_path, script, """
+const h = historyPage();
+out.start = h.activeFilters();
+h.instance = '2'; h.skill = 'search_missing';
+out.changed = h.activeFilters();
+h.search = 'x';
+out.search = h.activeFilters();
+""")
+    assert (out["start"], out["changed"], out["search"]) == (0, 2, 2)
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_prefilter_filter_button_counts_the_changed_filters(client, tmp_path):
+    script = component_script(client.get("/checked-search").text, "function checkedSearchPage()")
+    out = run_node(tmp_path, script, """
+const p = checkedSearchPage();
+out.start = p.activeFilters();
+p.outcome = 'error'; p.currentRound = false; p.onlyDifferences = true;
+out.changed = p.activeFilters();
+""")
+    assert (out["start"], out["changed"]) == (0, 3)
+
+
+def test_prefilter_counters_rows_and_candidates_become_list_entries(client):
+    inst = make_instance(checked_search="dry_run")
+    db.checked_search_log.insert({"instance_id": inst["id"], "mode": "dry_run", "skill": "search_missing",
+                                  "title": "A", "outcome": "would_grab", "cache_key": "mov:1",
+                                  "dry_run_round": inst["dry_run_round"]})
+    page = client.get("/checked-search").text
+    assert_roles_valid(page)
+    summary, rows, candidates = stack_tables(page)
+    assert [["c-meta"], ["c-meta"], ["c-main"], ["c-pill"]] in row_roles(summary)
+    assert [["c-meta"], ["c-meta"], ["c-meta"], ["c-main"], ["c-pill"], ["c-extra"], ["c-extra"], ["c-extra"]] \
+        in row_roles(rows)
+    assert [["c-main"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-pill"], ["c-extra"], ["c-extra"]] \
+        in row_roles(candidates)
+    labels = [a["data-label"] for t, a in tags(page) if t == "td" and "data-label" in a]
+    assert labels == ["*arr would grab", "Filter grabs", "Rejected", "Reasons", "Notes"]
+    items = tags(page)
+    toggles = [a for t, a in items if t == "tr" and "row-toggle" in a.get("class", "").split()]
+    assert toggles and toggles[0][":class"] == "{ 'is-open': open[row.id] }"
+    assert toggles[0]["@click"] == "toggle(row.id)"
+    details = [a for t, a in items if t == "tr" and a.get("class") == "row-detail"]
+    assert details and details[0]["x-show"] == "open[row.id]"
+    assert any(a.get("class") == "reset-row" for t, a in items if t == "div")
+    checks = [a for t, a in tags(filter_bar(page)) if t == "label" and "check-label" in a.get("class", "").split()]
+    assert len(checks) == 2

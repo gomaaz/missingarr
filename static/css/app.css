@@ -499,7 +499,8 @@ select.form-select option {
 
     html.sheet-open { overflow: hidden; }
     .sheet-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.55); }
-    .sheet {
+    .sheet,
+    .filter-bar.is-open {
         position: fixed;
         left: 0;
         right: 0;
@@ -556,7 +557,7 @@ select.form-select option {
 }
 
 @media (max-width: 768px) and (prefers-reduced-motion: reduce) {
-    .sheet { animation: none; }
+    .sheet, .filter-bar.is-open { animation: none; }
 }
 
 /* Mobile: touch targets of at least 44 x 44 px, 16 px text in fields (Safari
@@ -664,4 +665,28 @@ select.form-select option {
     .page-num { display: none !important; }
     .pager { flex-wrap: wrap; justify-content: center !important; gap: 0.5rem; }
     .page-label { display: inline-flex; align-items: center; color: var(--text-muted); font-size: 0.82rem; }
+}
+
+/* Filters: on a PC they stay in the toolbar row (display: contents keeps the
+   row as it was; .o-1/.o-2/.o-3 keep the old order of the controls). On a
+   phone they open as a sheet from below behind the Filter button. */
+.filter-bar { display: contents; }
+.o-1 { order: 1; }
+.o-2 { order: 2; }
+.o-3 { order: 3; }
+
+@media (max-width: 768px) {
+    .filter-bar { display: none; }
+    .filter-bar.is-open > * { width: 100% !important; margin: 0; }
+    .filter-row > input[type="text"] { flex: 1 1 100%; width: 100% !important; }
+    .sheet-done { margin-top: 0.5rem; }
+    .reset-row > .btn { flex: 1 1 100%; }
+    .table-stack tr.row-toggle td.c-pill::after {
+        content: '▾';
+        display: inline-block;
+        margin-left: 0.4rem;
+        color: var(--text-muted);
+    }
+    .table-stack tr.row-toggle.is-open td.c-pill::after { content: '▴'; }
+    .table-stack tr.row-detail > td { padding: 0 0 0.25rem 0.75rem !important; }
 }

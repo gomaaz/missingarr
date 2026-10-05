@@ -18,6 +18,11 @@ function historyPage() {
 
         get totalPages() { return Math.max(1, Math.ceil(this.total / this.perPage)); },
         filtersActive() { return !!(this.search || this.instance || this.type || this.skill); },
+        // Filters in the sheet that differ from the page's defaults (the search field does not count).
+        activeFilters() {
+            return [this.instance !== '', this.type !== '', this.skill !== '', this.perPage !== 50]
+                .filter(Boolean).length;
+        },
         reload() { this.page = 1; return this.load(); },
         goTo(page) {
             this.page = Math.min(Math.max(1, page), this.totalPages);
@@ -105,9 +110,26 @@ function historyPage() {
     <button class="btn btn-danger btn-sm" @click="clearHistory()">Clear History</button>
 </div>
 
-<div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center;">
+<div class="filter-row" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center;">
     <input type="text" class="form-input" placeholder="Search title or instance…"
            x-model="search" @input.debounce.300ms="reload()" style="width:220px;">
+
+    <button type="button" class="btn btn-secondary m-only filter-toggle" aria-controls="filter-sheet"
+            @click="$store.sheet.open('filter', $el)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        <span x-text="activeFilters() ? 'Filter · ' + activeFilters() : 'Filter'">Filter</span>
+    </button>
+
+    <div class="filter-bar" id="filter-sheet" aria-label="Filter"
+         :class="{ 'is-open': $store.sheet.name === 'filter' }"
+         :role="$store.sheet.name === 'filter' ? 'dialog' : null"
+         :aria-modal="$store.sheet.name === 'filter' ? 'true' : null">
+    <div class="sheet-head m-only">
+        <h2>Filter</h2>
+        <button type="button" class="sheet-close" aria-label="Close" @click="$store.sheet.close()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+    </div>
 
     <select class="form-input" x-model="instance" @change="reload()">
         <option value="">All instances</option>
@@ -135,6 +157,11 @@ function historyPage() {
         <option value="50" selected>50 / page</option>
         <option value="100">100 / page</option>
     </select>
+
+    <button type="button" class="btn btn-primary m-only sheet-done" @click="$store.sheet.close()"
+            x-text="'Show ' + total + ' items'">Show items</button>
+    </div>
+    <!-- /filter-sheet -->
 
     <span style="font-size:0.82rem;color:var(--text-muted);" x-text="total + ' items'"></span>
 </div>
