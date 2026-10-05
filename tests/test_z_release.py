@@ -77,3 +77,18 @@ def test_no_host_details_in_new_files():
         text = path.read_text()
         for marker in ("/root/", "/home/", "/tmp/", "/mnt/", "/srv/"):
             assert marker not in text, f"{marker} in {path.name}"
+
+
+def test_readme_and_changelog_document_0_11_0():
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert changelog.index("## [Unreleased]") < changelog.index("## [0.11.0]") < changelog.index("## [0.10.1]")
+    section = changelog[changelog.index("## [0.11.0]"):changelog.index("## [0.10.1]")]
+    assert section.index("### Added") < section.index("### Changed")
+    for text in ("tab bar", "More", "768 px", "44 × 44", "scripts/mobile_check.py", "on tap",
+                 "On a PC nothing changes"):
+        assert text in section, text
+    readme = (ROOT / "README.md").read_text()
+    assert readme.index("## Imports") < readme.index("## On the phone") < readme.index("## Example: Typical Home Setup")
+    assert readme.index("## Upgrading to 0.11.0") < readme.index("## Upgrading to 0.10.1")
+    for text in ("viewport-fit=cover", "scripts/mobile_check.py", "**Filter**", "Works on a phone"):
+        assert text in readme, text

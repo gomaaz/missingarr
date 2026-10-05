@@ -9,6 +9,7 @@ A lightweight alternative to [Huntarr.io](https://huntarr.io) with one single pu
 - Imports page: downloads Radarr and Sonarr hold back for a manual import, with the app's proposal, a check by the pre-filter rules and Import / Discard buttons
 - Multiple instances (mix of Sonarr + Radarr)
 - Live log streaming, search history with the outcome \*arr reports for every search, dashboard with countdown timers
+- Works on a phone: tab bar at the bottom, lists instead of wide tables, filters in a sheet
 - Single Docker container, SQLite — no external dependencies
 
 ## Quick Start
@@ -173,6 +174,16 @@ Import, step by step:
 
 The API: `GET /api/imports` (every instance with its downloads), `GET /api/imports/count`, `GET /api/imports/<id>/proposal?download_id=…`, `POST /api/imports/<id>/import` (`{"download_id": …, "proposal_key": …}`; answers `state` `sent` with the command id, or `uncertain` when the app's answer got lost), `GET /api/imports/<id>/commands/<command_id>` (only for imports this missingarr sent to that instance, `404` otherwise), `POST /api/imports/<id>/discard` (`{"download_id": …, "blocklist": true}`). Errors of an app answer `504` (timeout), `503` (no connection) or `502`. A wrong API key of an app is `502` "Invalid API key", not `401`: the page treats every `401` as an expired session.
 
+## On the phone
+
+Up to 768 px wide (most phones held upright) missingarr arranges the same pages for a phone; on a PC nothing changes.
+
+- **Tab bar** at the bottom: Dashboard, Imports (with the counter of waiting imports), Pre-filter, Logs and **More**. More opens a sheet with Instances, History, Progressed, Help, GitHub, the version and *Sign out*; it closes with a tap beside it, ✕ or Escape.
+- **Lists instead of wide tables** on Logs, Pre-filter, History, Progressed and Instances: the message or title on top, time and instance below, level or outcome on the right. A tap on a Pre-filter entry shows its candidates.
+- **Filter** opens the filters of Logs, Pre-filter and History in a sheet; the button shows how many are set. The search field and *Live* stay on the page.
+- Every control is at least 44 × 44 px, fields use 16 px text (no zoom in Safari), and the **?** help texts open on tap.
+- On an iPhone the tab bar keeps clear of the home indicator (`viewport-fit=cover` with `env(safe-area-inset-bottom)`).
+
 ## Example: Typical Home Setup
 
 Two instances — one Sonarr, one Radarr — running on the same server:
@@ -231,6 +242,12 @@ With this setup Missingarr will:
 
 Every version is listed in [CHANGELOG.md](CHANGELOG.md); release notes are on [GitHub Releases](https://github.com/gomaaz/missingarr/releases). Each release is published as `gomaaz/missingarr:<version>` (for example `gomaaz/missingarr:0.10.0`), as `<major>.<minor>` and as `latest` — pin a version to decide when you upgrade.
 
+## Upgrading to 0.11.0
+
+- No database change and no new setting. Back up `./data` anyway, as before every upgrade.
+- Only the pages change: on a phone (up to 768 px wide) they use the tab bar and the lists described in [On the phone](#on-the-phone). Reload open pages after the update; a browser may keep the old `app.css` until then.
+- Rollback: 0.10.1 works with the same database.
+
 ## Upgrading to 0.10.1
 
 - A database created before 25 March 2026 stored the times of the Logs page and of new Searched cache entries in UTC. On the first start of 0.10.1 it converts them to local time, once: every log line, and the cache entries whose search is still in the History (the others keep their time). Back up `./data` first, as before every upgrade.
@@ -281,6 +298,8 @@ python -m venv .venv
 .venv/bin/python -m pytest tests/ -q
 uvicorn backend.main:app --reload
 ```
+
+The mobile view has a browser check: `.venv/bin/pip install playwright`, `.venv/bin/python -m playwright install chromium`, then `.venv/bin/python scripts/mobile_check.py <screenshot-dir>`. It starts missingarr on 127.0.0.1 with made-up data, opens every page at 390 × 844 and 1280 × 800 and fails on sideways scrolling, controls smaller than 44 × 44 px or content under the tab bar; nothing leaves 127.0.0.1.
 
 Front-end libraries are vendored in `static/vendor`. To update them, change version and npm integrity in `scripts/vendor_assets.py` and run it. Runtime dependencies are locked with hashes in `requirements.lock` (pip-compile --generate-hashes).
 

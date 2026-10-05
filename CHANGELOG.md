@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-04
+
+### Added
+
+- **Mobile view**: up to 768 px wide, missingarr is laid out for a phone. A floating tab bar at the bottom holds Dashboard, Imports (with the counter), Pre-filter, Logs and More; More opens a sheet from below with Instances, History, Progressed, Help, GitHub, the version and Sign out. The top bar shows only the name and the version.
+- Tables on Logs, Pre-filter, History, Progressed, Instances and in the Imports proposal become list entries on a phone: the message or title on top, time, instance and the other columns below, the level or outcome on the right. A tap on a Pre-filter entry opens its candidates as before.
+- The filters of Logs, Pre-filter and History move into a sheet from below behind a **Filter** button that shows how many filters are set; the search field and *Live* stay on the page.
+- Dashboard cards put their four buttons (Test, ON/OFF, FORCE, Edit) in a row of their own; on the Imports page *Import* and *Discard* span the card.
+- `scripts/mobile_check.py`: a browser check for developers (Playwright, not in the image) that opens every page at 390 × 844 and 1280 × 800 and fails on sideways scrolling, controls smaller than 44 × 44 px or content under the tab bar.
+
+### Changed
+
+- Every button, field, select and checkbox label is at least 44 × 44 px on a phone, and fields use 16 px text so Safari does not zoom in on focus.
+- The **?** help texts also open on tap and with the keyboard (focus), not only on mouse hover; on a phone they appear in a box above the tab bar.
+- On a PC nothing changes.
+
 ## [0.10.1] - 2026-10-03
 
 ### Fixed
