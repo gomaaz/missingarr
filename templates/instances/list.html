@@ -12,7 +12,7 @@
 
 {% if instances %}
 <div class="card">
-    <table class="table">
+    <table class="table table-stack">
         <thead>
             <tr>
                 <th>Type</th>
@@ -27,19 +27,19 @@
         <tbody>
         {% for inst in instances %}
         <tr>
-            <td><span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span></td>
-            <td style="font-weight:600;">{{ inst.name }}</td>
-            <td style="color:var(--text-muted);font-size:0.8rem;">{{ inst.url }}</td>
-            <td>
+            <td class="c-pill"><span class="type-badge type-{{ inst.type }}">{{ inst.type }}</span></td>
+            <td class="c-main" style="font-weight:600;">{{ inst.name }}</td>
+            <td class="c-meta" style="color:var(--text-muted);font-size:0.8rem;">{{ inst.url }}</td>
+            <td class="c-meta">
                 <span class="badge badge-{{ inst.connection_status }}">{{ inst.connection_status }}</span>
                 {% if not inst.enabled %}<span class="badge badge-unknown" style="margin-left:0.25rem;">disabled</span>{% endif %}
             </td>
-            <td style="color:var(--text-secondary);">{{ inst.interval_minutes }}m</td>
-            <td>
+            <td class="c-meta" style="color:var(--text-secondary);">{{ inst.interval_minutes }}m</td>
+            <td class="c-meta">
                 {% if inst.search_missing_enabled %}<span class="badge badge-scheduled" style="margin-right:0.2rem;">missing</span>{% endif %}
                 {% if inst.search_upgrades_enabled %}<span class="badge badge-scheduled">upgrades</span>{% endif %}
             </td>
-            <td>
+            <td class="c-extra">
                 <div style="display:flex;gap:0.4rem;">
                     <a href="/instances/{{ inst.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
                     <button class="btn btn-danger btn-sm"

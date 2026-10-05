@@ -614,3 +614,54 @@ select.form-select option {
     .icard-url { overflow-wrap: anywhere; }
     .countdown-display { font-size: 2rem; }
 }
+
+/* Field names on the Help page stay on one line on a PC. */
+.help-field { white-space: nowrap; }
+
+/* Mobile: tables as lists (.table-stack). Cell roles: c-main (first line),
+   c-pill (first line, right), c-meta (small second line; also cells without
+   a role), c-extra (own small line, label from data-label), c-hide. */
+@media (max-width: 768px) {
+    .table-stack, .table-stack tbody { display: block; width: 100%; }
+    .table-stack thead, .table-stack colgroup { display: none; }
+    .table-stack tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.2rem 0.75rem;
+        padding: 0.6rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+    }
+    .table-stack tr:last-child { border-bottom: none; }
+    /* Line break after c-main and c-pill */
+    .table-stack tr::after { content: ''; order: 2; flex-basis: 100%; height: 0; }
+    .table-stack td {
+        order: 3;
+        display: block;
+        min-width: 0;
+        max-width: 100% !important;
+        padding: 0 !important;
+        border: none;
+        background: none !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        font-size: 0.75rem !important;
+        color: var(--text-muted);
+    }
+    /* c-main first, c-pill right of it, whatever their order in the row */
+    .table-stack td.c-main { order: 0; flex: 1 1 0; font-size: 0.88rem !important; color: var(--text-primary); }
+    .table-stack td.c-pill { order: 1; flex: 0 0 auto; }
+    .table-stack td.c-extra { order: 4; flex: 1 1 100%; color: var(--text-secondary); }
+    .table-stack td.c-extra[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted); }
+    .table-stack td.c-hide { display: none; }
+    .table-stack td[colspan] { order: 1; flex: 1 1 100%; padding: 0.5rem 0 !important; }
+    .table-stack tr:hover td { background: none; }
+    .table-stack .table-stack { margin-top: 0.25rem; }
+
+    .help-field { white-space: normal; overflow-wrap: anywhere; }
+    .page-num { display: none !important; }
+    .pager { flex-wrap: wrap; justify-content: center !important; gap: 0.5rem; }
+    .page-label { display: inline-flex; align-items: center; color: var(--text-muted); font-size: 0.82rem; }
+}

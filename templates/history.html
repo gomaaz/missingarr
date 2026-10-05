@@ -145,7 +145,7 @@ function historyPage() {
     </template>
 
     <template x-if="rows.length > 0">
-        <table class="table">
+        <table class="table table-stack">
             <thead>
                 <tr>
                     <th style="white-space:nowrap;">Time</th>
@@ -161,8 +161,8 @@ function historyPage() {
             <tbody>
                 <template x-for="row in rows" :key="row.item_id">
                     <tr>
-                        <td style="color:var(--text-muted);font-size:0.78rem;white-space:nowrap;" x-text="fmtTime(row.started_at)"></td>
-                        <td>
+                        <td class="c-meta" style="color:var(--text-muted);font-size:0.78rem;white-space:nowrap;" x-text="fmtTime(row.started_at)"></td>
+                        <td class="c-meta">
                             <span class="badge"
                                 :class="{
                                     'badge-scheduled': row.item_type === 'episode',
@@ -173,19 +173,19 @@ function historyPage() {
                                 x-text="row.item_type">
                             </span>
                         </td>
-                        <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                        <td class="c-main" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                             :title="row.title" x-text="row.title"></td>
-                        <td style="font-size:0.85rem;white-space:nowrap;" x-text="row.instance_name"></td>
-                        <td>
+                        <td class="c-meta" style="font-size:0.85rem;white-space:nowrap;" x-text="row.instance_name"></td>
+                        <td class="c-meta">
                             <span class="badge"
                                 :class="row.arr_type === 'sonarr' ? 'badge-scheduled' : 'badge-online'"
                                 x-text="row.arr_type || '—'">
                             </span>
                         </td>
-                        <td>
+                        <td class="c-meta">
                             <span style="font-size:0.78rem;color:var(--text-muted);" x-text="skillLabel(row.skill)"></span>
                         </td>
-                        <td>
+                        <td class="c-pill">
                             <span class="badge"
                                 :class="{
                                     'badge-online': row.status === 'success',
@@ -199,7 +199,7 @@ function historyPage() {
                                 x-text="runLabel(row.status)">
                             </span>
                         </td>
-                        <td>
+                        <td class="c-extra" data-label="Verified">
                             <template x-if="row.command_status === 'legacy'">
                                 <span style="color:var(--text-muted);"
                                       title="Vor der Einführung der Belegpflicht angelegt">—</span>

@@ -47,18 +47,20 @@
 <div class="card" style="margin-bottom:1rem;">
     <div class="card-header"><strong>Field Reference</strong></div>
     <div class="card-body">
+    <div style="overflow-x:auto;">
     <table class="table">
         <thead><tr><th>Field</th><th>Description</th><th>Default</th></tr></thead>
         <tbody>
         {% for key, tip in tooltips.items() %}
         <tr>
-            <td style="font-weight:600;font-size:0.8rem;white-space:nowrap;color:var(--accent);">{{ (('checked search ' ~ key[3:]) if key.startswith('cs_') else key).replace('_', ' ').title() }}</td>
+            <td class="help-field" style="font-weight:600;font-size:0.8rem;color:var(--accent);">{{ (('checked search ' ~ key[3:]) if key.startswith('cs_') else key).replace('_', ' ').title() }}</td>
             <td style="font-size:0.82rem;color:var(--text-secondary);white-space:pre-wrap;">{{ tip }}</td>
             <td style="font-size:0.8rem;color:var(--text-muted);">—</td>
         </tr>
         {% endfor %}
         </tbody>
     </table>
+    </div>
     </div>
 </div>
 

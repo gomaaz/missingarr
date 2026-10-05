@@ -175,7 +175,7 @@ function searchedPage() {
 
     <template x-if="activeInstance !== null">
         <div class="card" style="overflow:hidden;">
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border);">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;padding:0.75rem 1rem;border-bottom:1px solid var(--border);">
                 <div style="display:flex;align-items:center;gap:0.75rem;">
                     <span style="font-weight:600;font-size:0.9rem;" x-text="activeInstanceName"></span>
                     <span style="font-size:0.8rem;color:var(--text-muted);" x-text="`${total} items`"></span>
@@ -199,7 +199,7 @@ function searchedPage() {
             </div>
 
             <div style="overflow-x:auto;">
-                <table class="table" style="table-layout:fixed;width:100%;">
+                <table class="table table-stack" style="table-layout:fixed;width:100%;">
                     <colgroup>
                         <col style="width:155px;">
                         <col style="width:80px;">
@@ -215,12 +215,12 @@ function searchedPage() {
                     <tbody>
                         <template x-for="item in items" :key="item.id">
                             <tr>
-                                <td style="font-size:0.78rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;white-space:nowrap;"
+                                <td class="c-meta" style="font-size:0.78rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;white-space:nowrap;"
                                     x-text="item.searched_at ? item.searched_at.replace('T',' ').substring(0,19) : '—'"></td>
-                                <td>
+                                <td class="c-meta">
                                     <span class="badge badge-scheduled" style="font-size:0.72rem;" x-text="item.item_type"></span>
                                 </td>
-                                <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                <td class="c-main" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                                     x-text="item.title" :title="item.title"></td>
                             </tr>
                         </template>
@@ -242,12 +242,13 @@ function searchedPage() {
                 </table>
             </div>
 
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
+            <div class="pager" style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
                 <span x-text="paginationLabel()"></span>
-                <div style="display:flex;gap:0.4rem;">
+                <div style="display:flex;gap:0.4rem;align-items:center;">
                     <button class="btn btn-secondary btn-sm" @click="goTo(tablePage - 1)" :disabled="tablePage === 0">← Prev</button>
+                    <span class="m-only page-label" x-text="'Page ' + (tablePage + 1) + ' / ' + pageCount()"></span>
                     <template x-for="p in pageCount()" :key="p">
-                        <button class="btn btn-sm"
+                        <button class="btn btn-sm page-num"
                                 :class="tablePage === p - 1 ? 'btn-primary' : 'btn-secondary'"
                                 @click="goTo(p - 1)"
                                 x-text="p"

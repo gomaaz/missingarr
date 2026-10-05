@@ -121,7 +121,7 @@ async function clearAllLogs() {
     <!-- Table -->
     <div class="card" style="overflow:hidden;">
         <div style="overflow-x:auto;">
-            <table class="table" style="table-layout:fixed;width:100%;">
+            <table class="table table-stack" style="table-layout:fixed;width:100%;">
                 <colgroup>
                     <col style="width:140px;">
                     <col style="width:130px;">
@@ -141,16 +141,16 @@ async function clearAllLogs() {
                 <tbody>
                     <template x-for="entry in pageEntries()" :key="entry._id">
                         <tr :class="`log-row-${entry.level}`">
-                            <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;font-family:'JetBrains Mono',monospace;"
+                            <td class="c-meta" style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;font-family:'JetBrains Mono',monospace;"
                                 x-text="fmt(entry.created_at)"></td>
-                            <td style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                            <td class="c-meta" style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                                 x-text="entry.instance_name" :title="entry.instance_name"></td>
-                            <td>
+                            <td class="c-pill">
                                 <span :class="`badge log-badge-${entry.level}`" x-text="entry.level"></span>
                             </td>
-                            <td style="font-size:0.78rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                            <td class="c-meta" style="font-size:0.78rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                                 x-text="(entry.skill || '').replace('_',' ')"></td>
-                            <td style="font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                            <td class="c-main" style="font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                                 x-text="entry.message" :title="entry.message"></td>
                         </tr>
                     </template>
@@ -167,12 +167,13 @@ async function clearAllLogs() {
         </div>
 
         <!-- Pagination -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
+        <div class="pager" style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;border-top:1px solid var(--border);font-size:0.82rem;color:var(--text-muted);">
             <span x-text="paginationLabel()"></span>
-            <div style="display:flex;gap:0.4rem;">
+            <div style="display:flex;gap:0.4rem;align-items:center;">
                 <button class="btn btn-secondary btn-sm" @click="page--" :disabled="page === 0">← Prev</button>
+                <span class="m-only page-label" x-text="'Page ' + (page + 1) + ' / ' + pageCount()"></span>
                 <template x-for="p in pageCount()" :key="p">
-                    <button class="btn btn-sm"
+                    <button class="btn btn-sm page-num"
                             :class="page === p - 1 ? 'btn-primary' : 'btn-secondary'"
                             @click="page = p - 1"
                             x-text="p"
@@ -194,5 +195,10 @@ async function clearAllLogs() {
 .log-badge-warn  { background: rgba(220,160,50,0.25); color: #e0a030; }
 .log-badge-error { background: rgba(220,50,50,0.25); color: #e05050; }
 .log-badge-debug { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+/* As a list entry the whole row carries the warning or error tint. */
+@media (max-width: 768px) {
+    .log-row-error { background: rgba(220,50,50,0.06); }
+    .log-row-warn  { background: rgba(220,160,50,0.06); }
+}
 </style>
 {% endblock %}

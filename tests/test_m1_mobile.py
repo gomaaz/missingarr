@@ -257,3 +257,94 @@ def test_card_head_has_the_mobile_layout_hooks(client):
     edit = page.index('/edit" class="btn btn-secondary btn-sm">Edit</a>', actions)
     assert head < title < actions < badge < test_button < edit
     assert 'class="icard-url"' in page
+
+
+# ── Tables as lists ──────────────────────────────────────────────────────────
+
+ROLES = {"c-main", "c-pill", "c-meta", "c-extra", "c-hide"}
+
+
+def stack_tables(page):
+    """HTML of each <table> whose class has table-stack, up to its first </table>."""
+    found, at = [], 0
+    while (at := page.find("table-stack", at)) >= 0:
+        start = page.rindex("<table", 0, at)
+        found.append(page[start:page.index("</table>", at)])
+        at += len("table-stack")
+    return found
+
+
+def row_roles(html):
+    """For every <tr> in html: the role classes of each of its <td>."""
+    rows = []
+    for tag, attrs in tags(html):
+        if tag == "tr":
+            rows.append([])
+        elif tag == "td" and rows:
+            rows[-1].append(sorted(set(attrs.get("class", "").split()) & ROLES))
+    return rows
+
+
+def assert_roles_valid(page):
+    tables = stack_tables(page)
+    assert tables
+    for html in tables:
+        for row in row_roles(html):
+            assert all(len(cell) <= 1 for cell in row), row
+            flat = [role for cell in row for role in cell]
+            assert flat.count("c-main") <= 1 and flat.count("c-pill") <= 1, row
+
+
+def test_logs_rows_become_list_entries(client):
+    page = client.get("/logs").text
+    assert_roles_valid(page)
+    [table] = stack_tables(page)
+    assert [["c-meta"], ["c-meta"], ["c-pill"], ["c-meta"], ["c-main"]] in row_roles(table)
+
+
+def test_history_rows_become_list_entries(client):
+    page = client.get("/history").text
+    assert_roles_valid(page)
+    [table] = stack_tables(page)
+    assert [["c-meta"], ["c-meta"], ["c-main"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-pill"], ["c-extra"]] \
+        in row_roles(table)
+    assert [a["data-label"] for t, a in tags(table) if t == "td" and "data-label" in a] == ["Verified"]
+
+
+def test_progressed_rows_become_list_entries(client):
+    make_instance()
+    page = client.get("/searched").text
+    assert_roles_valid(page)
+    [table] = stack_tables(page)
+    assert [["c-meta"], ["c-meta"], ["c-main"]] in row_roles(table)
+
+
+def test_instances_rows_become_list_entries(client):
+    make_instance()
+    page = client.get("/instances").text
+    assert_roles_valid(page)
+    [table] = stack_tables(page)
+    assert [["c-pill"], ["c-main"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-meta"], ["c-extra"]] \
+        in row_roles(table)
+
+
+def test_help_field_names_wrap_on_a_phone(client):
+    page = client.get("/help").text
+    cells = [a for t, a in tags(page) if t == "td" and a.get("class") == "help-field"]
+    assert len(cells) == len(TOOLTIPS)
+    assert all("nowrap" not in a["style"] for a in cells)
+    table = page.index("<thead><tr><th>Field</th>")
+    assert page.rindex('<div style="overflow-x:auto;">', 0, table) > page.rindex("Field Reference", 0, table)
+
+
+@pytest.mark.parametrize("path, label", [
+    ("/logs", "'Page ' + (page + 1) + ' / ' + pageCount()"),
+    ("/searched", "'Page ' + (tablePage + 1) + ' / ' + pageCount()"),
+])
+def test_pagers_show_page_x_of_y_on_a_phone(client, path, label):
+    make_instance()
+    items = tags(client.get(path).text)
+    labels = [a for t, a in items if "page-label" in a.get("class", "").split()]
+    assert [(a["class"], a["x-text"]) for a in labels] == [("m-only page-label", label)]
+    assert any("page-num" in a.get("class", "").split() for t, a in items if t == "button")
+    assert any("pager" in a.get("class", "").split() for t, a in items if t == "div")

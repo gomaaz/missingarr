@@ -106,11 +106,11 @@ Eine Tabelle mit der Klasse `table-stack` wird am Handy zur Liste. Jede Zelle be
 |---|---|
 | `c-main` | Zeile 1, volle Breite, normale Schrift, bricht um (Meldung, Titel, Releasename) |
 | `c-pill` | Zeile 1 rechts oben (Stufe, Ergebnis, Status) |
-| `c-meta` | Zeile 2, klein und gedämpft. Mehrere `c-meta`-Zellen stehen in einer Zeile, getrennt durch „ · “ (per `::before`) |
+| `c-meta` | Zeile 2, klein und gedämpft. Mehrere `c-meta`-Zellen stehen in einer Zeile, mit Abstand dazwischen (ein Trennzeichen bräuchte eine Markierung der ersten Zelle) |
 | `c-extra` | eigene kleine Zeile unter der Meta-Zeile, mit Beschriftung aus `data-label` (etwa „*arr: …“) |
 | `c-hide` | am Handy ausgeblendet |
 
-Ohne Rolle gilt eine Zelle als `c-meta`. Umsetzung: `thead` ausgeblendet; `tr` als Grid mit den Bereichen `main pill`, `meta meta`, `extra extra`; Zeilen durch die heutige feine Linie getrennt (keine Streifen). Die Hintergründe für Warnung und Fehler auf „Logs“ (`log-row-warn`, `log-row-error`) bleiben. Leere-Zeilen-Meldungen (`colspan`) stehen über die volle Breite.
+Ohne Rolle gilt eine Zelle als `c-meta`. Umsetzung: `thead` ausgeblendet; `tr` als Flexbox mit Umbruch und `order` (erst `main` und `pill`, dann ein Zeilenumbruch per `tr::after`, dann die Meta-Zellen, dann jede `extra`-Zelle auf eigener Zeile); Zeilen durch die heutige feine Linie getrennt (keine Streifen). Die Hintergründe für Warnung und Fehler auf „Logs“ (`log-row-warn`, `log-row-error`) bleiben. Leere-Zeilen-Meldungen (`colspan`) stehen über die volle Breite.
 
 ### Zuordnung
 
