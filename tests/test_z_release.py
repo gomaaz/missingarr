@@ -72,7 +72,8 @@ def test_no_host_details_in_new_files():
              *sorted((ROOT / "backend" / "imports").glob("*.py")), ROOT / "backend" / "api" / "imports.py",
              ROOT / "templates" / "imports.html", *sorted((ROOT / "tests").glob("test_h*_*.py")),
              ROOT / "tests" / "imports_fake_arr.py", ROOT / "CHANGELOG.md",
-             *sorted((ROOT / "tests").glob("test_f*_*.py"))]
+             *sorted((ROOT / "tests").glob("test_f*_*.py")),
+             ROOT / "scripts" / "mobile_check.py", ROOT / "tests" / "test_m1_mobile.py"]
     for path in files:
         text = path.read_text()
         for marker in ("/root/", "/home/", "/tmp/", "/mnt/", "/srv/"):
@@ -85,7 +86,7 @@ def test_readme_and_changelog_document_0_11_0():
     section = changelog[changelog.index("## [0.11.0]"):changelog.index("## [0.10.1]")]
     assert section.index("### Added") < section.index("### Changed")
     for text in ("tab bar", "More", "768 px", "44 × 44", "scripts/mobile_check.py", "on tap",
-                 "On a PC nothing changes"):
+                 "On a PC the layout does not change"):
         assert text in section, text
     readme = (ROOT / "README.md").read_text()
     assert readme.index("## Imports") < readme.index("## On the phone") < readme.index("## Example: Typical Home Setup")

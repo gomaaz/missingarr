@@ -261,6 +261,14 @@ if (!window.tooltipTapHooked) {
         event.preventDefault();
         icon.focus();
     });
+    // iOS Safari usually keeps the focus when a non-interactive part of the page
+    // is tapped, so close the help box explicitly.
+    document.addEventListener('pointerdown', function (event) {
+        var active = document.activeElement;
+        if (!active || !active.classList || !active.classList.contains('tooltip-icon')) return;
+        var hit = event.target && event.target.closest && event.target.closest('.tooltip-icon');
+        if (hit !== active && active.blur) active.blur();
+    });
 }
 
 // A boosted navigation swaps the whole body: close an open sheet first, or the
@@ -272,7 +280,17 @@ if (!window.sheetNavigationHooked) {
         var sheet = window.Alpine && Alpine.store('sheet');
         if (sheet && event.detail && event.detail.boosted) sheet.close();
     });
+    // Back/Forward restores a page from the history: it must not come back with a sheet.
+    document.addEventListener('htmx:historyRestore', function () {
+        var sheet = window.Alpine && Alpine.store('sheet');
+        if (sheet) sheet.close();
+    });
 }
+// Safety net for the same case, assigned (not added) so it survives this file running again.
+window.onpopstate = function () {
+    var sheet = window.Alpine && Alpine.store('sheet');
+    if (sheet) sheet.close();
+};
 
 // ── Countdown helper ──────────────────────────────────────────────────────────
 function countdownComponent(nextRunIso, status) {

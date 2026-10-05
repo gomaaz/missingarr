@@ -176,7 +176,7 @@ The API: `GET /api/imports` (every instance with its downloads), `GET /api/impor
 
 ## On the phone
 
-Up to 768 px wide (most phones held upright) missingarr arranges the same pages for a phone; on a PC nothing changes.
+Up to 768 px wide (most phones held upright) missingarr arranges the same pages for a phone; on a PC the layout does not change.
 
 - **Tab bar** at the bottom: Dashboard, Imports (with the counter of waiting imports), Pre-filter, Logs and **More**. More opens a sheet with Instances, History, Progressed, Help, GitHub, the version and *Sign out*; it closes with a tap beside it, ✕ or Escape.
 - **Lists instead of wide tables** on Logs, Pre-filter, History, Progressed and Instances: the message or title on top, time and instance below, level or outcome on the right. A tap on a Pre-filter entry shows its candidates.

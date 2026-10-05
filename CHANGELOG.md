@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Every button, field, select and checkbox label is at least 44 × 44 px on a phone, and fields use 16 px text so Safari does not zoom in on focus.
 - The **?** help texts also open on tap and with the keyboard (focus), not only on mouse hover; on a phone they appear in a box above the tab bar.
-- On a PC nothing changes.
+- On a PC the layout does not change.
 
 ## [0.10.1] - 2026-10-03
 

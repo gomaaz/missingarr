@@ -179,6 +179,13 @@ out.poll = sheet.name;
 listeners['htmx:beforeSwap']({ detail: { boosted: true } });
 out.navigation = [sheet.name, [...classes], focused.slice(-1)];
 out.hooks = added.filter(n => n === 'htmx:beforeSwap').length;
+sheet.open('more', node('more-tab'));
+listeners['htmx:historyRestore']({ detail: {} });
+out.restore = [sheet.name, [...classes]];
+sheet.open('more', node('more-tab'));
+window.onpopstate({});
+out.popstate = [sheet.name, [...classes]];
+out.restoreHooks = added.filter(n => n === 'htmx:historyRestore').length;
 """)
     assert out["start"] is None
     assert out["opened"] == ["more", ["sheet-open"], ["instances-link"]]
@@ -188,6 +195,28 @@ out.hooks = added.filter(n => n === 'htmx:beforeSwap').length;
     assert out["poll"] == "filter"                 # a card poll (not boosted) leaves it open
     assert out["navigation"] == [None, [], ["first-select"]]   # the old opener is gone: no focus
     assert out["hooks"] == 1                       # registered once, although app.js ran twice
+    assert out["restore"] == [None, []]            # Back/Forward (history restore) closes the sheet
+    assert out["popstate"] == [None, []]           # safety net when the restore event does not fire
+    assert out["restoreHooks"] == 1
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_help_box_closes_when_tapping_beside_it(tmp_path):
+    out = run_sheet_js(tmp_path, """
+let blurs = 0;
+const icon = { classList: { contains: c => c === 'tooltip-icon' }, blur() { blurs++; } };
+document.activeElement = icon;
+listeners['pointerdown']({ target: { closest: () => icon } });
+out.inside = blurs;
+listeners['pointerdown']({ target: { closest: () => null } });
+out.outside = blurs;
+document.activeElement = null;
+listeners['pointerdown']({ target: { closest: () => null } });
+listeners['pointerdown']({});
+out.safe = blurs;
+out.hooks = added.filter(n => n === 'pointerdown').length;
+""")
+    assert out == {"inside": 0, "outside": 1, "safe": 1, "hooks": 1}
 
 
 # ── Touch targets, help on tap, form and login ───────────────────────────────
