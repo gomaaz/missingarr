@@ -125,7 +125,7 @@ def cutoff_episode(i):
 
 
 def test_pages_beyond_ten_are_reached_and_cached_pages_are_topped_up(db_path, monkeypatch):
-    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1)
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="wanted_list_only")
     monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
     cache_all(inst["id"], [f"upg:sea:{i}:1" for i in range(1, 701)])  # pages 1-14 of 20
     agent = agent_for(inst, cutoff=[cutoff_episode(i) for i in range(1, 1001)])
@@ -146,7 +146,7 @@ def test_all_sources_failing_is_an_error_not_an_empty_result(db_path):
 
 
 def test_sonarr_cutoff_list_failing_is_an_error(db_path):
-    inst = make_instance(search_upgrades_enabled=True)
+    inst = make_instance(search_upgrades_enabled=True, upgrade_source="wanted_list_only")
     agent = agent_for(inst, get_errors={CUTOFF: requests.exceptions.ReadTimeout("slow")})
     run_upgrades(agent)
     assert last_run()["status"] == "error"

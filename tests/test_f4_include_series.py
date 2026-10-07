@@ -57,7 +57,8 @@ def test_radarr_reads_the_wanted_list_as_before(db_path):
 
 
 def test_a_sonarr_upgrade_takes_the_profile_from_the_embedded_series(db_path):
-    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True)
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True,
+                         upgrade_source="wanted_list_only")
     episode = {**guest_episode(), "hasFile": True}
     agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[GUEST_SERIES])
     SearchUpgradesSkill().execute(agent)
@@ -104,7 +105,8 @@ def test_radarr_wanted_pages_keep_the_default_timeout(db_path):
 
 
 def test_sonarr_cutoff_pages_get_the_long_timeout_and_trimmed_series(db_path, monkeypatch):
-    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True)
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True,
+                         upgrade_source="wanted_list_only")
     episode = {**guest_episode(), "hasFile": True}
     agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[FULL_SERIES])
     seen = []

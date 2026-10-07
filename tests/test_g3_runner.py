@@ -2240,7 +2240,8 @@ def test_radarr_upgrade_skips_the_release_of_the_existing_file(db_path):
 
 
 def test_sonarr_upgrade_works_per_episode(db_path):
-    inst = make_instance(name="Sonarr", type="sonarr", checked_search="dry_run", search_upgrades_enabled=True)
+    inst = make_instance(name="Sonarr", type="sonarr", checked_search="dry_run", search_upgrades_enabled=True,
+                         upgrade_source="wanted_list_only")
     episode = {**guest_episode(), "hasFile": True}
     agent = agent_for(inst, cutoff=[episode], episodes=[episode], series=[GUEST_SERIES],
                       releases={3: [release("The.Guest.S01E03.1080p-GRP", "g1", series_id=10, episode_ids=(3,))]})
@@ -2320,6 +2321,7 @@ def test_a_season_upgrade_cached_by_the_command_blocks_its_episodes_in_checked_m
     # Codex round 2, F5: 0.8.0 cached Sonarr upgrades per season; switching to
     # the checked search (per episode) must not release them early.
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrade_source="wanted_list_only",
                          upgrades_per_run=1, search_again_after_profile_change=search_again)
     db.searched.add(inst["id"], "upg:sea:10:1", "The Guest S01", "season")      # 0.8.0: no fingerprint
     episode = {**guest_episode(), "hasFile": True}
@@ -2338,7 +2340,7 @@ def test_an_episode_upgrade_without_a_grab_holds_only_itself(db_path):
     # episode of the same season still brings the season search (decision
     # owner decision 02.10.2026: only a grab holds the season).
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="off", search_upgrades_enabled=True,
-                         upgrades_per_run=1)
+                         upgrades_per_run=1, upgrade_source="wanted_list_only")
     run = history.start_run(inst["id"], "Sonarr", "search_upgrades")
     history.record_checked(run, inst["id"], "The Guest S01E03", 3, "episode", "upg:3", "no_hit")
     episode = {**guest_episode(), "hasFile": True}
@@ -2377,6 +2379,7 @@ def test_a_checked_episode_upgrade_holds_its_season_search_in_off_mode(db_path, 
     # during searches. While the grab blocks, the command path leaves the
     # season alone — no single episode commands instead.
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
+                         upgrade_source="wanted_list_only",
                          upgrades_per_run=1, checked_search_settings={"search_again_after_days": 3})
     episode, free = grab_e03_upgrade(inst, outcome)
     left = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES])   # E03 off the list
@@ -2393,7 +2396,7 @@ def test_a_checked_episode_upgrade_holds_its_season_search_in_off_mode(db_path, 
 
 def test_a_held_season_upgrade_is_free_after_a_profile_change(db_path):
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
-                         upgrades_per_run=1)
+                         upgrades_per_run=1, upgrade_source="wanted_list_only")
     episode, free = grab_e03_upgrade(inst)
     changed = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES],
                         profiles=changed_profiles())
@@ -2403,7 +2406,7 @@ def test_a_held_season_upgrade_is_free_after_a_profile_change(db_path):
 
 def test_a_checked_episode_upgrade_does_not_hold_its_siblings_in_checked_mode(db_path):
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
-                         upgrades_per_run=1)
+                         upgrades_per_run=1, upgrade_source="wanted_list_only")
     episode, free = grab_e03_upgrade(inst, then_off=False)
     sibling = agent_for(inst, cutoff=[free], episodes=[episode, free], series=[GUEST_SERIES])
     SearchUpgradesSkill().execute(sibling)
@@ -2414,7 +2417,7 @@ def test_an_unsaved_checked_upgrade_grab_holds_its_season(db_path, monkeypatch):
     # The database refuses the grab's bookkeeping: until a later run stores
     # it, the grab in memory holds its season for the command path as well.
     inst = make_instance(name="Sonarr", type="sonarr", checked_search="active", search_upgrades_enabled=True,
-                         upgrades_per_run=1)
+                         upgrades_per_run=1, upgrade_source="wanted_list_only")
     episode, free = {**guest_episode(), "hasFile": True}, {**guest_episode(4), "hasFile": True}
     agent = agent_for(inst, cutoff=[episode], episodes=[episode, free], series=[GUEST_SERIES],
                       releases={3: [release(E03_UPGRADE, "g1", series_id=10, episode_ids=(3,))]},

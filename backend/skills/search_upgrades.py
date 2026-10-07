@@ -8,7 +8,7 @@ from backend.checked_search.runner import (
     run_checked,
 )
 from backend.checked_search.settings import CheckedSearchSettings
-from backend.skills.profiles import PROFILE_TIMEOUT, ProfileState, trim_embedded_series
+from backend.skills.profiles import PROFILE_TIMEOUT, SERIES_PATH, ProfileState, trim_embedded_series
 from backend.skills.profiles import refresh as refresh_profiles
 from backend.skills.base import (
     BaseSkill, SearchResult, SubmitOutcome, finish_search_run, store_unsaved_submissions,
@@ -17,11 +17,14 @@ from backend.skills.base import (
 
 CUTOFF_PATH = "/api/v3/wanted/cutoff"
 MOVIES_PATH = "/api/v3/movie"
+EPISODES_PATH = "/api/v3/episode"
 
 # Random pages read per run and source. No ten-page ceiling: every page of the
 # cutoff list is reachable, and a page whose entries are all cached is simply
 # followed by the next unvisited one (A5).
 UPGRADE_PAGE_BUDGET = 20
+# Sonarr "monitored episodes" (0.13.0): episode lists read per run at most.
+MONITORED_SERIES_BUDGET = 10
 
 
 class SearchUpgradesSkill(BaseSkill):
@@ -32,7 +35,10 @@ class SearchUpgradesSkill(BaseSkill):
         "monitored_items_only": ("monitored",),
         "both": ("cutoff", "monitored"),
     }
-    SOURCE_LABELS = {"cutoff": "cutoff list", "monitored": "monitored movies"}
+    SOURCE_LABELS = {
+        "radarr": {"cutoff": "cutoff list", "monitored": "monitored movies"},
+        "sonarr": {"cutoff": "cutoff list", "monitored": "monitored episodes"},
+    }
 
     def execute(self, agent, force: bool = False) -> None:
         cfg = agent.config
@@ -193,10 +199,9 @@ class SearchUpgradesSkill(BaseSkill):
                             queued=frozenset(), paused=frozenset()):
         """Returns (candidates, failed sources, notes, number of sources asked).
         queued, paused: see _keep_uncached; the notes say how many were left out."""
-        if cfg["type"] == "radarr":
-            sources = self.SOURCES.get(cfg.get("upgrade_source", "monitored_items_only"), ("monitored",))
-        else:
-            sources = ("cutoff",)
+        # Sonarr follows the setting since 0.13.0 (before: the cutoff list only).
+        sources = self.SOURCES.get(cfg.get("upgrade_source", "monitored_items_only"), ("monitored",))
+        labels = self.SOURCE_LABELS["radarr" if cfg["type"] == "radarr" else "sonarr"]
 
         found: list = []
         seen: set = set()
@@ -210,11 +215,14 @@ class SearchUpgradesSkill(BaseSkill):
                 if source == "cutoff":
                     self._collect_cutoff(agent, cfg, per_run, force, found, seen, notes,
                                          checked, round_keys, profiles, **queue)
-                else:
+                elif cfg["type"] == "radarr":
                     self._collect_monitored(agent, cfg, per_run, force, found, seen, checked, round_keys, profiles,
                                             **queue)
+                else:
+                    self._collect_monitored_episodes(agent, cfg, per_run, force, found, seen, notes,
+                                                     checked, round_keys, profiles, **queue)
             except Exception as exc:
-                failures.append(f"{self.SOURCE_LABELS[source]}: {exc}")
+                failures.append(f"{labels[source]}: {exc}")
 
         random.shuffle(found)
         return (found[:per_run], failures, queue_note(len(left_out)) + pause_note(len(left_paused)) + notes,
@@ -371,3 +379,69 @@ class SearchUpgradesSkill(BaseSkill):
         random.shuffle(items)
         self._keep_uncached(agent, cfg, items, force, found, seen, limit, checked, round_keys, profiles,
                             **left_out)
+
+    def _collect_monitored_episodes(self, agent, cfg, per_run, force, found, seen, notes, checked=False,
+                                    round_keys=None, profiles=None, **left_out) -> None:
+        """Sonarr "monitored episodes" (0.13.0): monitored episodes of
+        monitored series whose file scores below the cutoff format score of
+        the series' quality profile. The cutoff list judges the quality only:
+        a file that reached a quality cutoff (a group such as HD) is never
+        listed there, however far below the score cutoff it is.
+
+        Reads the series list once, then the episode lists of at most
+        MONITORED_SERIES_BUDGET random series with files, and stops early
+        with enough candidates. The lowest score comes first (ties in random
+        order), so a file grabbed only as a stand-in is searched first.
+        A failing episode list is skipped with a note; a failing series list
+        fails the source. left_out: see _keep_uncached."""
+        profiles = profiles or ProfileState()
+        limit = len(found) + per_run
+        enough = max(per_run * 20, 20)
+        answer = agent.http_get(SERIES_PATH, timeout=PROFILE_TIMEOUT)
+        series_list = []
+        for series in answer if isinstance(answer, list) else []:
+            if not isinstance(series, dict) or "id" not in series or series.get("monitored") is not True:
+                continue
+            files = (series.get("statistics") or {}).get("episodeFileCount") or 0
+            if not isinstance(files, int) or files <= 0:
+                continue
+            if profiles.upgrade_cutoff(series.get("qualityProfileId")) is None:
+                continue
+            # Only what a candidate needs: the full list can be tens of MB.
+            series_list.append({"id": series["id"], "title": series.get("title"),
+                                "qualityProfileId": series.get("qualityProfileId")})
+        del answer
+        random.shuffle(series_list)
+
+        scored = []
+        for series in series_list[:MONITORED_SERIES_BUDGET]:
+            if len(scored) >= enough or agent.stop_requested():
+                break
+            title = series["title"] or f"Series #{series['id']}"
+            try:
+                episodes = agent.http_get(EPISODES_PATH,
+                                          params={"seriesId": series["id"], "includeEpisodeFile": "true"})
+            except Exception as exc:
+                notes.append(f"episodes of {title} could not be loaded: {exc}")
+                continue
+            cutoff = profiles.upgrade_cutoff(series["qualityProfileId"])
+            for episode in episodes if isinstance(episodes, list) else []:
+                score = self._file_score(episode)
+                if score is None or score >= cutoff:
+                    continue
+                item = self._cutoff_item("sonarr", {**episode, "seriesId": series["id"], "series": series})
+                if item is not None:
+                    scored.append((score, item))
+        random.shuffle(scored)
+        scored.sort(key=lambda pair: pair[0])
+        self._keep_uncached(agent, cfg, [item for _, item in scored], force, found, seen, limit, checked,
+                            round_keys, profiles, **left_out)
+
+    @staticmethod
+    def _file_score(episode) -> int | None:
+        """customFormatScore of a monitored episode's file; None without one."""
+        if not isinstance(episode, dict) or episode.get("monitored") is not True or not episode.get("hasFile"):
+            return None
+        episode_file = episode.get("episodeFile")
+        score = episode_file.get("customFormatScore") if isinstance(episode_file, dict) else None
+        return score if type(score) is int else None
