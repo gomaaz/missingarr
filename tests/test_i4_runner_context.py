@@ -159,3 +159,11 @@ def test_the_imports_page_judges_as_before():
     v = judge_show("Some.Show.S01E01.Lost.in.the.Woods.German.1080p.WEB.h264-GRP", sonarr_parse("Some Show"))
     assert v.state == ic.VERDICT_FITS
     assert not {REASON_NAMESAKE, REASON_OTHER_EPISODE, REASON_NUMBERING} & set(v.reasons)
+
+
+def test_without_s6_the_episode_list_is_neither_read_nor_needed(db_path):
+    inst = sonarr(checked_search_settings={"check_episode_title": False})
+    agent = paw_agent(inst, [paw_release(OTHER, "g1", ENGLISH)], get_errors={EPISODES + "$": http_error(500)})
+    SearchMissingSkill().execute(agent)
+    assert reads(agent, EPISODES) == []
+    assert agent.posts == [{**episode_grab("g1"), "languages": ENGLISH}]

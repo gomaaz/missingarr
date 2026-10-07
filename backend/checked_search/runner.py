@@ -593,16 +593,31 @@ class _TitleCheck:
             raise cached
         return cached
 
-    def numbering_doubt(self, info, releases: list[_Release]) -> tuple[frozenset, ...]:
+    def gate(self, task: CheckedTask, info, release: _Release) -> str | None:
+        """Why the release never reaches the rules, or None."""
+        if not self.mapped_here(task, info, release):
+            return REASON_TARGET
+        if release.full_season:
+            return REASON_SEASON_PACK
+        if len(set(release.mapped_episode_ids)) > 1:
+            # Single episodes only (decision of 01.10.2026): the rules and the
+            # cache would cover the searched episode alone.
+            return REASON_MULTI_EPISODE
+        return None
+
+    def numbering_doubt(self, task: CheckedTask, info, releases: list[_Release]) -> tuple[frozenset, ...]:
         """S7: the languages of each release of the list whose episode title
-        names another episode (S6). Empty for Radarr, with S6 or S7 off,
-        without a release that carries a title, or when the episode list
-        cannot be read (S6 then marks the titled releases unchecked)."""
+        names another episode (S6). Only releases that reach the rules count:
+        a double episode named after its other part proves nothing. Empty for
+        Radarr, with S6 or S7 off, without a release that carries a title, or
+        when the episode list cannot be read (S6 then marks the titled
+        releases unchecked)."""
         if self.arr_type == "radarr" or info.episode_number is None or not (
                 self.settings.check_episode_title and self.settings.untitled_after_other_episode):
             return ()
         series_title = info.series_titles[0] if info.series_titles else ""
-        titled = [r for r in releases if episode_titles.needs_episode_list(r.title, series_title)]
+        titled = [r for r in releases if self.gate(task, info, r) is None
+                  and episode_titles.needs_episode_list(r.title, series_title)]
         if not titled:
             return ()
         try:
@@ -633,14 +648,9 @@ class _TitleCheck:
         return context
 
     def verdict(self, task: CheckedTask, info, release: _Release, doubt: tuple = ()) -> Verdict:
-        if not self.mapped_here(task, info, release):
-            return Verdict((REASON_TARGET,))
-        if release.full_season:
-            return Verdict((REASON_SEASON_PACK,))
-        if len(set(release.mapped_episode_ids)) > 1:
-            # Single episodes only (decision of 01.10.2026): the rules and the
-            # cache would cover the searched episode alone.
-            return Verdict((REASON_MULTI_EPISODE,))
+        gate = self.gate(task, info, release)
+        if gate is not None:
+            return Verdict((gate,))
         try:
             parsed = self.agent.http_get(PARSE_PATH, params={"title": release.title})
         except Exception as exc:
@@ -777,7 +787,7 @@ class _TitleCheck:
 
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
         # S7 looks at the whole list before the first clean release is picked.
-        doubt = self.numbering_doubt(info, releases[:limit])
+        doubt = self.numbering_doubt(task, info, releases[:limit])
         candidates: list[dict] = []
         pick: _Release | None = None
         parse_failures: list[str] = []

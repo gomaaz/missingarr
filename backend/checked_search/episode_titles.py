@@ -58,6 +58,14 @@ amzn nf dsnp atvp hmax hulu pcok pmtp itv itvx iplayer rte stan crav roku tubi j
 arte mdr ndr wdr swr mtod tving wavve viu wetv funi adn
 """.split())
 
+# Of those, the tokens that never start a title: resolution aside, sources
+# and codecs. The others ('Real', 'Spanish', 'Web', 'Complete') also begin
+# titles ('Spanish.Fry', 'Web.of.Lies'); S7 looks past them.
+_HARD_TOKENS = frozenset("""
+4k uhd webdl web-dl webrip web-rip webhd hdtv pdtv sdtv dsrip satrip dvbrip bluray blu-ray bdrip brrip bdremux
+remux dvdrip dvd5 dvd9 dvdr hdrip tvrip vhsrip hevc avc x264 x265 h264 h265 xvid divx
+""".split())
+
 # Words that do not count as title words.
 STOP_WORDS = frozenset("""
 the a an of and or in on at to for is it its with from by as
@@ -141,12 +149,42 @@ def needs_episode_list(release: str, series_title: str) -> bool:
     return bool(part) and not is_generic(part) and len(_title_words(part, series_title)) >= MIN_WORDS
 
 
+def _is_hard_token(token: str) -> bool:
+    low = token.lower()
+    head = low.split("-")[0]
+    return any(_RESOLUTION.match(t) or t in _HARD_TOKENS for t in (low, head) if t)
+
+
+def _words_before_quality(release: str) -> str:
+    """Words between SxxEyy and the first source or codec token, without the
+    other quality and language tokens: what could still be a title when the
+    title part ends early ('Spanish.Fry.1080p' -> 'Fry')."""
+    match = _SXXEYY.search(release or "")
+    tokens = [t for t in _TOKEN_SPLIT.split(release[match.end():]) if t] if match else []
+    taken: list[str] = []
+    hit_hard = False
+    for token in tokens:
+        if _is_hard_token(token):
+            hit_hard = True
+            break
+        if not _is_stop_token(token):
+            taken.append(token)
+    if not hit_hard and taken and "-" in taken[-1]:
+        taken[-1] = taken[-1].rsplit("-", 1)[0]
+    return " ".join(taken)
+
+
 def is_untitled(release: str, series_title: str) -> bool:
-    """SxxEyy without any title, or with a placeholder only (S7)."""
+    """SxxEyy without any title, or with a placeholder only (S7). A title
+    that begins with a quality or language word ('Spanish.Fry') is a title:
+    S6 does not compare it, and S7 leaves it alone."""
     part = release_title_part(release)
     if part is None:
         return False
-    return not part or is_generic(part) or not _title_words(part, series_title)
+    if part and not is_generic(part) and _title_words(part, series_title):
+        return False
+    rest = _words_before_quality(release)
+    return is_generic(rest) or not _title_words(rest, series_title)
 
 
 def episode_list(resources) -> tuple[tuple[int, int, str], ...]:

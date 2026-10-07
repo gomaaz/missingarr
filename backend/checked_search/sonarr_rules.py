@@ -30,8 +30,9 @@ from backend.checked_search.verdict import (
 )
 
 _YEAR = re.compile(r"^(18|19|20)\d\d$")
-# The last word of a title with what surrounds it ("Nemesis (2026)" -> " (2026)").
-_LAST_WORD = re.compile(r"[\W_]*[^\W_]+[\W_]*$")
+# The last word of a title, bracketed or not, and what stands before it
+# ("Nemesis (2026)" -> "Nemesis", "(", "2026", ")"; "Alex & CO" -> "Alex &", "", "CO", "").
+_TAIL = re.compile(r"^(?P<head>.*?[^\W_].*?)[\s._-]*(?P<open>[(\[]?)\s*(?P<word>[^\W_]+)\s*(?P<close>[)\]]?)[\s._-]*$")
 _NAME_SPLIT = re.compile(r"[ ._\-()\[\]]+")
 
 
@@ -119,14 +120,28 @@ def title_suffix(series_title: str, codes) -> tuple[int, str]:
     return year, country
 
 
-def base_keys(title: str, codes) -> set[str]:
+def base_keys(title: str, codes, series_year: int = 0) -> set[str]:
     """Compact spellings of a series title, with and without its year or
-    country suffix ('Nemesis (2026)' -> nemesis2026, nemesis). The suffix is
-    cut from the original text, so umlaut and '&' spellings stay."""
-    year, country = title_suffix(title, codes)
-    base = title
-    for _ in range((1 if year else 0) + (1 if country else 0)):
-        base = _LAST_WORD.sub("", base)
+    country suffix ('Nemesis (2026)' -> nemesis2026, nemesis). Only what is
+    written as a suffix is cut: a country code in capitals or brackets
+    ('Some Show US', 'Some Show (AU)', not 'Among Us'), a year in brackets or
+    within a year of the series' own ('Lost in 1949' stays whole). At most
+    one of each; the first word always stays. The cut is made in the
+    original text, so umlaut and '&' spellings stay."""
+    known = {c.upper() for c in codes}
+    base, year, country = title, False, False
+    for _ in range(2):
+        match = _TAIL.match(base)
+        if not match:
+            break
+        word, bracketed = match.group("word"), bool(match.group("open") and match.group("close"))
+        if not year and _YEAR.match(word) and (bracketed or (series_year and abs(int(word) - series_year) <= 1)):
+            year = True
+        elif not country and word.upper() in known and (bracketed or word.isupper()):
+            country = True
+        else:
+            break
+        base = match.group("head")
     return variants(title) | variants(base)
 
 
@@ -142,7 +157,7 @@ def namesake_index(series_list, codes) -> dict[str, frozenset[tuple[int, int]]]:
         titles += [alt.get("title") for alt in series.get("alternateTitles") or [] if isinstance(alt, dict)]
         for title in titles:
             if isinstance(title, str) and title:
-                for key in base_keys(title, codes):
+                for key in base_keys(title, codes, year):
                     index.setdefault(key, set()).add((series["id"], year))
     return {key: frozenset(pairs) for key, pairs in index.items()}
 

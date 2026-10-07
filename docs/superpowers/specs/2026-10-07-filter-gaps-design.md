@@ -41,7 +41,7 @@ Ein Release fällt mit Grund `other series by name` weg, wenn alle vier Bedingun
 1. `/parse` nennt keine Serie (`series` fehlt oder ist `null`).
 2. `parsedEpisodeInfo.seriesTitleInfo.year` ist 0 oder fehlt.
 3. Der geparste Serientitel trägt keinen Zusatz: `title_suffix(seriesTitle, country_codes)` ergibt `(0, "")`.
-4. Eine kompakte Schreibweise des geparsten Serientitels (`normalize.variants`) ist der **Grundtitel** einer **anderen** Serie der Bibliothek. Grundtitel einer Serie: ihr Titel und jeder Alternativtitel, jeweils ohne den Zusatz am Ende (Jahr oder Ländercode, ermittelt mit `title_suffix` und den Ländercodes der Instanz; abgeschnitten wird am Originaltext, damit Umlaut- und `&`-Schreibweisen über `variants` erhalten bleiben), und zusätzlich ihr voller Titel. Die Zielserie selbst zählt nicht. Präfix- oder Wortvergleiche gibt es nicht („My Royal Nemesis“ ist kein Namensvetter von „Nemesis“).
+4. Eine kompakte Schreibweise des geparsten Serientitels (`normalize.variants`) ist der **Grundtitel** einer **anderen** Serie der Bibliothek. Grundtitel einer Serie: ihr Titel und jeder Alternativtitel, jeweils ohne den Zusatz am Ende, und zusätzlich ihr voller Titel. Als Zusatz zählt nur, was als Zusatz geschrieben ist (Nachtrag nach der Prüfung, siehe unten): ein Ländercode der Instanz in Großbuchstaben oder in Klammern (`Some Show US`, `Some Show (AU)`, nicht `Among Us`), ein Jahr in Klammern oder höchstens ein Jahr vom Jahr der Serie entfernt (`Lost in 1949` bleibt ganz); höchstens je eins, das erste Wort bleibt immer. Abgeschnitten wird am Originaltext, damit Umlaut- und `&`-Schreibweisen über `variants` erhalten bleiben (`Alex & CO` → `alexund`, nicht `alex`). Die Zielserie selbst zählt nicht. Präfix- oder Wortvergleiche gibt es nicht („My Royal Nemesis“ ist kein Namensvetter von „Nemesis“).
 
 Ausnahme: Steht das Jahr der Zielserie (`series.year`) im Releasenamen als eigenes Wort (zwischen Trennzeichen `.`, ` `, `_`, `-`, `(`, `)`, `[`, `]`), und hat keiner der gefundenen Namensvetter dieses Jahr, fällt das Release nicht weg (`Nemesis.S01E03.2026.1080p…` für „Nemesis (2026)“).
 
@@ -75,7 +75,7 @@ Gemessen: 12 gewählte Releases gesperrt, alle richtig (CatDog, American Dad mit
 
 ### S7, Zählung zweifelhaft
 
-Ergibt S6 für mindestens ein Release der Ergebnisliste `other episode by title`, zeigt das, dass Releases dieser Liste für die gesuchte Nummer eine andere Folge enthalten können. Dann fällt jedes Release **ohne prüfbaren Titel** (kein Titelteil oder nur Platzhalter) dieser Liste mit Grund `episode numbering in doubt` weg, wenn alle seine Sprachen auch Sprachen des belastenden Releases sind. Sprachen: `languages[].name` aus `GET /api/v3/release`. Hat eines der beiden Releases keine oder nur „Unknown“ als Sprache, greift S7 für dieses Paar nicht. So bleiben deutsche und Dual-Language-Releases frei, wenn ein englisches Release die andere Zählung zeigt.
+Ergibt S6 für mindestens ein Release der Ergebnisliste `other episode by title`, zeigt das, dass Releases dieser Liste für die gesuchte Nummer eine andere Folge enthalten können. Mit zählen nur Releases, die die Regeln erreichen (dieser Folge zugeordnet, kein Staffelpaket, keine Mehrfachfolge): Eine Doppelfolge, die nach ihrem anderen Teil benannt ist, beweist keine andere Zählung (Nachtrag nach der Prüfung). Dann fällt jedes Release **ohne prüfbaren Titel** (kein Titelteil oder nur Platzhalter, und auch zwischen `SxxEyy` und dem ersten Quellen- oder Codec-Token wie `WEB-DL`, `1080p`, `x264` steht außer Qualitäts- und Sprachwörtern kein Titelwort; `Spanish.Fry` oder `Web.of.Lies` zählen als Titel) dieser Liste mit Grund `episode numbering in doubt` weg, wenn alle seine Sprachen auch Sprachen des belastenden Releases sind. Sprachen: `languages[].name` aus `GET /api/v3/release`. Hat eines der beiden Releases keine oder nur „Unknown“ als Sprache, greift S7 für dieses Paar nicht. So bleiben deutsche und Dual-Language-Releases frei, wenn ein englisches Release die andere Zählung zeigt.
 
 S7 wertet die ganze Liste aus, bevor das erste saubere Release gewählt wird (eine reine Vorabprüfung der Releasenamen gegen die Folgenliste, ohne zusätzliche Anfragen).
 
@@ -105,3 +105,13 @@ Gemessen: zusammen mit S6 in der Active-Nacht 10 von 11 CatDog-Fehlgriffen gespe
 ## Einführung
 
 Nach dem Einspielen: in beiden Sonarr-Instanzen `IL` in die gespeicherten Ländercodes aufnehmen (gespeicherte Werte überschreiben die Voreinstellung). Serien mit bekannt abweichender Zählung, die vor 0.12.0 aus der Überwachung genommen wurden, bleiben so, bis die Seite Pre-filter zeigt, dass S6 und S7 ihre Releases zuverlässig sperren.
+
+## Nachtrag nach der Prüfung (07.10.2026)
+
+Eine Prüfung aus fünf Blickwinkeln mit Gegenprüfung fand drei Lücken im Verhalten; alle drei sind behoben, die Messung über die echten Listen ergibt danach dieselben Sperren wie vorher (S6: 12 gewählte Releases, S7: nur CatDog-Listen):
+
+1. **S7-Zweifel aus Releases, die die Regeln nie sehen.** Eine Doppelfolge (`S01E02E03`), die nach ihrem ersten Teil benannt ist, galt bei der Suche nach dem zweiten Teil als „andere Folge“ und sperrte das richtige Release ohne Titel. Jetzt zählen nur Releases, die die Tore des Runners passieren (`_TitleCheck.gate`, dieselben Tore wie in `verdict`).
+2. **Titel, die mit einem Qualitäts- oder Sprachwort beginnen** (`Spanish.Fry`, `Real.Cats.Wear.Plaid`, `Web.of.Lies`), galten als titellos und konnten von S7 gesperrt werden. Jetzt ist ein Release nur titellos, wenn auch vor dem ersten Quellen- oder Codec-Token kein Titelwort steht. S6 selbst vergleicht wie gemessen.
+3. **S5 schnitt normale Wörter als Zusatz ab** (`Killing It (2022)` → `killing`, `Among Us` → `among`, `Alex & Co` → `alex`). Jetzt zählt nur ein als Zusatz geschriebener Ländercode oder ein Jahr wie oben bei S5 beschrieben. Nemesis wird weiter gesperrt (5 gewählte Releases).
+
+Dazu: Tooltip und CHANGELOG nennen die zweite Bedingung der Jahres-Ausnahme, und Schutztests für Squeeze, Zwei-Titel-Regel, die Kategorien `other_weak`/`target_generic`/`too_short`, „Unknown“ und S6 aus.

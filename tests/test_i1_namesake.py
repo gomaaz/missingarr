@@ -3,6 +3,8 @@ and that is also the title of another series of the library (pure functions,
 invented series)."""
 from datetime import datetime, timezone
 
+import pytest
+
 from backend.checked_search import sonarr_rules as sr
 from backend.checked_search.settings import DEFAULT_COUNTRY_CODES, CheckedSearchSettings
 from backend.checked_search.verdict import REASON_NAMESAKE
@@ -100,3 +102,30 @@ def test_the_parsed_year_is_read():
     parse = {"parsedEpisodeInfo": {"seriesTitle": "Some Show", "seriesTitleInfo": {"year": 2020}}, "series": None}
     assert sr.parse_from_resource(parse) == sr.EpisodeParse(None, "Some Show", 2020)
     assert sr.parse_from_resource({"parsedEpisodeInfo": {"seriesTitle": "Some Show"}}).year == 0
+
+
+@pytest.mark.parametrize("title, year, keys", [
+    # only a suffix written as one is cut: a code in capitals or brackets, a year in brackets or the series' own
+    ("Killing It (2022)", 2022, {"killingit2022", "killingit"}),
+    ("Among Us", 2020, {"amongus"}),
+    ("Lost in 1949", 2023, {"lostin1949"}),
+    ("Some Show US", 2020, {"someshowus", "someshow"}),
+    ("Some Show 2020", 2020, {"someshow2020", "someshow"}),
+    ("Some Show 2020", 2010, {"someshow2020"}),
+])
+def test_base_keys_cut_only_what_is_written_as_a_suffix(title, year, keys):
+    assert sr.base_keys(title, CODES, year) == keys
+
+
+def test_the_cut_keeps_an_ampersand_before_the_code():
+    keys = sr.base_keys("Alex & CO", CODES, 2015)
+    assert "alexund" in keys and "alex" not in keys
+    assert sr.base_keys("Alex & Co", CODES, 2015) == {"alexandco", "alexundco"}
+
+
+def test_a_title_that_only_begins_with_the_name_is_no_namesake():
+    library = [{"id": 1, "title": "Killing It (2022)", "year": 2022}, {"id": 2, "title": "Killing (2026)", "year": 2026}]
+    index = sr.namesake_index(library, CODES)
+    info = sr.EpisodeInfo(2, ("Killing (2026)",), 2026)
+    assert sr.namesakes(info, "Killing.S01E01.1080p.WEB-DL-GRP", sr.EpisodeParse(None, "Killing"), index,
+                        CheckedSearchSettings()) == frozenset()

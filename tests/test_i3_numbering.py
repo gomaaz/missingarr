@@ -143,3 +143,38 @@ def test_evaluate_without_context_ignores_s6_and_s7():
     context = sr.RuleContext(release_languages=frozenset({"English"}), doubt_languages=(frozenset({"English"}),))
     assert sr.evaluate(info, UNTITLED, None, parse, CheckedSearchSettings(), context).reasons == (REASON_NUMBERING,)
     assert sr.evaluate(info, UNTITLED, None, parse, CheckedSearchSettings()).ok
+
+
+@pytest.mark.parametrize("rejected", [UNKNOWN, ENGLISH + UNKNOWN])
+def test_an_untitled_release_of_unknown_language_stays_free(db_path, rejected):
+    agent = paw_agent(sonarr(), [paw_release(OTHER, "g1", rejected), paw_release(UNTITLED, "g2", UNKNOWN)])
+    SearchMissingSkill().execute(agent)
+    [row] = log_rows()
+    assert reasons(row)[UNTITLED] == []
+    assert agent.posts[0]["guid"] == "g2"
+
+
+def test_releases_the_rules_never_see_raise_no_doubt(db_path):
+    # A double episode named after its first part (E02 + E03), a release of
+    # another episode and a season pack: the gates reject them before S6.
+    double = {**paw_release("Paw.Friends.S01E02E03.Lost.in.the.Woods.1080p.WEB-DL.x264-GRP", "g1", ENGLISH),
+              "mappedEpisodeInfo": [{"id": 2, "seasonNumber": 1, "episodeNumber": 2},
+                                    {"id": 3, "seasonNumber": 1, "episodeNumber": 3}]}
+    elsewhere = {**paw_release("Paw.Friends.S01E04.Lost.in.the.Woods.1080p.WEB-DL.x264-GRP", "g2", ENGLISH),
+                 "mappedEpisodeInfo": [{"id": 4, "seasonNumber": 1, "episodeNumber": 4}]}
+    pack = {**paw_release("Paw.Friends.S01E03.Lost.in.the.Woods.1080p.WEB-DL.x264-PCK", "g3", ENGLISH),
+            "fullSeason": True}
+    agent = paw_agent(sonarr(), [double, elsewhere, pack, paw_release(UNTITLED, "g4", ENGLISH)])
+    SearchMissingSkill().execute(agent)
+    [row] = log_rows()
+    assert reasons(row)[UNTITLED] == []
+    assert agent.posts == [{**episode_grab("g4"), "languages": ENGLISH}]
+
+
+def test_a_title_that_starts_with_a_quality_word_is_not_taken_for_untitled(db_path):
+    spanish = "Paw.Friends.S01E03.Spanish.Birthday.Surprise.1080p.WEB-DL.x264-GRP"
+    agent = paw_agent(sonarr(), [paw_release(OTHER, "g1", ENGLISH), paw_release(spanish, "g2", ENGLISH)])
+    SearchMissingSkill().execute(agent)
+    [row] = log_rows()
+    assert reasons(row) == {OTHER: [REASON_OTHER_EPISODE], spanish: []}
+    assert agent.posts[0]["guid"] == "g2"
