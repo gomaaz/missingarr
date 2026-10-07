@@ -88,19 +88,20 @@ never logged or stored.
 import copy
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 import requests
 import urllib3.exceptions
 
 from backend import db
-from backend.checked_search import radarr_rules, sonarr_rules
+from backend.checked_search import episode_titles, radarr_rules, sonarr_rules
 from backend.checked_search.normalize import parse_utc
 from backend.checked_search.settings import CheckedSearchSettings
 from backend.checked_search.verdict import (
     REASON_MULTI_EPISODE, REASON_PARSE_ERROR, REASON_SEASON_PACK, REASON_TARGET, Verdict,
 )
+from backend.config import settings as app_settings
 from backend.skills.base import SubmitOutcome, UnsavedCheckedGrab
 from backend.verification import ITEM_FAILED, ITEM_GRABBED, ITEM_NO_HIT
 
@@ -130,6 +131,17 @@ QUEUE_HELD_BACK = ("delay", "downloadClientUnavailable", "fallback")
 # A failed download brings no file (QueueSpecification skips failedPending too).
 QUEUE_FAILED = ("failedPending", "failed")
 PARSE_PATH = "/api/v3/parse"
+# Sonarr S5: the library's series (about 39 MB and 13 s for 11,000 series),
+# read only when a release needs it and kept per instance for a day. The key
+# holds the database (instance ids belong to it), the instance's updated_at
+# and its country codes: saving the instance starts afresh.
+SERIES_PATH = "/api/v3/series"
+SERIES_TIMEOUT = 120
+NAMESAKE_TTL_SECONDS = 24 * 3600
+_NAMESAKE_CACHE: dict[tuple, tuple[float, dict]] = {}
+_namesake_clock = time.monotonic
+# Sonarr S6/S7: the episodes of a series, once per series and run.
+EPISODES_PATH = "/api/v3/episode"
 INDEXER_PATH = "/api/v3/indexer"
 HEALTH_PATH = "/api/v3/health"
 # Health checks naming the indexers *arr blocks after failures (backoff of at
@@ -428,6 +440,15 @@ def _candidate(release: _Release, verdict: str, reasons=(), notes=(), chosen=Fal
     }
 
 
+def _languages(release: _Release) -> frozenset:
+    """Language names GET /release reported for the release, without
+    "Unknown" (S7 compares only known languages)."""
+    raw = release.languages_raw if isinstance(release.languages_raw, list) else []
+    return frozenset(item.get("name") for item in raw
+                     if isinstance(item, dict) and isinstance(item.get("name"), str)
+                     and item.get("name") and item.get("name") != "Unknown")
+
+
 def _pick(release: _Release | None) -> dict | None:
     if release is None:
         return None
@@ -446,6 +467,10 @@ class _TitleCheck:
         # "Reset dry run" stay in that round (spec: round as a counter).
         self.dry_run_round = int(config.get("dry_run_round") or 0) if mode == MODE_DRY_RUN else None
         self.settings_fingerprint = settings.rules_fingerprint(self.arr_type)
+        self.namesake_key = (str(app_settings.database_url), self.instance_id, str(config.get("updated_at") or ""),
+                             tuple(sorted(settings.country_codes)))
+        self._namesake_error: Exception | None = None
+        self._episodes: dict[int, tuple | Exception] = {}
 
     # ── *arr calls ───────────────────────────────────────────────────────
 
@@ -527,7 +552,87 @@ class _TitleCheck:
             return release.mapped_movie_id == task.arr_id
         return release.mapped_series_id == info.series_id and task.arr_id in release.mapped_episode_ids
 
-    def verdict(self, task: CheckedTask, info, release: _Release) -> Verdict:
+    def namesake_index(self) -> dict:
+        """Index of the library's series titles for S5: from the day cache,
+        else read once (GET /api/v3/series). A read error is kept for the rest
+        of the run (no second long read per release) and raised."""
+        if self._namesake_error is not None:
+            raise self._namesake_error
+        now = _namesake_clock()
+        cached = _NAMESAKE_CACHE.get(self.namesake_key)
+        if cached is not None and now - cached[0] < NAMESAKE_TTL_SECONDS:
+            return cached[1]
+        try:
+            series = self.agent.http_get(SERIES_PATH, timeout=SERIES_TIMEOUT)
+            if not isinstance(series, list):
+                raise ValueError("the series list was no list")
+        except Exception as exc:
+            self._namesake_error = exc
+            raise
+        index = sonarr_rules.namesake_index(series, self.settings.country_codes)
+        for key in [k for k in _NAMESAKE_CACHE if k[:2] == self.namesake_key[:2]]:
+            del _NAMESAKE_CACHE[key]
+        _NAMESAKE_CACHE[self.namesake_key] = (now, index)
+        return index
+
+    def episode_list(self, series_id: int) -> tuple:
+        """(season, number, title) of every episode of the series for S6 and
+        S7 (GET /api/v3/episode?seriesId=…), once per series and run. A read
+        error is kept for the run and raised."""
+        cached = self._episodes.get(series_id)
+        if cached is None:
+            try:
+                answer = self.agent.http_get(EPISODES_PATH, params={"seriesId": series_id})
+                if not isinstance(answer, list):
+                    raise ValueError("the episode list was no list")
+                cached = episode_titles.episode_list(answer)
+            except Exception as exc:
+                cached = exc
+            self._episodes[series_id] = cached
+        if isinstance(cached, Exception):
+            raise cached
+        return cached
+
+    def numbering_doubt(self, info, releases: list[_Release]) -> tuple[frozenset, ...]:
+        """S7: the languages of each release of the list whose episode title
+        names another episode (S6). Empty for Radarr, with S6 or S7 off,
+        without a release that carries a title, or when the episode list
+        cannot be read (S6 then marks the titled releases unchecked)."""
+        if self.arr_type == "radarr" or info.episode_number is None or not (
+                self.settings.check_episode_title and self.settings.untitled_after_other_episode):
+            return ()
+        series_title = info.series_titles[0] if info.series_titles else ""
+        titled = [r for r in releases if episode_titles.needs_episode_list(r.title, series_title)]
+        if not titled:
+            return ()
+        try:
+            episodes = self.episode_list(info.series_id)
+        except Exception:
+            return ()
+        target = (info.season_number, info.episode_number)
+        return tuple(_languages(r) for r in titled
+                     if episode_titles.judge(r.title, target, info.episode_title, series_title, episodes)
+                     == episode_titles.OTHER_EPISODE)
+
+    def rule_context(self, info, release: _Release, parse, doubt) -> "sonarr_rules.RuleContext":
+        """What S5-S7 need for this release. Raises _ParseFailed when a list
+        it needs cannot be read: the release counts as unchecked."""
+        context = sonarr_rules.RuleContext(release_languages=_languages(release), doubt_languages=doubt)
+        if sonarr_rules.needs_namesake_index(parse, self.settings):
+            try:
+                context = replace(context, namesake_index=self.namesake_index())
+            except Exception as exc:
+                raise _ParseFailed(f"{release.title}: could not read the series list: {exc}") from exc
+        series_title = info.series_titles[0] if info.series_titles else ""
+        if self.settings.check_episode_title and info.episode_number is not None \
+                and episode_titles.needs_episode_list(release.title, series_title):
+            try:
+                context = replace(context, episodes=self.episode_list(info.series_id))
+            except Exception as exc:
+                raise _ParseFailed(f"{release.title}: could not read the episode list: {exc}") from exc
+        return context
+
+    def verdict(self, task: CheckedTask, info, release: _Release, doubt: tuple = ()) -> Verdict:
         if not self.mapped_here(task, info, release):
             return Verdict((REASON_TARGET,))
         if release.full_season:
@@ -544,8 +649,9 @@ class _TitleCheck:
             return radarr_rules.evaluate(info, release.title,
                                          radarr_rules.parse_from_resource(parsed, release.movie_titles),
                                          self.settings)
-        return sonarr_rules.evaluate(info, release.title, release.publish_date,
-                                     sonarr_rules.parse_from_resource(parsed), self.settings)
+        parse = sonarr_rules.parse_from_resource(parsed)
+        return sonarr_rules.evaluate(info, release.title, release.publish_date, parse, self.settings,
+                                     self.rule_context(info, release, parse, doubt))
 
     def grab(self, task: CheckedTask, release: _Release) -> None:
         """POST /release with the target named: *arr's cache holds the
@@ -670,6 +776,8 @@ class _TitleCheck:
             return _Result(OUTCOME_NO_RESULTS, "", entry(OUTCOME_NO_RESULTS, error_message=note), ITEM_NO_HIT)
 
         limit = self.settings.dry_run_max_releases if self.mode == MODE_DRY_RUN else len(releases)
+        # S7 looks at the whole list before the first clean release is picked.
+        doubt = self.numbering_doubt(info, releases[:limit])
         candidates: list[dict] = []
         pick: _Release | None = None
         parse_failures: list[str] = []
@@ -682,7 +790,7 @@ class _TitleCheck:
                 continue
             self.stop_check()
             try:
-                verdict = self.verdict(task, info, release)
+                verdict = self.verdict(task, info, release, doubt)
             except _ParseFailed as exc:
                 parse_failures.append(str(exc))
                 candidates.append(_candidate(release, VERDICT_ERROR, (REASON_PARSE_ERROR,),
