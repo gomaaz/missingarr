@@ -17,7 +17,9 @@ from backend.skills.profiles import ProfileState
 from backend.skills.search_upgrades import SearchUpgradesSkill
 from backend.tooltips import TOOLTIPS
 from tests.test_p5_form import client  # noqa: F401 (fixture)
-from tests.test_p2_search_upgrades import CUTOFF, MOVIES, FakeArr, cutoff_episode, db_path, make_instance  # noqa: F401
+from tests.test_p2_search_upgrades import (  # noqa: F401
+    CUTOFF, MOVIES, FakeArr, cache_all, cutoff_episode, db_path, make_instance,
+)
 
 QUALITY_PROFILES = "/api/v3/qualityprofile"
 SERIES = "/api/v3/series"
@@ -46,19 +48,18 @@ class SonarrFake(FakeArr):
 
     def http_get(self, path, params=None, timeout=10):
         params = dict(params or {})
-        if path == QUALITY_PROFILES:
-            self.gets.append((path, params))
-            return copy.deepcopy(self.profiles)
-        if path in ("/api/v3/customformat", "/api/v3/releaseprofile", "/api/v3/qualitydefinition"):
-            self.gets.append((path, params))
-            return []
-        if path == "/api/v3/config/indexer":
-            self.gets.append((path, params))
-            return {}
-        if path == SERIES:
+        if path in (QUALITY_PROFILES, "/api/v3/customformat", "/api/v3/releaseprofile",
+                    "/api/v3/qualitydefinition", "/api/v3/config/indexer", SERIES):
             self.gets.append((path, params))
             if path in self.get_errors:
                 raise self.get_errors[path]
+        if path == QUALITY_PROFILES:
+            return copy.deepcopy(self.profiles)
+        if path in ("/api/v3/customformat", "/api/v3/releaseprofile", "/api/v3/qualitydefinition"):
+            return []
+        if path == "/api/v3/config/indexer":
+            return {}
+        if path == SERIES:
             return copy.deepcopy(self.series)
         if path == EPISODES and params.get("includeEpisodeFile") == "true":
             self.gets.append((path, params))
@@ -249,6 +250,62 @@ def test_reading_ends_early_with_enough_candidates(db_path):
     assert episode_lists(agent) == [10]
 
 
+@pytest.mark.parametrize("per_run,first,read", [
+    (1, 19, [10, 11]),      # below max(per_run * 20, 20): the next series is read
+    (1, 20, [10]),          # the threshold itself ends the reading
+    (2, 25, [10, 11, 12]),  # the threshold grows with Upgrades Per Run (40)
+    (2, 40, [10]),
+])
+def test_the_reading_threshold_is_20_candidates_per_upgrades_per_run(db_path, monkeypatch, per_run, first, read):
+    monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
+    inst = make_instance(upgrade_source="monitored_items_only")
+    episodes = [owned(i, 10, i) for i in range(1, first + 1)] + [owned(100, 11, 1), owned(101, 12, 1)]
+    agent = sonarr_agent(inst, series=[show(10), show(11), show(12)], episodes=episodes)
+    candidates, _, _ = collect(agent, per_run=per_run)
+    assert episode_lists(agent) == read
+    assert len(candidates) == per_run
+
+
+def test_a_series_whose_candidates_are_all_cached_does_not_end_the_reading(db_path, monkeypatch):
+    # Command path, Retry 0: the first series' season was searched before
+    # and stays cached. Its 25 episodes must not count as enough (A5).
+    monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="monitored_items_only",
+                         retry_hours=0)
+    cache_all(inst["id"], ["upg:sea:10:1"])
+    episodes = [owned(i, 10, 0) for i in range(1, 26)] + [owned(100, 11, 100, season=2)]
+    agent = sonarr_agent(inst, series=[show(10), show(11)], episodes=episodes)
+    run_upgrades(agent)
+    assert episode_lists(agent) == [10, 11]
+    assert agent.posts == [{"name": "SeasonSearch", "seriesId": 11, "seasonNumber": 2}]
+
+
+def test_cached_episodes_do_not_count_toward_the_reading_threshold(db_path, monkeypatch):
+    # Checked search keys per episode: 20 cached episodes in the first
+    # series, one uncached in the second.
+    monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
+    inst = make_instance(upgrade_source="monitored_items_only")
+    cache_all(inst["id"], [f"upg:{i}" for i in range(1, 21)])
+    episodes = [owned(i, 10, 0) for i in range(1, 21)] + [owned(100, 11, 100)]
+    agent = sonarr_agent(inst, series=[show(10), show(11)], episodes=episodes)
+    candidates, _, _ = collect(agent, per_run=1)
+    assert episode_lists(agent) == [10, 11]
+    assert [item["id"] for item in candidates] == [100]
+
+
+def test_episodes_left_out_for_queue_or_error_pause_do_not_count_either(db_path, monkeypatch):
+    monkeypatch.setattr(search_upgrades.random, "shuffle", lambda seq: None)
+    inst = make_instance(upgrade_source="monitored_items_only")
+    episodes = [owned(i, 10, 0) for i in range(1, 21)] + [owned(100, 11, 100)]
+    agent = sonarr_agent(inst, series=[show(10), show(11)], episodes=episodes)
+    state = profiles_module.refresh("search_upgrades", agent)
+    candidates, _, _, _ = SearchUpgradesSkill()._collect_candidates(
+        agent, agent.config, 1, False, True, None, state,
+        queued=frozenset(range(1, 11)), paused=frozenset(f"upg:{i}" for i in range(11, 21)))
+    assert episode_lists(agent) == [10, 11]
+    assert [item["id"] for item in candidates] == [100]
+
+
 def test_the_series_list_failing_fails_the_source(db_path):
     inst = make_instance(search_upgrades_enabled=True, upgrade_source="monitored_items_only")
     agent = sonarr_agent(inst, get_errors={SERIES: requests.exceptions.ReadTimeout("slow")})
@@ -277,6 +334,42 @@ def test_a_failing_episode_list_is_skipped_and_noted(db_path, monkeypatch):
     run = last_run()
     assert run["status"] != "error"
     assert "episodes of Show 10 could not be loaded" in run["error_message"]
+
+
+def test_no_episode_list_read_fails_the_source(db_path):
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="monitored_items_only")
+    agent = sonarr_agent(inst, series=[show(10), show(11)], episodes=[owned(1, 10, 100), owned(2, 11, 100)],
+                         episode_errors={10, 11})
+    run_upgrades(agent)
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"] == "monitored episodes: slow"
+    assert agent.state["last_sync"] is None
+    assert agent.posts == []
+
+
+@pytest.mark.parametrize("path", ["/api/v3/releaseprofile", "/api/v3/config/indexer", QUALITY_PROFILES])
+def test_unread_quality_profiles_fail_the_source_before_the_series_list(db_path, path):
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="monitored_items_only")
+    agent = sonarr_agent(inst, series=[show(10)], episodes=[owned(1, 10, 0)],
+                         get_errors={path: requests.exceptions.ReadTimeout("slow")})
+    run_upgrades(agent)
+    run = last_run()
+    assert run["status"] == "error"
+    assert run["error_message"] == "monitored episodes: quality profiles could not be read"
+    assert SERIES not in [p for p, _ in agent.gets]
+    assert agent.state["last_sync"] is None
+
+
+def test_unread_quality_profiles_with_both_sources_are_a_note(db_path):
+    inst = make_instance(search_upgrades_enabled=True, upgrades_per_run=1, upgrade_source="both")
+    agent = sonarr_agent(inst, series=[show(10)], episodes=[owned(1, 10, 0)], cutoff=[cutoff_episode(2)],
+                         get_errors={"/api/v3/releaseprofile": requests.exceptions.ReadTimeout("slow")})
+    run_upgrades(agent)
+    run = last_run()
+    assert run["status"] != "error"
+    assert "monitored episodes: quality profiles could not be read" in run["error_message"]
+    assert agent.posts == [{"name": "SeasonSearch", "seriesId": 2, "seasonNumber": 1}]
 
 
 def test_both_sources_name_an_episode_once(db_path):
@@ -308,8 +401,11 @@ def test_checked_search_gets_episode_tasks(db_path, monkeypatch):
 
 
 def test_a_grab_from_the_new_source_does_not_count_as_wanted_list(db_path, monkeypatch):
-    # Like "monitored movies": the episode list cannot tell whether a grab is
-    # still missing, so only retry_hours releases it.
+    # By design, like "monitored movies": a grab from the new source is
+    # released by retry_hours only, not by "Search again if still missing
+    # after (days)", although the episode stays listed while its file scores
+    # below the cutoff. With retry_hours 0 a failed upgrade grab is not
+    # searched again.
     calls = []
     original = db.searched.lookup_many
 
@@ -321,7 +417,7 @@ def test_a_grab_from_the_new_source_does_not_count_as_wanted_list(db_path, monke
     inst = make_instance(upgrade_source="monitored_items_only")
     agent = sonarr_agent(inst, series=[show(10)], episodes=[owned(3, 10, 100)])
     collect(agent)
-    assert calls == [0]
+    assert calls and set(calls) == {0}
 
 
 # ── Form, tooltips and docs ──────────────────────────────────────────────────

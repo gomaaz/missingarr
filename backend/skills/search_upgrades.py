@@ -390,11 +390,19 @@ class SearchUpgradesSkill(BaseSkill):
 
         Reads the series list once, then the episode lists of at most
         MONITORED_SERIES_BUDGET random series with files, and stops early
-        with enough candidates. The lowest score comes first (ties in random
-        order), so a file grabbed only as a stand-in is searched first.
-        A failing episode list is skipped with a note; a failing series list
-        fails the source. left_out: see _keep_uncached."""
+        with enough uncached candidates: like a cutoff page whose entries are
+        all cached (A5), a series whose candidates the cache, the queue or
+        the error pause leaves out does not end the reading. The lowest score
+        comes first (ties in random order), so a file grabbed only as a
+        stand-in is searched first.
+
+        Without quality profiles read this run the source fails before the
+        series list (no profile, no candidate). A failing episode list is
+        skipped with a note; when none could be read, or the series list
+        fails, the source fails. left_out: see _keep_uncached."""
         profiles = profiles or ProfileState()
+        if not profiles.upgrade_allowed:
+            raise RuntimeError("quality profiles could not be read")
         limit = len(found) + per_run
         enough = max(per_run * 20, 20)
         answer = agent.http_get(SERIES_PATH, timeout=PROFILE_TIMEOUT)
@@ -414,24 +422,43 @@ class SearchUpgradesSkill(BaseSkill):
         random.shuffle(series_list)
 
         scored = []
+        # Uncached candidates so far: the same filter as below, without a
+        # limit and without reporting what it leaves out.
+        free: list = []
+        counted = set(seen)
+        skipped: list = []
+        loaded = 0
+        failure = None
         for series in series_list[:MONITORED_SERIES_BUDGET]:
-            if len(scored) >= enough or agent.stop_requested():
+            if len(free) >= enough or agent.stop_requested():
                 break
             title = series["title"] or f"Series #{series['id']}"
             try:
                 episodes = agent.http_get(EPISODES_PATH,
                                           params={"seriesId": series["id"], "includeEpisodeFile": "true"})
             except Exception as exc:
-                notes.append(f"episodes of {title} could not be loaded: {exc}")
+                skipped.append(f"episodes of {title} could not be loaded: {exc}")
+                failure = exc
                 continue
+            loaded += 1
             cutoff = profiles.upgrade_cutoff(series["qualityProfileId"])
+            batch = []
             for episode in episodes if isinstance(episodes, list) else []:
                 score = self._file_score(episode)
                 if score is None or score >= cutoff:
                     continue
                 item = self._cutoff_item("sonarr", {**episode, "seriesId": series["id"], "series": series})
                 if item is not None:
-                    scored.append((score, item))
+                    batch.append((score, item))
+            if batch:
+                self._keep_uncached(agent, cfg, [item for _, item in batch], force, free, counted, math.inf,
+                                    checked, round_keys, profiles, queued=left_out.get("queued", frozenset()),
+                                    paused=left_out.get("paused", frozenset()))
+            scored.extend(batch)
+        if failure is not None and loaded == 0:
+            # Not a single episode list: the source checked nothing.
+            raise failure
+        notes.extend(skipped)
         random.shuffle(scored)
         scored.sort(key=lambda pair: pair[0])
         self._keep_uncached(agent, cfg, [item for _, item in scored], force, found, seen, limit, checked,
