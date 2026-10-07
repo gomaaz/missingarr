@@ -26,6 +26,10 @@ release the title again at once.
 
 The dry run also compares the rule settings: a row counts for the round only
 under the fingerprint of the settings in force (settings_fingerprint).
+
+The state also keeps each profile's cutoffFormatScore and upgradeAllowed from
+the same read (0.13.0): the Sonarr upgrade source "monitored episodes" takes
+an episode only while its file scores below the cutoff format score.
 """
 
 from dataclasses import dataclass, field
@@ -73,6 +77,18 @@ class ProfileState:
     # Sonarr: GET /series/{id} for a record that came without its series.
     series_loader: Optional[Callable] = None
     loaded_series: dict = field(default_factory=dict)    # series id -> quality profile id (this run)
+    # From the quality profiles read this run (0.13.0), empty without an
+    # answer: str(profile id) -> cutoffFormatScore (integers only) and
+    # str(profile id) -> upgradeAllowed.
+    cutoff_format_scores: dict = field(default_factory=dict)
+    upgrade_allowed: dict = field(default_factory=dict)
+
+    def upgrade_cutoff(self, profile_id) -> Optional[int]:
+        """The cutoff format score of a profile that allows upgrades; None
+        when the profile is unknown, allows no upgrades or has no score."""
+        if profile_id is None or self.upgrade_allowed.get(str(profile_id)) is not True:
+            return None
+        return self.cutoff_format_scores.get(str(profile_id))
 
     def profile_of(self, record: dict) -> Optional[int]:
         """Quality profile of a wanted/cutoff record, a movie or an upgrade item."""
@@ -164,6 +180,12 @@ def refresh(skill_name: str, agent) -> ProfileState:
                 # alone releases nothing. The next run stores the baseline.
                 state.baseline = dict(current)
         state.current = current
+        for profile in answers[0]:
+            if not isinstance(profile, dict) or type(profile.get("id")) is not int:
+                continue
+            state.upgrade_allowed[str(profile["id"])] = profile.get("upgradeAllowed")
+            if type(profile.get("cutoffFormatScore")) is int:
+                state.cutoff_format_scores[str(profile["id"])] = profile["cutoffFormatScore"]
     if cfg.get("type") == "sonarr":
         # The wanted lists embed each episode's series (includeSeries); one
         # that comes without it asks for its series when it is searched.
