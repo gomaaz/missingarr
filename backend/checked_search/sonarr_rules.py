@@ -32,7 +32,8 @@ from backend.checked_search.verdict import (
 _YEAR = re.compile(r"^(18|19|20)\d\d$")
 # The last word of a title, bracketed or not, and what stands before it
 # ("Nemesis (2026)" -> "Nemesis", "(", "2026", ")"; "Alex & CO" -> "Alex &", "", "CO", "").
-_TAIL = re.compile(r"^(?P<head>.*?[^\W_].*?)[\s._-]*(?P<open>[(\[]?)\s*(?P<word>[^\W_]+)\s*(?P<close>[)\]]?)[\s._-]*$")
+_TAIL = re.compile(
+    r"^(?P<head>.*?[^\W_].*?)[\s._-]*(?P<open>[(\[]?)\s*(?<![^\W_])(?P<word>[^\W_]+)\s*(?P<close>[)\]]?)[\s._-]*$")
 _NAME_SPLIT = re.compile(r"[ ._\-()\[\]]+")
 
 

@@ -112,6 +112,9 @@ def test_the_parsed_year_is_read():
     ("Some Show US", 2020, {"someshowus", "someshow"}),
     ("Some Show 2020", 2020, {"someshow2020", "someshow"}),
     ("Some Show 2020", 2010, {"someshow2020"}),
+    # a code is a word of its own, never the end of one
+    ("WAR (2026)", 2026, {"war2026", "war"}),
+    ("HIT", 2020, {"hit"}),
 ])
 def test_base_keys_cut_only_what_is_written_as_a_suffix(title, year, keys):
     assert sr.base_keys(title, CODES, year) == keys

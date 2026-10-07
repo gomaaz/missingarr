@@ -66,6 +66,11 @@ _HARD_TOKENS = frozenset("""
 remux dvdrip dvd5 dvd9 dvdr hdrip tvrip vhsrip hevc avc x264 x265 h264 h265 xvid divx
 """.split())
 
+# Release tags that are no stop tokens of the title part (S6 was measured
+# without them) but never a title either: S7 looks past them as well
+# ('GERMAN.DOKU.1080p', 'German.DL.ANiME.1080p' stay untitled).
+_TAG_WORDS = frozenset("doku docu anime ml fs dtsma disneyhd netflixhd amazonhd hdtvrip".split())
+
 # Words that do not count as title words.
 STOP_WORDS = frozenset("""
 the a an of and or in on at to for is it its with from by as
@@ -167,7 +172,7 @@ def _words_before_quality(release: str) -> str:
         if _is_hard_token(token):
             hit_hard = True
             break
-        if not _is_stop_token(token):
+        if not _is_stop_token(token) and token.lower().split("-")[0] not in _TAG_WORDS:
             taken.append(token)
     if not hit_hard and taken and "-" in taken[-1]:
         taken[-1] = taken[-1].rsplit("-", 1)[0]

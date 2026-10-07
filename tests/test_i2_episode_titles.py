@@ -143,6 +143,12 @@ def test_a_title_that_starts_with_a_quality_word_is_no_untitled_release(release)
     "Paw.Friends.S01E03.AMZN.WEB-DL.DDP2.0.H.264-GRP",
     "Paw.Friends.S01E03.REPACK.GERMAN-GRP",
     "Paw.Friends.S01E03.Folge.3.GERMAN.1080p-GRP",
+    # release tags behind the language: no title either
+    "Paw.Friends.S01E03.GERMAN.DOKU.1080p.WEB.H264-GRP",
+    "Paw.Friends.S01E03.German.DL.ANiME.1080p.WEB.H264-GRP",
+    "Paw.Friends.S01E03.German.ML.EAC3.1080p.NF.WEB.H264-GRP",
+    "Paw.Friends.S01E03.German.DL.NetflixHD.x264-GRP",
+    "Paw.Friends.S01E03.Folge.3.GERMAN.DL.DTSMA.1080p.BDRiP.x264-GRP",
 ])
 def test_quality_words_alone_leave_a_release_untitled(release):
     assert et.is_untitled(release, SERIES)
