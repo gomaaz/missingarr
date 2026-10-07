@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-07
+
+### Added
+
+- Checked search, three new Sonarr rules. Each is a setting of the instance with an info icon, on by default:
+  - **Veto when the title also fits another series** (S5, reason "other series by name"): a release whose name has no year and that `/parse` maps to no series is rejected when its series title is also the title of another series of the library, with or without that series' year or country suffix. Example: `Some.Show.S01E05…` while "Some Show (2026)" is searched and "Some Show (2020)" and "Some Show (AU)" are in the library. An indexer can stamp such a release with the ID of the searched series, and Sonarr then maps it by that ID. The release passes when the year of the searched series stands in its name as a word of its own.
+  - **Reject when the episode title names another episode** (S6, reason "other episode by title"): the episode title in the name (between `SxxEyy` and the quality) is compared with the episode titles of the series, specials included. A title that clearly names another episode and not the one searched for rejects the release; this catches a release group that numbers the episodes differently. A title that fits no episode (a translated title, extra words) is only a note: "episode title fits no episode".
+  - **Reject untitled releases when another release shows a different numbering** (S7, reason "episode numbering in doubt", needs S6): when S6 rejects a release of the search results, the releases of the same results without an episode title are rejected too, if all their languages are languages of the rejected release. Releases in other languages and releases of unknown language stay free. The whole list is looked at before the first clean release is picked.
+- `IL` is a default country code (the suffix rule S2).
+
+### Changed
+
+- Sonarr's checked search reads the series list (`GET /api/v3/series`, tens of MB for a large library, timeout 120 s) when a release name could be a namesake. It keeps the list in memory for a day per instance; saving the instance or a restart reads it again. It reads the episode list of a series (`GET /api/v3/episode?seriesId=`) once per run when a release name carries an episode title. If a list cannot be read, the release that needs it counts as unchecked ("parse error"), like a failed `/parse`.
+- The new settings change the Sonarr rules fingerprint: a dry run checks every Sonarr title again (rows from before show "settings changed"). Active mode is not affected.
+
 ## [0.11.1] - 2026-10-05
 
 ### Fixed

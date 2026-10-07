@@ -4,8 +4,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VARIABLES = ["SECRET_KEY", "COOKIE_SECURE", "HISTORY_RETENTION_DAYS", "PUID", "PGID", "AUTH_PASSWORD"]
 
 
-def test_version_is_0_11_1():
-    assert (ROOT / "VERSION").read_text().strip() == "0.11.1"
+def test_version_is_0_12_0():
+    assert (ROOT / "VERSION").read_text().strip() == "0.12.0"
 
 
 def test_every_new_variable_is_documented():

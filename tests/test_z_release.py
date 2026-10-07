@@ -109,3 +109,20 @@ def test_readme_and_changelog_document_0_11_1():
     for text in ("No database change", "second row", "Rollback: 0.11.0"):
         assert text in upgrade, text
 
+
+def test_readme_and_changelog_document_0_12_0():
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert changelog.index("## [Unreleased]") < changelog.index("## [0.12.0]") < changelog.index("## [0.11.1]")
+    section = changelog[changelog.index("## [0.12.0]"):changelog.index("## [0.11.1]")]
+    for text in ("### Added", "### Changed", "other series by name", "other episode by title",
+                 "episode numbering in doubt", "episode title fits no episode", "`IL`", "GET /api/v3/series",
+                 "settings changed"):
+        assert text in section, text
+    readme = (ROOT / "README.md").read_text()
+    assert readme.index("## Upgrading to 0.12.0") < readme.index("## Upgrading to 0.11.1")
+    upgrade = readme[readme.index("## Upgrading to 0.12.0"):readme.index("## Upgrading to 0.11.1")]
+    for text in ("No database change", "`IL`", "Rollback: 0.11.1"):
+        assert text in upgrade, text
+    rules = readme[readme.index("### Checked search"):readme.index("### Profile changes")]
+    for text in ("another series of the library", "episode title", "different", "parse error"):
+        assert text in rules, text
