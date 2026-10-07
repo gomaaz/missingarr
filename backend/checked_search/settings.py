@@ -18,7 +18,7 @@ CHECKED_SEARCH_MODES: tuple[str, ...] = ("off", "dry_run", "active")
 
 DEFAULT_COUNTRY_CODES: tuple[str, ...] = (
     "AU", "US", "UK", "GB", "DE", "CO", "CA", "NZ", "FR", "ES", "IT",
-    "NL", "SE", "DK", "NO", "JP", "KR", "MX", "BR", "AR", "IN",
+    "NL", "SE", "DK", "NO", "JP", "KR", "MX", "BR", "AR", "IN", "IL",
 )
 
 SETTING_BOUNDS: dict[str, tuple[int, int]] = {
@@ -42,8 +42,9 @@ RADARR_FIELDS: tuple[str, ...] = (
     "word_match", "word_min_core_words", "no_year_needs_exact", "skip_existing_file",
 )
 SONARR_FIELDS: tuple[str, ...] = (
-    "veto_other_series", "check_suffix", "country_codes", "suffix_year_tolerance",
-    "reject_days_before_air", "note_days_before_air", "skip_existing_file",
+    "veto_other_series", "veto_namesake", "check_suffix", "country_codes", "suffix_year_tolerance",
+    "reject_days_before_air", "note_days_before_air", "check_episode_title", "untitled_after_other_episode",
+    "skip_existing_file",
 )
 
 # Form labels (English like the rest of the UI). Tooltips: backend/tooltips.py, key "cs_<field>".
@@ -62,6 +63,9 @@ FIELD_LABELS: dict[str, str] = {
     "no_year_needs_exact": "Releases without year need an exact title",
     "skip_existing_file": "Skip the release of the existing file",
     "veto_other_series": "Veto when /parse names another series",
+    "veto_namesake": "Veto when the title also fits another series",
+    "check_episode_title": "Reject when the episode title names another episode",
+    "untitled_after_other_episode": "Reject untitled releases when another release shows a different numbering",
     "check_suffix": "Check country/year suffix",
     "country_codes": "Country codes",
     "suffix_year_tolerance": "Suffix year tolerance",
@@ -94,13 +98,16 @@ class CheckedSearchSettings(BaseModel):
     no_year_needs_exact: bool = True
     # Radarr rule 1a and Sonarr S4
     skip_existing_file: bool = True
-    # Sonarr (S1-S3)
+    # Sonarr (S1-S3, S5-S7)
     veto_other_series: bool = True
+    veto_namesake: bool = True
     check_suffix: bool = True
     country_codes: list[str] = Field(default_factory=lambda: list(DEFAULT_COUNTRY_CODES))
     suffix_year_tolerance: int = 1
     reject_days_before_air: int = 365
     note_days_before_air: int = 14
+    check_episode_title: bool = True
+    untitled_after_other_episode: bool = True
 
     @field_validator("country_codes", mode="before")
     @classmethod

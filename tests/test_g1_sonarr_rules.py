@@ -120,4 +120,4 @@ def test_resources_are_read_from_the_api_fields():
                                ("The.Guest.S01E10-GRP", "The Guest - S01E10"))
     p = sr.parse_from_resource({"parsedEpisodeInfo": {"seriesTitle": "The Guest CO 2025",
                                                       "seriesTitleInfo": {"year": 2025}}, "series": {"id": 10}})
-    assert p == sr.EpisodeParse(10, "The Guest CO 2025")
+    assert p == sr.EpisodeParse(10, "The Guest CO 2025", 2025)

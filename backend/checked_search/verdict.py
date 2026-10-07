@@ -11,6 +11,11 @@ REASON_OTHER_SERIES = "other series"
 REASON_YEAR_SUFFIX = "year suffix"
 REASON_COUNTRY_SUFFIX = "country suffix"
 REASON_TOO_EARLY = "published too early"
+# Sonarr S5-S7 (0.12.0)
+REASON_NAMESAKE = "other series by name"
+REASON_OTHER_EPISODE = "other episode by title"
+REASON_NUMBERING = "episode numbering in doubt"
+NOTE_NO_EPISODE_FITS = "episode title fits no episode"
 REASON_PARSE_ERROR = "parse error"
 # Not rules of the pre-filter but of the checked search itself (runner.py):
 # season packs are a non-goal, and a release GET /release did not map to this
