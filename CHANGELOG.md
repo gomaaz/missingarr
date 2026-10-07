@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-07
+
+### Added
+
+- Sonarr follows *Upgrade Source*. **Monitored Items Only** ("monitored episodes") takes the monitored episodes of monitored series whose file scores below the cutoff format score of the series' quality profile (`episodeFile.customFormatScore` below `cutoffFormatScore`; profiles with upgrades allowed only), lowest score first. Sonarr's cutoff-unmet list judges the quality only: when the quality cutoff is a group (say HD with 720p and 1080p), a file that reached it was never searched for an upgrade, however far below the score cutoff it was. A file grabbed only as a stand-in, typically a release without the preferred language, now comes first.
+- A run reads the series list once (`GET /api/v3/series`, timeout 60 s) and the episode lists (`GET /api/v3/episode?seriesId=…&includeEpisodeFile=true`) of at most 10 random series with files, and stops earlier with 20 candidates per *Upgrades Per Run*. An episode list that cannot be read is skipped with a note in the History.
+- The quality profile state of a run keeps each profile's `cutoffFormatScore` and `upgradeAllowed` from the profile read it already made.
+
+### Changed
+
+- The instance form shows *Upgrade Source* for Sonarr as well; its help text and tooltip explain both meanings of *Monitored Items Only*.
+- **Sonarr instances switch source with the update**: the stored default is *Monitored Items Only*, so they no longer read the cutoff-unmet list. Choose *Both* to keep it, *Wanted List Only* for the behaviour of 0.12.0.
+- A failing source is named "monitored episodes" for Sonarr and "monitored movies" for Radarr.
+- A grab of the checked search from the monitored episodes blocks for *Retry (hours)*, like one from the monitored movies.
+
 ## [0.12.0] - 2026-10-07
 
 ### Added

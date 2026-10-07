@@ -3,6 +3,7 @@ monitored episodes whose file scores below the cutoff format score of its
 quality profile, the lowest score first (spec 2026-10-07)."""
 
 import copy
+from pathlib import Path
 
 import pytest
 import requests
@@ -14,11 +15,14 @@ from backend.skills import profiles as profiles_module
 from backend.skills import search_upgrades
 from backend.skills.profiles import ProfileState
 from backend.skills.search_upgrades import SearchUpgradesSkill
+from backend.tooltips import TOOLTIPS
+from tests.test_p5_form import client  # noqa: F401 (fixture)
 from tests.test_p2_search_upgrades import CUTOFF, MOVIES, FakeArr, cutoff_episode, db_path, make_instance  # noqa: F401
 
 QUALITY_PROFILES = "/api/v3/qualityprofile"
 SERIES = "/api/v3/series"
 EPISODES = "/api/v3/episode"
+ROOT = Path(__file__).resolve().parent.parent
 
 PROFILES = [
     {"id": 1, "name": "HD", "upgradeAllowed": True, "cutoff": 7, "minFormatScore": 0, "cutoffFormatScore": 1000,
@@ -318,3 +322,50 @@ def test_a_grab_from_the_new_source_does_not_count_as_wanted_list(db_path, monke
     agent = sonarr_agent(inst, series=[show(10)], episodes=[owned(3, 10, 100)])
     collect(agent)
     assert calls == [0]
+
+
+# ── Form, tooltips and docs ──────────────────────────────────────────────────
+
+
+def test_tooltips_explain_both_meanings_of_monitored_items_only():
+    tooltip = TOOLTIPS["upgrade_source"]
+    assert "Radarr only" not in tooltip
+    for text in ("monitored episodes", "cutoff format score", "lowest score first", "monitored movies",
+                 "cutoff unmet"):
+        assert text in tooltip, text
+    assert "Sonarr: cutoff-unmet list" not in TOOLTIPS["search_upgrades_enabled"]
+    assert "see Upgrade Source" in TOOLTIPS["search_upgrades_enabled"]
+
+
+def test_the_form_shows_upgrade_source_for_sonarr(client):
+    page = client.get("/instances/new").text
+    assert "showUpgradeSource() { return this.upgradesEnabled; }" in page
+    assert "this.type === 'radarr' && this.upgradesEnabled" not in page
+    assert 'id="upgrade_source"' in page
+    assert "Sonarr: monitored episodes whose file scores below the profile's cutoff format score" in page
+
+
+def test_readme_documents_the_sonarr_upgrade_source():
+    readme = (ROOT / "README.md").read_text()
+    assert "### Upgrade search" in readme
+    assert readme.index("### Search Behaviour") < readme.index("### Upgrade search") < readme.index("### Checked search")
+    section = readme[readme.index("### Upgrade search"):readme.index("### Checked search")]
+    for text in ("cutoffFormatScore", "customFormatScore", "lowest score first", "GET /api/v3/series",
+                 "includeEpisodeFile=true", "10 series", "Search again if still missing after (days)",
+                 "monitored episodes"):
+        assert text in section, text
+    assert "*(Radarr only)* Which movies" not in readme
+    assert readme.index("## Upgrading to 0.13.0") < readme.index("## Upgrading to 0.12.0")
+    upgrade = readme[readme.index("## Upgrading to 0.13.0"):readme.index("## Upgrading to 0.12.0")]
+    for text in ("No database change", "Monitored Items Only", "**Both**", "Wanted List Only", "Rollback: 0.12.0"):
+        assert text in upgrade, text
+
+
+def test_changelog_and_version_are_0_13_0():
+    assert (ROOT / "VERSION").read_text().strip() == "0.13.0"
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    assert changelog.index("## [Unreleased]") < changelog.index("## [0.13.0]") < changelog.index("## [0.12.0]")
+    section = changelog[changelog.index("## [0.13.0]"):changelog.index("## [0.12.0]")]
+    for text in ("### Added", "### Changed", "monitored episodes", "cutoffFormatScore", "Monitored Items Only",
+                 "*Both*", "GET /api/v3/series"):
+        assert text in section, text

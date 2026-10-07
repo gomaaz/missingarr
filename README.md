@@ -64,7 +64,7 @@ Each Sonarr or Radarr instance has its own configuration. Here is a full explana
 | **API Key** | Found in your \*arr instance under **Settings → General → API Key**. Leave blank when editing to keep the existing key. |
 | **Enabled** | When disabled, the instance is paused and will not run any automatic searches. |
 | **Search Missing** | Triggers searches for episodes (Sonarr) or movies (Radarr) that are monitored but have no file yet. |
-| **Search Upgrades** | Triggers searches for titles that already have a file but could be upgraded to a better quality (Sonarr: the cutoff-unmet list; Radarr: see *Upgrade Source*). |
+| **Search Upgrades** | Triggers searches for titles that already have a file but could be upgraded to a better quality (Sonarr and Radarr: see *Upgrade Source* and [Upgrade search](#upgrade-search)). |
 
 ### Scheduling
 
@@ -94,7 +94,18 @@ Each Sonarr or Radarr instance has its own configuration. Here is a full explana
 | **Upgrades Per Run** | `1` | How many upgrade candidates are processed in a single run. |
 | **Search Order** | `Random` | Order in which missing titles are picked: **Random** (even spread), **Smart** (50% newest / 30% random / 20% oldest), **Newest First**, **Oldest First**. |
 | **Missing Mode** | `Episode` | *(Sonarr only)* How missing episodes are searched: **Episode** (one at a time), **Season Packs** (whole season), **Show Batch** (full series), **Smart** (auto: season pack if ≥50% of a season is missing, otherwise single episode). |
-| **Upgrade Source** | `Monitored Items Only` | *(Radarr only)* Which movies are considered upgrade candidates: **Wanted List Only** (Radarr's cutoff-unmet list), **Monitored Items Only** (all monitored movies that already have a file), **Both**. |
+| **Upgrade Source** | `Monitored Items Only` | Which titles are considered upgrade candidates: **Wanted List Only** (the app's cutoff-unmet list), **Monitored Items Only** (Sonarr: monitored episodes whose file scores below the cutoff format score of their profile; Radarr: all monitored movies that already have a file), **Both**. See [Upgrade search](#upgrade-search). |
+
+### Upgrade search
+
+*Upgrade Source* decides which titles with a file *Search Upgrades* looks at.
+
+- **Wanted List Only** reads the app's cutoff-unmet list (`GET /api/v3/wanted/cutoff`). That list judges the quality only, not the custom format score: when the quality cutoff of a profile is a group (say HD with 720p and 1080p) and the scores decide, a file that reached the quality cutoff is never listed there, however far below the score cutoff of the profile it is.
+- **Monitored Items Only**, Radarr: every monitored movie that already has a file (`GET /api/v3/movie`). Radarr weighs the releases itself.
+- **Monitored Items Only**, Sonarr (since 0.13.0, "monitored episodes"): monitored episodes of monitored series whose file scores below the cutoff format score of the series' quality profile (`episodeFile.customFormatScore` below the profile's `cutoffFormatScore`), lowest score first, equal scores in random order. A file grabbed only as a stand-in (for example a release without your preferred language) scores low and comes first. Profiles that allow no upgrades or have no cutoff format score, and files without a score, are left out. Each run reads the series list once (`GET /api/v3/series`, timeout 60 s) and then the episode lists (`GET /api/v3/episode?seriesId=…&includeEpisodeFile=true`) of at most 10 series with files, picked at random; it stops earlier once it has 20 candidates per *Upgrades Per Run* (at least 20). If an episode list cannot be read, the run skips that series and says so in the History; if the series list cannot be read, the source fails ("monitored episodes").
+- **Both** combines the two sources; a title found in both counts once.
+
+missingarr does not judge languages or releases here: which release is better is up to the profiles of the app. An episode from the monitored episodes is searched like one from the cutoff list (a season search on the command path, the episode alone in the checked search). A grab of the checked search from *Monitored Items Only* blocks for *Retry (hours)* like a search command: the monitored lists cannot tell whether the grab is still missing, so *Search again if still missing after (days)* does not release it. An empty search is released after *Search again if still missing after (days)* from every source.
 
 ### Checked search
 
@@ -241,6 +252,14 @@ With this setup Missingarr will:
 ## Releases and changelog
 
 Every version is listed in [CHANGELOG.md](CHANGELOG.md); release notes are on [GitHub Releases](https://github.com/gomaaz/missingarr/releases). Each release is published as `gomaaz/missingarr:<version>` (for example `gomaaz/missingarr:0.10.0`), as `<major>.<minor>` and as `latest` — pin a version to decide when you upgrade.
+
+## Upgrading to 0.13.0
+
+- No database change. Sonarr now follows *Upgrade Source*; the instance form shows the field for Sonarr too (with *Search Upgrades* on).
+- The stored default is **Monitored Items Only**, so a Sonarr instance switches with the update from the cutoff-unmet list to the monitored episodes below the cutoff format score of their profile (see [Upgrade search](#upgrade-search)). To keep the cutoff list as well, choose **Both**; **Wanted List Only** is the behaviour of 0.12.0.
+- With the new source a Sonarr run reads the series list once (`GET /api/v3/series`, tens of MB for a large library) and up to 10 episode lists.
+- Radarr does not change.
+- Rollback: 0.12.0 works with the same database; its Sonarr runs read the cutoff list whatever the setting.
 
 ## Upgrading to 0.12.0
 

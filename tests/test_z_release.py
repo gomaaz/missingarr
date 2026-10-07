@@ -73,7 +73,8 @@ def test_no_host_details_in_new_files():
              ROOT / "templates" / "imports.html", *sorted((ROOT / "tests").glob("test_h*_*.py")),
              ROOT / "tests" / "imports_fake_arr.py", ROOT / "CHANGELOG.md",
              *sorted((ROOT / "tests").glob("test_f*_*.py")),
-             ROOT / "scripts" / "mobile_check.py", ROOT / "tests" / "test_m1_mobile.py"]
+             ROOT / "scripts" / "mobile_check.py", ROOT / "tests" / "test_m1_mobile.py",
+             ROOT / "backend" / "skills" / "search_upgrades.py", *sorted((ROOT / "tests").glob("test_j*_*.py"))]
     for path in files:
         text = path.read_text()
         for marker in ("/root/", "/home/", "/tmp/", "/mnt/", "/srv/"):

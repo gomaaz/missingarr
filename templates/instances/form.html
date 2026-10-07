@@ -23,7 +23,7 @@
             showMissingMode() { return this.type === 'sonarr'; },
             // Checked search handles single episodes only (Sonarr).
             packsLocked() { return this.type === 'sonarr' && this.checkedSearch !== 'off'; },
-            showUpgradeSource() { return this.type === 'radarr' && this.upgradesEnabled; },
+            showUpgradeSource() { return this.upgradesEnabled; },
         };
     }
     </script>
@@ -278,7 +278,7 @@
                     </div>
                 </div>
 
-                <!-- Upgrade Source — only for Radarr with upgrades enabled -->
+                <!-- Upgrade Source — Sonarr and Radarr, with upgrades enabled -->
                 <div class="form-group" x-show="showUpgradeSource()">
                     <label class="form-label" for="upgrade_source">
                         Upgrade Source
@@ -291,8 +291,9 @@
                         <option value="both" {% if us == 'both' %}selected{% endif %}>Both</option>
                     </select>
                     <div class="form-hint">
-                        Wanted List Only = Arr's upgrade list. &nbsp;
-                        Monitored Items Only = monitored items with files. &nbsp;
+                        Wanted List Only = Arr's upgrade list (cutoff unmet). &nbsp;
+                        Monitored Items Only = Sonarr: monitored episodes whose file scores below the profile's cutoff format score, lowest first;
+                        Radarr: monitored movies with files. &nbsp;
                         Both = both sources combined.
                     </div>
                 </div>

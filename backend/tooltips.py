@@ -10,7 +10,7 @@ TOOLTIPS = {
     "api_key": "API key of your *arr instance. Found under: Settings → General → API Key.",
     "enabled": "Enables or disables this instance. Disabled instances will not be searched automatically.",
     "search_missing_enabled": "Automatically searches for missing episodes (Sonarr) or movies (Radarr).",
-    "search_upgrades_enabled": "Automatically searches for better releases of titles that already have a file (Sonarr: cutoff-unmet list, Radarr: see Upgrade Source).",
+    "search_upgrades_enabled": "Automatically searches for better releases of titles that already have a file (Sonarr and Radarr: see Upgrade Source).",
     "interval_minutes": "How often (in minutes) a search runs. Between 1 and 10080 (one week). Recommended: 15–60 minutes. Upgrade searches run every 4× this interval.",
     "retry_hours": "How long a searched title stays in the Searched cache. 0 = never search it again automatically (recommended — use the cache reset to retry). A season or series search only blocks episodes that were already out (air date plus hours after release) when it ran.",
     "rate_window_minutes": "Rolling time window (in minutes) for rate limiting. The rate cap applies within this window.",
@@ -43,9 +43,12 @@ TOOLTIPS = {
         "from the release date, not from the moment Radarr counts the movie as available."
     ),
     "upgrade_source": (
-        "Source for upgrade candidates (Radarr only):\n"
-        "• Wanted List Only: Uses Radarr's built-in upgrade list (cutoff unmet)\n"
-        "• Monitored Items Only: All monitored movies that already have a file\n"
+        "Source for upgrade candidates:\n"
+        "• Wanted List Only: Uses the app's built-in upgrade list (cutoff unmet). It judges the quality only, "
+        "not the custom format score\n"
+        "• Monitored Items Only: Sonarr: monitored episodes whose file scores below the cutoff format score of "
+        "its quality profile, lowest score first (up to 10 series per run). Radarr: monitored movies that "
+        "already have a file\n"
         "• Both: Combines both sources"
     ),
     "quiet_start": "Start of quiet hours (HH:MM). No automatic searches will run during this period.",
