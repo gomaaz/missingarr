@@ -130,7 +130,7 @@ def test_edit_form_shows_the_stored_settings(client):
 def test_pack_modes_are_locked_while_checked_search_is_on(client):
     page = client.get("/instances/new").text
     locked = {a["value"] for t, a in tags(page) if t == "option" and a.get(":disabled") == "packsLocked()"}
-    assert locked == {"smart", "season_packs", "show_batch"}
+    assert locked == {"smart", "season_packs", "season_packs_only", "complete_packs", "complete_packs_only", "show_batch"}
     assert "Checked search works with single episodes only." in page
 
 

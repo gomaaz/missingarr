@@ -98,8 +98,8 @@ def test_card_shows_the_mode(client):
 
 def test_history_knows_the_new_item_statuses(client):
     page = client.get("/history").text
-    assert "grabbed: 'geladen'" in page
-    assert "no_hit: 'kein sauberer Treffer'" in page
+    assert "grabbed: 'grabbed'" in page
+    assert "no_hit: 'no clean hit'" in page
 
 
 def test_help_explains_checked_search(client):

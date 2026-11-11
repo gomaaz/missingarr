@@ -7,7 +7,7 @@ from backend.checked_search.settings import CheckedSearchMode, CheckedSearchSett
 
 
 SearchOrder = Literal["random", "smart", "newest_first", "oldest_first"]
-MissingMode = Literal["smart", "season_packs", "show_batch", "episode"]
+MissingMode = Literal["smart", "season_packs", "season_packs_only", "complete_packs", "complete_packs_only", "show_batch", "episode"]
 UpgradeSource = Literal["wanted_list_only", "monitored_items_only", "both"]
 InstanceType = Literal["sonarr", "radarr"]
 ConnectionStatus = Literal["unknown", "online", "offline", "error"]

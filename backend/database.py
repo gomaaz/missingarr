@@ -67,7 +67,7 @@ _SCHEMA = """
                 search_order             TEXT NOT NULL DEFAULT 'random'
                                          CHECK(search_order IN ('random','smart','newest_first','oldest_first')),
                 missing_mode             TEXT NOT NULL DEFAULT 'episode'
-                                         CHECK(missing_mode IN ('smart','season_packs','show_batch','episode')),
+                                         CHECK(missing_mode IN ('smart','season_packs','season_packs_only','complete_packs','complete_packs_only','show_batch','episode')),
                 missing_per_run          INTEGER NOT NULL DEFAULT 5,
                 upgrades_per_run         INTEGER NOT NULL DEFAULT 1,
                 seconds_between_actions  INTEGER NOT NULL DEFAULT 2,

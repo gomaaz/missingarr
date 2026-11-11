@@ -25,7 +25,10 @@ TOOLTIPS = {
     "missing_mode": (
         "Determines how missing episodes are searched (Sonarr only):\n"
         "• Episode: Search for individual missing episodes\n"
-        "• Season Packs: Search for entire seasons as a pack\n"
+        "• Season Packs: Search for entire seasons as a pack (falls back to Episode if <50% missing)\n"
+        "• Season Packs Only: Search for season packs only, skip if <50% missing (no episode fallback)\n"
+        "• Complete Packs: Prefer complete series packs (all seasons), fall back to Season Pack or Episode\n"
+        "• Complete Packs Only: Search for complete series packs only, skip if <50% missing (no fallback)\n"
         "• Show Batch: Search for the entire series at once\n"
         "• Smart: Auto-selects Season Pack if ≥50% of a season is missing, otherwise Episode"
     ),

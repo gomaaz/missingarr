@@ -74,30 +74,30 @@ function historyPage() {
         },
         runLabel(s) {
             return {
-                success: 'bestätigt',
-                pending: 'offen',
-                partial: 'teilweise',
-                failed: 'gescheitert',
-                unverified: 'nicht prüfbar',
-                error: 'Fehler',
-                running: 'läuft'
+                success: 'verified',
+                pending: 'pending',
+                partial: 'partial',
+                failed: 'failed',
+                unverified: 'unverifiable',
+                error: 'error',
+                running: 'running'
             }[s] || s;
         },
         itemLabel(s) {
             return {
-                completed: 'durchgelaufen',
-                failed: 'gescheitert',
-                submitted: 'offen',
-                expired: 'nicht prüfbar',
-                grabbed: 'geladen',
-                no_hit: 'kein sauberer Treffer'
+                completed: 'completed',
+                failed: 'failed',
+                submitted: 'submitted',
+                expired: 'expired',
+                grabbed: 'grabbed',
+                no_hit: 'no clean hit'
             }[s] || s;
         },
         itemTitle(row) {
-            if (row.command_id) return 'Befehl #' + row.command_id;
-            if (row.command_status === 'grabbed') return 'Geprüfte Suche: sauberes Release geladen';
-            if (row.command_status === 'no_hit') return 'Geprüfte Suche: kein Release hat den Vorfilter bestanden';
-            return row.command_status === 'failed' ? 'Nicht angenommen' : '';
+            if (row.command_id) return 'Command #' + row.command_id;
+            if (row.command_status === 'grabbed') return 'Checked search: clean release grabbed';
+            if (row.command_status === 'no_hit') return 'Checked search: no release passed pre-filter';
+            return row.command_status === 'failed' ? 'Not accepted' : '';
         }
     };
 }

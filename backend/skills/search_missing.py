@@ -398,9 +398,9 @@ class SearchMissingSkill(BaseSkill):
         if self._anime(arr_type, record):
             # Searched alone in every mode (_sonarr_search, 0.10.1).
             return f"ep:{record.get('id')}"
-        if mode in ("season_packs", "smart"):
+        if mode in ("season_packs", "season_packs_only", "smart"):
             return f"sea:{record.get('seriesId')}:{record.get('seasonNumber')}"
-        if mode == "show_batch":
+        if mode in ("complete_packs", "complete_packs_only", "show_batch"):
             return f"ser:{record.get('seriesId')}"
         return f"ep:{record.get('id')}"
 
@@ -672,6 +672,44 @@ class SearchMissingSkill(BaseSkill):
             agent.log("debug", self.name,
                       f"{mode}: {missing}/{total} aired monitored episodes of season {season_number} missing")
             return fire_season() if self._dense(missing, total) else fire_episode()
+
+        if mode == "season_packs_only" and series_id is not None and season_number is not None:
+            missing, total = self._density(self._episodes(agent, series_id, season_number), season=season_number)
+            agent.log("debug", self.name,
+                      f"{mode}: {missing}/{total} aired monitored episodes of season {season_number} missing")
+            # Only search season packs; skip if density too low (no episode fallback)
+            if self._dense(missing, total):
+                return fire_season()
+            agent.log("debug", self.name, f"{mode}: density too low, skipping (packs only)")
+            return SearchResult(False, label, "season", f"sea:{series_id}:{season_number}", series_id, None,
+                                "density too low for season pack search")
+
+        if mode == "complete_packs" and series_id is not None:
+            episodes = self._episodes(agent, series_id)
+            series_missing, series_total = self._density(episodes, exclude_specials=True)
+            agent.log("debug", self.name,
+                      f"{mode}: {series_missing}/{series_total} aired monitored episodes of series missing")
+            if self._dense(series_missing, series_total):
+                return fire_series()
+            if season_number is not None:
+                season_missing, season_total = self._density(episodes, season=season_number)
+                agent.log("debug", self.name,
+                          f"{mode}: {season_missing}/{season_total} aired monitored episodes of season {season_number} missing")
+                if self._dense(season_missing, season_total):
+                    return fire_season()
+            return fire_episode()
+
+        if mode == "complete_packs_only" and series_id is not None:
+            episodes = self._episodes(agent, series_id)
+            series_missing, series_total = self._density(episodes, exclude_specials=True)
+            agent.log("debug", self.name,
+                      f"{mode}: {series_missing}/{series_total} aired monitored episodes of series missing")
+            # Only search complete packs; skip if density too low (no fallback)
+            if self._dense(series_missing, series_total):
+                return fire_series()
+            agent.log("debug", self.name, f"{mode}: density too low, skipping (packs only)")
+            return SearchResult(False, label, "series", f"ser:{series_id}", series_id, None,
+                                "density too low for complete pack search")
 
         if mode == "show_batch" and series_id is not None:
             episodes = self._episodes(agent, series_id)

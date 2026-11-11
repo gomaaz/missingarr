@@ -231,6 +231,9 @@
                             {% set mm = instance.missing_mode if instance else 'episode' %}
                             <option value="smart" :disabled="packsLocked()" {% if mm == 'smart' %}selected{% endif %}>Smart</option>
                             <option value="season_packs" :disabled="packsLocked()" {% if mm == 'season_packs' %}selected{% endif %}>Season Packs</option>
+                            <option value="season_packs_only" :disabled="packsLocked()" {% if mm == 'season_packs_only' %}selected{% endif %}>Season Packs Only</option>
+                            <option value="complete_packs" :disabled="packsLocked()" {% if mm == 'complete_packs' %}selected{% endif %}>Complete Packs (prefer series)</option>
+                            <option value="complete_packs_only" :disabled="packsLocked()" {% if mm == 'complete_packs_only' %}selected{% endif %}>Complete Packs Only</option>
                             <option value="show_batch" :disabled="packsLocked()" {% if mm == 'show_batch' %}selected{% endif %}>Show Batch</option>
                             <option value="episode" {% if mm == 'episode' %}selected{% endif %}>Episode</option>
                         </select>
